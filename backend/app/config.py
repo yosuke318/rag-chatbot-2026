@@ -19,3 +19,7 @@ CHUNK_OVERLAP = 200
 
 # 検索・生成
 TOP_K = 4  # 回答生成に使うチャンク数
+
+# LLMリランク（有り/無しを比較できるようフラグ化）
+USE_RERANK = os.getenv("USE_RERANK", "false").lower() == "true"
+RERANK_CANDIDATES = 10  # 融合結果の上位いくつをリランク対象にするか

@@ -3,6 +3,8 @@
 Anthropicには埋め込みAPIが無いため、埋め込みだけ別プロバイダ(Voyage)を使う。
 ここを差し替えれば OpenAI 埋め込みやローカルモデルにも切り替えられる。
 """
+import re
+
 import anthropic
 import voyageai
 
@@ -32,6 +34,34 @@ SYSTEM_PROMPT = (
     "日本語で簡潔に回答してください。コンテキストに答えが無い場合は"
     "「資料からは分かりません」と答えてください。"
 )
+
+
+def rank_by_relevance(question: str, passages: list[str]) -> list[int]:
+    """候補文書を質問への関連が高い順に並べ替え、その番号リストを返す。
+
+    Claudeに番号付きで候補を渡し、「関連順に番号を返せ」と指示する。
+    出力パースは防御的に（数字だけ抽出・範囲内・重複排除）。
+    """
+    numbered = "\n\n".join(f"[{i}] {p}" for i, p in enumerate(passages))
+    prompt = (
+        f"質問: {question}\n\n"
+        f"以下の文書を、質問への関連が高い順に並べ替えてください。\n"
+        f"番号だけをカンマ区切りで返してください（例: 3,0,2,1）。説明は不要です。\n\n"
+        f"{numbered}"
+    )
+    response = _anthropic.messages.create(
+        model=CHAT_MODEL,
+        max_tokens=200,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = "".join(block.text for block in response.content if block.type == "text")
+
+    order: list[int] = []
+    for token in re.findall(r"\d+", text):
+        i = int(token)
+        if 0 <= i < len(passages) and i not in order:
+            order.append(i)
+    return order
 
 
 def generate_answer(question: str, contexts: list[str]) -> str:
