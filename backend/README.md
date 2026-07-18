@@ -17,21 +17,23 @@ app/
 
 ## 動かす手順
 
-```bash
-# 1. pgvector 付き Postgres を起動
-cd backend
-docker compose up -d
+**フルスタック（推奨）はリポジトリ直下の `task` から**（[../README.md](../README.md) 参照）:
 
-# 2. 依存インストール（venv 推奨）
+```bash
+cp backend/.env.example backend/.env   # キー2つを記入
+task up        # db + backend + frontend を起動
+task seed      # seed_docs/ のデフォルト文書を投入
+```
+
+**バックエンドだけホストで動かして開発**（ホットリロード）:
+
+```bash
+docker compose up -d db          # DBだけ docker で
+cp .env.example .env             # DATABASE_URL は localhost:5432 のまま
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# 3. 環境変数（APIキー2つ）
-cp .env.example .env
-#   ANTHROPIC_API_KEY と VOYAGE_API_KEY を .env に記入
-
-# 4. 起動（起動時にスキーマ自動作成）
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload    # 起動時にスキーマ自動作成
+python -m app.seed               # 文書投入
 ```
 
 ## 試す
