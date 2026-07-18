@@ -53,7 +53,10 @@ curl -X POST localhost:8000/chat -H 'content-type: application/json' -d '{
 
 ## この最小版で「やっていないこと」（＝次にやると学びが深い）
 
-- **ハイブリッド検索**（BM25 + RRF + LLMリランク）… 今はベクトル検索のみ。設計書の学習の核
+- **LLMリランク** … `retrieval.py` の `llm_rerank` はまだ TODO スタブ。
+  まず RRF 版で精度を測り、リランク有り/無しを評価で比較するのが目的
+- ハイブリッド検索の字面側は pg_trgm（トライグラム）で、厳密なBM25ではない。
+  日本語BM25が欲しくなったら PGroonga 等の日本語対応エンジンに差し替える
 - PDF/docx/xlsx 取り込み・図表のマルチモーダル文章化（今はプレーンテキストのみ）
 - contextual retrieval（チャンクに文書要約を前置き）／差分再取り込み
 - 回答のストリーミング（今は生成完了後に一括返却）
