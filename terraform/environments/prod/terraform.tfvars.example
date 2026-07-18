@@ -1,0 +1,4 @@
+# cp terraform.tfvars.example terraform.tfvars して値を埋める。
+# terraform.tfvars は .gitignore 済み（秘密情報を含めうるため）。
+project  = "rag-v2"
+vpc_cidr = "10.0.0.0/16"

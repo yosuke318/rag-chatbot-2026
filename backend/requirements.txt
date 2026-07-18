@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+psycopg[binary]        # PostgreSQL ドライバ (v3)
+pgvector               # pgvector の Python バインディング
+anthropic              # 回答生成 (Claude)。LangChainは使わずSDK直叩き
+voyageai               # 埋め込み (Anthropic推奨の埋め込みプロバイダ)
+python-dotenv
