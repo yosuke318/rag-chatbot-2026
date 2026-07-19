@@ -20,6 +20,7 @@ from app.config import (
     USE_RERANK,
 )
 from app.db import get_conn
+from app.keywords import noun_text
 from app.llm import embed_query, rank_by_relevance
 
 CANDIDATES = 20  # 各検索が融合前に返す候補数
@@ -63,6 +64,10 @@ def lexical_search(
 ) -> list[dict]:
     """字面の一致（トライグラム類似度）で上位k件。閾値未満は返さない。
 
+    ★質問側・文書側とも「名詞だけ」に絞って突き合わせる★
+      助詞や活用語尾（「〜は」「〜もらえる」）が類似度に影響しないようにするため。
+      文書側の名詞は取り込み時に chunks.content_nouns へ保存済み。
+
     ※ pg_trgm の similarity() は「文字3つ組の重なり具合」で、厳密なBM25ではない。
       日本語をそのまま扱える手軽さを優先した選択。BM25本来の実装は
       tsvector+ts_rank（日本語は形態素解析器が別途必要）や外部エンジンになる。
@@ -72,18 +77,22 @@ def lexical_search(
     全件が閾値未満のときは字面リストが空になり、RRFは自然とベクトルの順位だけで
     決まる ＝ 分岐を書かずに「cos類似度のみで評価」が成立する。
     """
+    query_nouns = noun_text(question)
+    if not query_nouns:  # 名詞が1つも無い質問は字面検索を行わない
+        return []
+
     with get_conn() as conn:
         rows = conn.execute(
             """
             SELECT c.id, c.content, d.source,
-                   similarity(c.content, %s) AS trgm_similarity
+                   similarity(COALESCE(c.content_nouns, ''), %s) AS trgm_similarity
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
-            WHERE similarity(c.content, %s) >= %s
-            ORDER BY similarity(c.content, %s) DESC
+            WHERE similarity(COALESCE(c.content_nouns, ''), %s) >= %s
+            ORDER BY similarity(COALESCE(c.content_nouns, ''), %s) DESC
             LIMIT %s
             """,
-            (question, question, min_similarity, question, k),
+            (query_nouns, query_nouns, min_similarity, query_nouns, k),
         ).fetchall()
     return [
         {

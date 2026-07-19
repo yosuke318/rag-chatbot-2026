@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from app.config import CHUNK_OVERLAP, CHUNK_SIZE
 from app.db import get_conn
+from app.keywords import noun_text
 from app.llm import embed_texts
 
 
@@ -54,10 +55,12 @@ def ingest_text(source: str, text: str, category: str | None = None) -> dict:
 
             with conn.cursor() as cur:
                 cur.executemany(
-                    "INSERT INTO chunks (document_id, chunk_index, content, embedding) "
-                    "VALUES (%s, %s, %s, %s)",
+                    "INSERT INTO chunks "
+                    "(document_id, chunk_index, content, content_nouns, embedding) "
+                    "VALUES (%s, %s, %s, %s, %s)",
                     [
-                        (document_id, i, chunk, embeddings[i])
+                        # content_nouns: 字面検索用に名詞だけ抜き出したもの
+                        (document_id, i, chunk, noun_text(chunk), embeddings[i])
                         for i, chunk in enumerate(chunks)
                     ],
                 )
