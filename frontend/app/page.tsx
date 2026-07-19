@@ -124,7 +124,6 @@ export default function Home() {
             placeholder="検索したい質問…（例: 有給は入社何ヶ月で何日？）"
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && runSearch()}
           />
           <button onClick={runSearch} disabled={searching || !searchQ.trim()}>
             検索
@@ -215,7 +214,6 @@ export default function Home() {
             placeholder="質問を入力…"
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && ask()}
           />
           <button onClick={ask} disabled={loading || !question.trim()}>
             送信
