@@ -29,7 +29,7 @@ def vector_search(question: str, k: int = CANDIDATES) -> list[dict]:
             SELECT c.id, c.content, d.source
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
-            ORDER BY c.embedding <=> %s
+            ORDER BY c.embedding <=> %s::vector
             LIMIT %s
             """,
             (query_vec, k),
