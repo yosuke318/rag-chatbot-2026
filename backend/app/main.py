@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app.db import init_db
 from app.ingest import ingest_text
-from app.llm import generate_answer
+from app.llm import MissingAPIKey, generate_answer
 from app.retrieval import hybrid_search, search_stages
 
 
@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RAG Chatbot v2", lifespan=lifespan)
+app = FastAPI(title="RAG Lab API", lifespan=lifespan)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,26 @@ def _error(status: int, code: str, message: str, hint: str = "", detail: str = "
     return JSONResponse(
         status_code=status,
         content={"error": code, "message": message, "hint": hint, "detail": detail},
+    )
+
+
+@app.exception_handler(MissingAPIKey)
+async def missing_api_key(request: Request, exc: Exception):
+    """キーが空のままSDKを呼ぶ前に落とす。SDKに任せると通信前のTypeErrorになり
+    AuthenticationError として扱えないため、事前検査した結果をここで返す。"""
+    name = str(exc)
+    which = "生成API（Claude）" if "ANTHROPIC" in name else "埋め込みAPI（Voyage）"
+    extra = (
+        "検索だけなら /search（Claude不要）が使えます。"
+        if "ANTHROPIC" in name
+        else ""
+    )
+    return _error(
+        401,
+        "missing_api_key",
+        f"{which}のAPIキーが未設定です。",
+        f"backend/.env の {name} を設定して再起動してください。{extra}",
+        "",
     )
 
 

@@ -65,6 +65,7 @@ export default function Home() {
   const [searchQ, setSearchQ] = useState("");
   const [stages, setStages] = useState<SearchStages | null>(null);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
   // --- チャットパネル（/chat = 質問フロー）---
   const [messages, setMessages] = useState<Message[]>([]);
@@ -80,6 +81,11 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ source, text: docText }),
       });
+      const err = await errorMessage(res);
+      if (err) {
+        setIngestStatus(err);
+        return;
+      }
       const data = await res.json();
       // replaced > 0 = 同名の既存文書を置き換えた
       const note = data.replaced ? "（同名の既存文書を置き換えました）" : "";
@@ -126,6 +132,12 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ question: q }),
       });
+      const err = await errorMessage(res);
+      if (err) {
+        // Anthropicキー未設定などをチャット欄にそのまま出す
+        setMessages((m) => [...m, { role: "bot", text: err }]);
+        return;
+      }
       const data: ChatResponse = await res.json();
       setMessages((m) => [
         ...m,
@@ -140,8 +152,11 @@ export default function Home() {
 
   return (
     <div className="container">
-      <h1>社内文書RAG v2</h1>
-      <p className="sub">文書を入れて質問すると、根拠付きで答える最小UI</p>
+      <h1>RAG Lab</h1>
+      <p className="sub">
+        埋め込み・検索・回答生成の挙動を観察するRAG検証ツール。
+        文書を登録し、検索の内訳（cos類似度 / 字面類似度 / RRF融合）を確かめてから質問できる。
+      </p>
 
       {/* 書き込みフロー: text → chunk → embed → pgvector */}
       <section className="panel">
@@ -175,6 +190,8 @@ export default function Home() {
             検索
           </button>
         </div>
+
+        {searchError && <p className="error-note">{searchError}</p>}
 
         {stages && (
           <>

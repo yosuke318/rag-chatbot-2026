@@ -204,6 +204,18 @@ td.miss {
   color: var(--accent);
 }
 
+.error-note {
+  font-size: 13px;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0 0;
+  line-height: 1.7;
+  white-space: pre-wrap; /* message と hint を改行で分けて表示 */
+}
+
 .empty-note {
   font-size: 12px;
   color: var(--muted);
