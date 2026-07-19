@@ -204,6 +204,17 @@ td.miss {
   color: var(--accent);
 }
 
+.empty-note {
+  font-size: 12px;
+  color: var(--muted);
+  background: #fafafa;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0;
+  line-height: 1.7;
+}
+
 .raw-list .metric {
   font-variant-numeric: tabular-nums;
   color: var(--text);

@@ -13,7 +13,12 @@
 """
 from __future__ import annotations
 
-from app.config import RERANK_CANDIDATES, TOP_K, USE_RERANK
+from app.config import (
+    LEXICAL_MIN_SIMILARITY,
+    RERANK_CANDIDATES,
+    TOP_K,
+    USE_RERANK,
+)
 from app.db import get_conn
 from app.llm import embed_query, rank_by_relevance
 
@@ -51,12 +56,21 @@ def vector_search(question: str, k: int = CANDIDATES) -> list[dict]:
     ]
 
 
-def lexical_search(question: str, k: int = CANDIDATES) -> list[dict]:
-    """字面の一致（トライグラム類似度）で上位k件。
+def lexical_search(
+    question: str,
+    k: int = CANDIDATES,
+    min_similarity: float = LEXICAL_MIN_SIMILARITY,
+) -> list[dict]:
+    """字面の一致（トライグラム類似度）で上位k件。閾値未満は返さない。
 
     ※ pg_trgm の similarity() は「文字3つ組の重なり具合」で、厳密なBM25ではない。
       日本語をそのまま扱える手軽さを優先した選択。BM25本来の実装は
       tsvector+ts_rank（日本語は形態素解析器が別途必要）や外部エンジンになる。
+
+    閾値の意図: 類似度0の候補まで順位を持つと、その"偽の順位"がRRFに票を投じて
+    しまう（実測で無関係な文書が融合2位に浮上した）。ここで落とせば、
+    全件が閾値未満のときは字面リストが空になり、RRFは自然とベクトルの順位だけで
+    決まる ＝ 分岐を書かずに「cos類似度のみで評価」が成立する。
     """
     with get_conn() as conn:
         rows = conn.execute(
@@ -65,10 +79,11 @@ def lexical_search(question: str, k: int = CANDIDATES) -> list[dict]:
                    similarity(c.content, %s) AS trgm_similarity
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
+            WHERE similarity(c.content, %s) >= %s
             ORDER BY similarity(c.content, %s) DESC
             LIMIT %s
             """,
-            (question, question, k),
+            (question, question, min_similarity, question, k),
         ).fetchall()
     return [
         {
@@ -171,6 +186,8 @@ def search_stages(question: str, top_n: int = TOP_K, show: int = 5) -> dict:
 
     return {
         "question": question,
+        # 字面リストが空 = 全候補が閾値未満 → 実質ベクトル検索のみで順位が決まる
+        "lexical_min_similarity": LEXICAL_MIN_SIMILARITY,
         "vector_search": [
             {
                 "rank": i,

@@ -24,6 +24,7 @@ type Fused = Hit & {
 };
 type SearchStages = {
   question: string;
+  lexical_min_similarity: number; // これ未満の字面ヒットはRRFに渡さない
   vector_search: VectorHit[];
   lexical_search: LexicalHit[];
   fused: Fused[];
@@ -242,16 +243,26 @@ export default function Home() {
                 </ol>
               </div>
               <div>
-                <h3 className="stage-title">① 字面検索（pg_trgm・類似度）</h3>
-                <ol className="raw-list">
-                  {stages.lexical_search.map((h) => (
-                    <li key={h.id}>
-                      <code>#{h.id}</code>{" "}
-                      <span className="metric">{h.trgm_similarity}</span>{" "}
-                      {h.preview}
-                    </li>
-                  ))}
-                </ol>
+                <h3 className="stage-title">
+                  ① 字面検索（pg_trgm・類似度 ≥ {stages.lexical_min_similarity}）
+                </h3>
+                {stages.lexical_search.length === 0 ? (
+                  <p className="empty-note">
+                    閾値 {stages.lexical_min_similarity} 以上の字面一致なし。
+                    字面検索は票を投じないので、
+                    <strong>RRFはベクトル検索の順位だけで決まっています</strong>。
+                  </p>
+                ) : (
+                  <ol className="raw-list">
+                    {stages.lexical_search.map((h) => (
+                      <li key={h.id}>
+                        <code>#{h.id}</code>{" "}
+                        <span className="metric">{h.trgm_similarity}</span>{" "}
+                        {h.preview}
+                      </li>
+                    ))}
+                  </ol>
+                )}
               </div>
             </div>
           </>
