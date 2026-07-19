@@ -1,10 +1,10 @@
 """検索: ハイブリッド検索 → (次段) リランク。★このプロジェクトの学習の核★
 
 流れ:
-  1. ベクトル検索   (意味の近さ) … 上位 CANDIDATES 件
-  2. 字面検索       (文字の一致) … 上位 CANDIDATES 件
-  3. RRF で 2つのランキングを融合 → 上位 TOP_K 件
-  4. (TODO) LLMリランク で最終並べ替え
+  1. ベクトル検索   (意味の近さ) … 上位 CANDIDATES 件 -> vector_search
+  2. 字面検索       (文字の一致) … 上位 CANDIDATES 件 -> lexical_search
+  3. RRF で 2つのランキングを融合 → 上位 TOP_K 件 -> reciprocal_rank_fusion と _rrf_scores
+  4. (TODO) LLMリランク で最終並べ替え -> llm_rerank
 
 なぜ2種類混ぜるか:
   - ベクトル検索は「意味」に強いが、型番・固有名詞など"字面そのもの"の一致に弱い。
