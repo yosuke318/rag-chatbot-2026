@@ -19,6 +19,11 @@ _voyage = voyageai.Client(api_key=VOYAGE_API_KEY)
 _anthropic = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
+# ============================================================
+# 埋め込み (Voyage)
+# ============================================================
+
+
 def embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:
     """テキスト群をベクトル化。input_type は "document" か "query"。"""
     result = _voyage.embed(texts, model=EMBED_MODEL, input_type=input_type)
@@ -26,8 +31,13 @@ def embed_texts(texts: list[str], input_type: str = "document") -> list[list[flo
 
 
 def embed_query(text: str) -> list[float]:
+    """検索クエリ1件をベクトル化。"""
     return embed_texts([text], input_type="query")[0]
 
+
+# ============================================================
+# 検索 / 回答生成 (Claude)
+# ============================================================
 
 SYSTEM_PROMPT = (
     "あなたは社内文書アシスタントです。以下のコンテキストだけを根拠に、"
