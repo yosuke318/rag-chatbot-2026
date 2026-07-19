@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RAG Lab API", lifespan=lifespan)
+app = FastAPI(title="RAG Inspector API", lifespan=lifespan)
 
 logger = logging.getLogger(__name__)
 

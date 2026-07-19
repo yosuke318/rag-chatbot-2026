@@ -152,7 +152,7 @@ export default function Home() {
 
   return (
     <div className="container">
-      <h1>RAG Lab</h1>
+      <h1>RAG Inspector（RAG検証ラボ）</h1>
       <p className="sub">
         埋め込み・検索・回答生成の挙動を観察するRAG検証ツール。
         文書を登録し、検索の内訳（cos類似度 / 字面類似度 / RRF融合）を確かめてから質問できる。
