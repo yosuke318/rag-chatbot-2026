@@ -29,6 +29,17 @@ type SearchStages = {
   fused: Fused[];
 };
 
+// 見出しにカーソルを当てると説明が出る。tabIndexでキーボード操作でも開く。
+function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="tip" tabIndex={0}>
+      {label}
+      <span className="tip-mark">?</span>
+      <span className="tip-body">{children}</span>
+    </span>
+  );
+}
+
 export default function Home() {
   // --- 取り込みパネル（/ingest = 書き込みフロー）---
   const [source, setSource] = useState("");
@@ -147,11 +158,40 @@ export default function Home() {
                 <thead>
                   <tr>
                     <th>順位</th>
-                    <th>RRFスコア</th>
+                    <th>
+                      <Tip label="RRFスコア">
+                        <strong>Reciprocal Rank Fusion</strong>（逆数・順位・融合）。
+                        各検索での順位を <code>1/(60+順位)</code> に変換して足し合わせた値。
+                        <br />
+                        <br />
+                        使うのは<strong>順位だけ</strong>。だから右の cos類似度と字面類似度のように
+                        スケールがまるで違う指標でも公平に混ぜられる。
+                        両方の検索が上位に挙げたチャンクほど逆数が重ねて足され、高スコアになる。
+                      </Tip>
+                    </th>
                     <th>ベクトル順位</th>
-                    <th>cos類似度</th>
+                    <th>
+                      <Tip label="cos類似度">
+                        質問と文書のベクトルが<strong>どれだけ同じ向きか</strong>。
+                        1に近いほど意味が近い。
+                        <br />
+                        <br />
+                        pgvectorの <code>&lt;=&gt;</code> が返すコサイン<em>距離</em>を
+                        <code>1 - 距離</code> で類似度に直した値。
+                        言葉が違っても意味が近い文書を拾えるのが強み。
+                      </Tip>
+                    </th>
                     <th>字面順位</th>
-                    <th>字面類似度</th>
+                    <th>
+                      <Tip label="字面類似度">
+                        pg_trgm による<strong>文字トライグラム</strong>（3文字の組）の重なり具合。
+                        0〜1で、1に近いほど字面が一致。
+                        <br />
+                        <br />
+                        型番・固有名詞など「その文字列そのもの」に強い一方、
+                        言い換えには弱い。日本語では値が小さめ（0.1〜0.3程度）に出やすい。
+                      </Tip>
+                    </th>
                     <th>出典</th>
                     <th>内容</th>
                   </tr>
