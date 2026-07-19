@@ -30,6 +30,20 @@ type SearchStages = {
   fused: Fused[];
 };
 
+// バックエンドのエラー応答（main.py の _error に対応）
+type ApiError = { error: string; message: string; hint?: string };
+
+/** レスポンスがエラーならUI表示用の文字列を返す。正常なら null。 */
+async function errorMessage(res: Response): Promise<string | null> {
+  if (res.ok) return null;
+  try {
+    const e: ApiError = await res.json();
+    return e.hint ? `${e.message}\n${e.hint}` : e.message;
+  } catch {
+    return `エラーが発生しました（HTTP ${res.status}）`;
+  }
+}
+
 // 見出しにカーソルを当てると説明が出る。tabIndexでキーボード操作でも開く。
 function Tip({ label, children }: { label: string; children: React.ReactNode }) {
   return (

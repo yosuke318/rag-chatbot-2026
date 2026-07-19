@@ -1,10 +1,14 @@
 """FastAPI エントリポイント。最小RAGループ: /ingest で入れて /chat で聞く。"""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI
+import anthropic
+import voyageai.error
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.db import init_db
@@ -20,6 +24,96 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RAG Chatbot v2", lifespan=lifespan)
+
+logger = logging.getLogger(__name__)
+
+
+def _error(status: int, code: str, message: str, hint: str = "", detail: str = ""):
+    """UIがそのまま表示できる形のエラー応答。"""
+    return JSONResponse(
+        status_code=status,
+        content={"error": code, "message": message, "hint": hint, "detail": detail},
+    )
+
+
+# --- 埋め込みAPI(Voyage)のエラー ---------------------------------------------
+# 検索も文書登録も毎回Voyageを呼ぶため、レート制限や鍵の不備がそのまま500に
+# なっていた。原因が分かる形で返す。
+
+
+@app.exception_handler(voyageai.error.RateLimitError)
+async def voyage_rate_limit(request: Request, exc: Exception):
+    logger.warning("Voyage rate limit: %s", exc)
+    return _error(
+        429,
+        "voyage_rate_limit",
+        "埋め込みAPI（Voyage）のレート制限に達しました。少し待ってから再試行してください。",
+        "支払い方法が未登録だと 3リクエスト/分 に制限されます。"
+        "dashboard.voyageai.com で登録すると緩和されます（無料枠は維持）。",
+        str(exc),
+    )
+
+
+@app.exception_handler(voyageai.error.AuthenticationError)
+async def voyage_auth(request: Request, exc: Exception):
+    return _error(
+        401,
+        "voyage_auth",
+        "埋め込みAPI（Voyage）の認証に失敗しました。",
+        "backend/.env の VOYAGE_API_KEY を確認してください。",
+        str(exc),
+    )
+
+
+@app.exception_handler(voyageai.error.VoyageError)
+async def voyage_other(request: Request, exc: Exception):
+    logger.exception("Voyage error")
+    return _error(
+        502,
+        "voyage_error",
+        "埋め込みAPI（Voyage）の呼び出しに失敗しました。",
+        "",
+        str(exc),
+    )
+
+
+# --- 生成API(Anthropic)のエラー ----------------------------------------------
+# /chat のみで発生する。キー未設定ならここに来る。
+
+
+@app.exception_handler(anthropic.RateLimitError)
+async def anthropic_rate_limit(request: Request, exc: Exception):
+    return _error(
+        429,
+        "anthropic_rate_limit",
+        "生成API（Claude）のレート制限に達しました。少し待ってから再試行してください。",
+        "",
+        str(exc),
+    )
+
+
+@app.exception_handler(anthropic.AuthenticationError)
+async def anthropic_auth(request: Request, exc: Exception):
+    return _error(
+        401,
+        "anthropic_auth",
+        "生成API（Claude）の認証に失敗しました。回答生成にはAnthropicのAPIキーが必要です。",
+        "backend/.env の ANTHROPIC_API_KEY を設定してください。"
+        "検索だけなら /search（Claude不要）が使えます。",
+        str(exc),
+    )
+
+
+@app.exception_handler(anthropic.APIError)
+async def anthropic_other(request: Request, exc: Exception):
+    logger.exception("Anthropic error")
+    return _error(
+        502,
+        "anthropic_error",
+        "生成API（Claude）の呼び出しに失敗しました。",
+        "",
+        str(exc),
+    )
 
 
 class IngestRequest(BaseModel):
