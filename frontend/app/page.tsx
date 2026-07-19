@@ -67,7 +67,11 @@ export default function Home() {
         body: JSON.stringify({ source, text: docText }),
       });
       const data = await res.json();
-      setIngestStatus(`「${source}」を ${data.chunks_created} チャンクで登録しました`);
+      // replaced > 0 = 同名の既存文書を置き換えた
+      const note = data.replaced ? "（同名の既存文書を置き換えました）" : "";
+      setIngestStatus(
+        `「${source}」を ${data.chunks_created} チャンクで登録しました${note}`,
+      );
       setDocText("");
     } catch (e) {
       setIngestStatus(`エラー: ${String(e)}`);

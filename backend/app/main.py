@@ -39,8 +39,9 @@ async def health():
 
 @app.post("/ingest")
 def ingest(req: IngestRequest):
-    n = ingest_text(req.source, req.text, req.category)
-    return {"source": req.source, "chunks_created": n}
+    result = ingest_text(req.source, req.text, req.category)
+    # replaced > 0 = 同名の既存文書を置き換えた（重複登録を防いでいる）
+    return {"source": req.source, **result}
 
 
 @app.get("/search")

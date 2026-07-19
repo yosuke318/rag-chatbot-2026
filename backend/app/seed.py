@@ -32,8 +32,9 @@ def main() -> None:
         if not f.exists():
             print(f"見つかりません: {f}")
             continue
-        n = ingest_text(source=f.name, text=f.read_text(encoding="utf-8"))
-        print(f"{f.name}: {n} チャンク登録")
+        r = ingest_text(source=f.name, text=f.read_text(encoding="utf-8"))
+        note = "（既存を置き換え）" if r["replaced"] else ""
+        print(f"{f.name}: {r['chunks_created']} チャンク登録{note}")
 
 
 if __name__ == "__main__":
