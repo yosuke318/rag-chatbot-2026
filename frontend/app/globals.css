@@ -133,3 +133,69 @@ button:disabled {
 .chat-input button {
   flex-shrink: 0;
 }
+
+/* --- 検索の内訳パネル --- */
+.stage-title {
+  font-size: 13px;
+  margin: 16px 0 6px;
+  color: var(--muted);
+}
+
+.table-wrap {
+  overflow-x: auto; /* 横に広い表はここだけスクロール */
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+td.preview {
+  white-space: normal;
+  min-width: 240px;
+}
+
+td.miss {
+  color: #b91c1c; /* 片方の検索に出なかった＝「—」を目立たせる */
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.raw-list {
+  font-size: 12px;
+  padding-left: 20px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.raw-list li {
+  margin-bottom: 4px;
+}
+
+.raw-list code {
+  color: var(--accent);
+}
