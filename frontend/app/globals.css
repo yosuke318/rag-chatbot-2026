@@ -199,3 +199,9 @@ td.miss {
 .raw-list code {
   color: var(--accent);
 }
+
+.raw-list .metric {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-weight: 600;
+}

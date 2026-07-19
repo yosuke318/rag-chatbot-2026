@@ -21,20 +21,34 @@ CANDIDATES = 20  # 各検索が融合前に返す候補数
 
 
 def vector_search(question: str, k: int = CANDIDATES) -> list[dict]:
-    """意味の近さ（コサイン距離）で上位k件。"""
+    """意味の近さ（コサイン距離）で上位k件。
+
+    pgvector の `<=>` はコサイン**距離**（0=完全一致、大きいほど遠い）。
+    直感的に読めるよう コサイン類似度 = 1 - 距離 も併せて返す。
+    """
     query_vec = embed_query(question)
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT c.id, c.content, d.source
+            SELECT c.id, c.content, d.source,
+                   c.embedding <=> %s::vector AS cosine_distance
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
             ORDER BY c.embedding <=> %s::vector
             LIMIT %s
             """,
-            (query_vec, k),
+            (query_vec, query_vec, k),
         ).fetchall()
-    return [{"id": r[0], "content": r[1], "source": r[2]} for r in rows]
+    return [
+        {
+            "id": r[0],
+            "content": r[1],
+            "source": r[2],
+            "cosine_distance": float(r[3]),
+            "cosine_similarity": 1.0 - float(r[3]),
+        }
+        for r in rows
+    ]
 
 
 def lexical_search(question: str, k: int = CANDIDATES) -> list[dict]:
@@ -47,15 +61,24 @@ def lexical_search(question: str, k: int = CANDIDATES) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT c.id, c.content, d.source
+            SELECT c.id, c.content, d.source,
+                   similarity(c.content, %s) AS trgm_similarity
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
             ORDER BY similarity(c.content, %s) DESC
             LIMIT %s
             """,
-            (question, k),
+            (question, question, k),
         ).fetchall()
-    return [{"id": r[0], "content": r[1], "source": r[2]} for r in rows]
+    return [
+        {
+            "id": r[0],
+            "content": r[1],
+            "source": r[2],
+            "trgm_similarity": float(r[3]),  # 0〜1（1に近いほど字面が一致）
+        }
+        for r in rows
+    ]
 
 
 def _rrf_scores(
@@ -138,21 +161,37 @@ def search_stages(question: str, top_n: int = TOP_K, show: int = 5) -> dict:
     lex = lexical_search(question)
     scored = _rrf_scores([vec, lex])  # リスト番号 0=ベクトル, 1=字面
 
-    def brief(hits: list[dict]) -> list[dict]:
-        return [
+    # 融合後の行に「元の生スコア」を戻すための引き当て表
+    # （_rrf_scores のitemは後勝ちで上書きされるため、ここで各リストから取り直す）
+    vec_by_id = {h["id"]: h for h in vec}
+    lex_by_id = {h["id"]: h for h in lex}
+
+    def rounded(value: float | None, digits: int = 4) -> float | None:
+        return None if value is None else round(value, digits)
+
+    return {
+        "question": question,
+        "vector_search": [
             {
                 "rank": i,
                 "id": h["id"],
                 "source": h["source"],
+                "cosine_similarity": rounded(h["cosine_similarity"]),
+                "cosine_distance": rounded(h["cosine_distance"]),
                 "preview": _preview(h["content"]),
             }
-            for i, h in enumerate(hits[:show])
-        ]
-
-    return {
-        "question": question,
-        "vector_search": brief(vec),
-        "lexical_search": brief(lex),
+            for i, h in enumerate(vec[:show])
+        ],
+        "lexical_search": [
+            {
+                "rank": i,
+                "id": h["id"],
+                "source": h["source"],
+                "trgm_similarity": rounded(h["trgm_similarity"]),
+                "preview": _preview(h["content"]),
+            }
+            for i, h in enumerate(lex[:show])
+        ],
         "fused": [
             {
                 "rank": i,
@@ -161,6 +200,17 @@ def search_stages(question: str, top_n: int = TOP_K, show: int = 5) -> dict:
                 "score": round(score, 5),
                 "vector_rank": ranks.get(0),  # None = そのリストには出なかった
                 "lexical_rank": ranks.get(1),
+                # 各検索が出した「生の類似度」。出てこなかった検索側は None
+                "cosine_similarity": rounded(
+                    vec_by_id[item["id"]]["cosine_similarity"]
+                    if item["id"] in vec_by_id
+                    else None
+                ),
+                "trgm_similarity": rounded(
+                    lex_by_id[item["id"]]["trgm_similarity"]
+                    if item["id"] in lex_by_id
+                    else None
+                ),
                 "preview": _preview(item["content"]),
             }
             for i, (item, score, ranks) in enumerate(scored[:top_n])

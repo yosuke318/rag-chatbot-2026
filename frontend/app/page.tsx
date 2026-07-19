@@ -8,15 +8,24 @@ type Message = { role: "user" | "bot"; text: string; sources?: string[] };
 
 // /search の応答型（backend/app/retrieval.py の search_stages に対応）
 type Hit = { rank: number; id: number; source: string; preview: string };
+type VectorHit = Hit & {
+  cosine_similarity: number; // 1に近いほど意味が近い（= 1 - コサイン距離）
+  cosine_distance: number;
+};
+type LexicalHit = Hit & {
+  trgm_similarity: number; // 0〜1。1に近いほど字面が一致
+};
 type Fused = Hit & {
-  score: number;
+  score: number; // RRFスコア
   vector_rank: number | null; // null = ベクトル検索には出てこなかった
   lexical_rank: number | null; // null = 字面検索には出てこなかった
+  cosine_similarity: number | null; // 各検索が出した「生の類似度」
+  trgm_similarity: number | null;
 };
 type SearchStages = {
   question: string;
-  vector_search: Hit[];
-  lexical_search: Hit[];
+  vector_search: VectorHit[];
+  lexical_search: LexicalHit[];
   fused: Fused[];
 };
 
@@ -138,9 +147,11 @@ export default function Home() {
                 <thead>
                   <tr>
                     <th>順位</th>
-                    <th>スコア</th>
+                    <th>RRFスコア</th>
                     <th>ベクトル順位</th>
+                    <th>cos類似度</th>
                     <th>字面順位</th>
+                    <th>字面類似度</th>
                     <th>出典</th>
                     <th>内容</th>
                   </tr>
@@ -154,8 +165,14 @@ export default function Home() {
                       <td className={f.vector_rank === null ? "miss" : ""}>
                         {f.vector_rank ?? "—"}
                       </td>
+                      <td className={f.cosine_similarity === null ? "miss" : ""}>
+                        {f.cosine_similarity ?? "—"}
+                      </td>
                       <td className={f.lexical_rank === null ? "miss" : ""}>
                         {f.lexical_rank ?? "—"}
+                      </td>
+                      <td className={f.trgm_similarity === null ? "miss" : ""}>
+                        {f.trgm_similarity ?? "—"}
                       </td>
                       <td>{f.source}</td>
                       <td className="preview">{f.preview}</td>
@@ -165,27 +182,33 @@ export default function Home() {
               </table>
             </div>
             <p className="hint">
-              両方に順位が入っている＝2つの検索が揃って上位に挙げた → スコアが高い。
+              両方に順位が入っている＝2つの検索が揃って上位に挙げた → RRFスコアが高い。
               「—」は片方の検索にしか出てこなかったチャンク。
+              cos類似度・字面類似度は各検索が実際に計算した生の値（1に近いほど近い）。
+              RRFはこの生スコアではなく<strong>順位</strong>だけを使う点に注目。
             </p>
 
             <div className="two-col">
               <div>
-                <h3 className="stage-title">① ベクトル検索（意味）</h3>
+                <h3 className="stage-title">① ベクトル検索（意味・cos類似度）</h3>
                 <ol className="raw-list">
                   {stages.vector_search.map((h) => (
                     <li key={h.id}>
-                      <code>#{h.id}</code> {h.preview}
+                      <code>#{h.id}</code>{" "}
+                      <span className="metric">{h.cosine_similarity}</span>{" "}
+                      {h.preview}
                     </li>
                   ))}
                 </ol>
               </div>
               <div>
-                <h3 className="stage-title">① 字面検索（pg_trgm）</h3>
+                <h3 className="stage-title">① 字面検索（pg_trgm・類似度）</h3>
                 <ol className="raw-list">
                   {stages.lexical_search.map((h) => (
                     <li key={h.id}>
-                      <code>#{h.id}</code> {h.preview}
+                      <code>#{h.id}</code>{" "}
+                      <span className="metric">{h.trgm_similarity}</span>{" "}
+                      {h.preview}
                     </li>
                   ))}
                 </ol>
