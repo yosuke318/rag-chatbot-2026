@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from app.db import init_db
 from app.ingest import ingest_text
 from app.llm import generate_answer
-from app.retrieval import hybrid_search
+from app.retrieval import hybrid_search, search_stages
 
 
 @asynccontextmanager
@@ -41,6 +41,16 @@ async def health():
 def ingest(req: IngestRequest):
     n = ingest_text(req.source, req.text, req.category)
     return {"source": req.source, "chunks_created": n}
+
+
+@app.get("/search")
+def search(q: str, top_n: int = 4):
+    """検索の各段階を返す（Claudeを呼ばない = Anthropicキー不要）。
+
+    例: GET /search?q=有給は入社何ヶ月で何日？
+    ベクトル/字面それぞれの順位と、RRF融合後のスコアが見える。
+    """
+    return search_stages(q, top_n=top_n)
 
 
 @app.post("/chat")

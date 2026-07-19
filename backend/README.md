@@ -36,6 +36,30 @@ uvicorn app.main:app --reload    # 起動時にスキーマ自動作成
 python -m app.seed               # 文書投入
 ```
 
+## 検索の中身を見る（Anthropicキー不要）
+
+`/search` は Claude を呼ばないので **VOYAGE_API_KEY だけで動く**。
+ベクトル/字面それぞれの順位と、RRF融合後のスコアが返るので、
+「両方の検索が上位に挙げたチャンクが融合で上に来る」挙動を実データで確認できる。
+
+```bash
+curl -s 'localhost:8000/search?q=有給は入社何ヶ月で何日？' | jq
+```
+
+```jsonc
+{
+  "vector_search": [ { "rank": 0, "id": 1, "preview": "年次有給休暇は…" } ],
+  "lexical_search": [ { "rank": 0, "id": 7, "preview": "経費精算は翌月10日…" } ],
+  "fused": [
+    { "rank": 0, "id": 1, "score": 0.03252,
+      "vector_rank": 0, "lexical_rank": 1,   // 両方に出た → 上位
+      "preview": "年次有給休暇は…" }
+  ]
+}
+```
+
+`vector_rank` / `lexical_rank` が `null` = そのリストには出なかった（片方の検索だけがヒット）。
+
 ## 試す
 
 ```bash

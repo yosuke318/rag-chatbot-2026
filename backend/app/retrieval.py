@@ -58,24 +58,33 @@ def lexical_search(question: str, k: int = CANDIDATES) -> list[dict]:
     return [{"id": r[0], "content": r[1], "source": r[2]} for r in rows]
 
 
-def reciprocal_rank_fusion(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
-    """複数のランキングを RRF で1つに融合する。
+def _rrf_scores(
+    ranked_lists: list[list[dict]], k: int = 60
+) -> list[tuple[dict, float, dict[int, int]]]:
+    """RRFの計算本体。(アイテム, 合計スコア, {リスト番号: 順位}) をスコア降順で返す。
 
     各アイテムのスコア = Σ 1 / (k + そのリストでの順位)
       - 順位ベースなので、ベクトル距離と字面スコアの"単位の違い"を気にせず混ぜられる。
-      - 上位に何度も現れるアイテムほど高スコアになる。
+      - 複数リストの上位に現れるほど、逆数が何度も足されて高スコアになる。
       - k(=60が慣例) は順位差を平滑化する定数。大きいほど順位の差が緩やかになる。
     アイテムの同一性は chunk の id で判定（同じチャンクが両リストに出たら合算）。
     """
     scores: dict[int, float] = {}
     items: dict[int, dict] = {}
-    for ranked in ranked_lists:
+    ranks: dict[int, dict[int, int]] = {}
+    for list_index, ranked in enumerate(ranked_lists):
         for rank, item in enumerate(ranked):  # rank は 0始まり
             cid = item["id"]
             scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
             items[cid] = item
+            ranks.setdefault(cid, {})[list_index] = rank
     ordered_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)
-    return [items[cid] for cid in ordered_ids]
+    return [(items[cid], scores[cid], ranks[cid]) for cid in ordered_ids]
+
+
+def reciprocal_rank_fusion(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
+    """複数のランキングを RRF で融合し、スコア降順のアイテム列を返す。"""
+    return [item for item, _score, _ranks in _rrf_scores(ranked_lists, k)]
 
 
 def llm_rerank(question: str, candidates: list[dict], top_n: int = TOP_K) -> list[dict]:
@@ -112,3 +121,48 @@ def hybrid_search(
         # 融合上位を少し多めにリランク対象へ渡し、そこから top_n を選ばせる
         return llm_rerank(question, fused[:RERANK_CANDIDATES], top_n)
     return fused[:top_n]
+
+
+def _preview(text: str, n: int = 80) -> str:
+    text = " ".join(text.split())
+    return text[:n] + ("…" if len(text) > n else "")
+
+
+def search_stages(question: str, top_n: int = TOP_K, show: int = 5) -> dict:
+    """検索の各段階を返す（学習・デバッグ用。★Claudeを呼ばないのでAnthropicキー不要★）
+
+    ベクトル検索の順位 / 字面検索の順位 / 融合後のスコアを並べて返すので、
+    「両方の検索が上位に挙げたチャンクがRRFで上に来る」挙動を実データで確認できる。
+    """
+    vec = vector_search(question)
+    lex = lexical_search(question)
+    scored = _rrf_scores([vec, lex])  # リスト番号 0=ベクトル, 1=字面
+
+    def brief(hits: list[dict]) -> list[dict]:
+        return [
+            {
+                "rank": i,
+                "id": h["id"],
+                "source": h["source"],
+                "preview": _preview(h["content"]),
+            }
+            for i, h in enumerate(hits[:show])
+        ]
+
+    return {
+        "question": question,
+        "vector_search": brief(vec),
+        "lexical_search": brief(lex),
+        "fused": [
+            {
+                "rank": i,
+                "id": item["id"],
+                "source": item["source"],
+                "score": round(score, 5),
+                "vector_rank": ranks.get(0),  # None = そのリストには出なかった
+                "lexical_rank": ranks.get(1),
+                "preview": _preview(item["content"]),
+            }
+            for i, (item, score, ranks) in enumerate(scored[:top_n])
+        ],
+    }
