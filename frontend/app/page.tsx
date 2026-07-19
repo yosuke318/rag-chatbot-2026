@@ -96,12 +96,19 @@ export default function Home() {
     const q = searchQ.trim();
     if (!q || searching) return;
     setSearching(true);
+    setSearchError("");
     try {
       const res = await fetch(`/api/backend/search?q=${encodeURIComponent(q)}`);
+      const err = await errorMessage(res);
+      if (err) {
+        setSearchError(err); // レート制限・認証エラーなどをそのまま表示
+        setStages(null);
+        return;
+      }
       setStages(await res.json());
     } catch (e) {
       setStages(null);
-      alert(`検索エラー: ${String(e)}`);
+      setSearchError(`通信に失敗しました: ${String(e)}`);
     } finally {
       setSearching(false);
     }
