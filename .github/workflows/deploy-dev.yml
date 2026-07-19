@@ -1,0 +1,62 @@
+# dev環境デプロイ。ローカルと"同じDockerイメージ"をECRに載せ、Terraformで反映する。
+#   ローカル: docker compose が db/backend/frontend を動かす
+#   dev:      同じ backend/frontend イメージを Fargate、db は RDS(pgvector) に置換
+# これで「ローカルで動いた成果物がそのまま dev で動く」を担保する。
+name: deploy-dev
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch: # 手動実行も可
+
+permissions:
+  id-token: write # OIDCでAWSロールを引き受ける（アクセスキー不要）
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }} # TODO: OIDC用IAMロールを作る
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push backend image
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/rag-v2-backend:${{ github.sha }}
+          docker build -t "$IMAGE" ./backend
+          docker push "$IMAGE"
+          echo "BACKEND_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Build & push frontend image
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/rag-v2-frontend:${{ github.sha }}
+          docker build -t "$IMAGE" ./frontend
+          docker push "$IMAGE"
+          echo "FRONTEND_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform apply (dev)
+        working-directory: terraform/environments/prod # TODO: dev用ディレクトリを作る
+        run: |
+          terraform init
+          terraform apply -auto-approve \
+            -var="backend_image=$BACKEND_IMAGE" \
+            -var="frontend_image=$FRONTEND_IMAGE"
+# 前提として先に用意が必要（TODO）:
+#   - ECRリポジトリ rag-v2-backend / rag-v2-frontend
+#   - GitHub OIDC を信頼するIAMロール（ECR push + Terraform操作権限）
+#   - terraform 側で backend_image / frontend_image 変数を受け、ECSタスク定義に流す
+#   - state用のS3バケット + DynamoDBロック（backend.tf 参照）

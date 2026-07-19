@@ -1,0 +1,41 @@
+# go-task (https://taskfile.dev) のタスク定義。`task <name>` で実行。
+# 新しい操作を足したいときは tasks: 配下に1エントリ増やすだけ（拡張可能）。
+version: "3"
+
+tasks:
+  default:
+    desc: タスク一覧を表示
+    cmds:
+      - task --list
+    silent: true
+
+  up:
+    desc: 全サービス起動（db + backend + frontend をビルドして立ち上げ）
+    cmds:
+      - docker compose up -d --build
+
+  down:
+    desc: 停止（ベクトルDBのデータは残す）
+    cmds:
+      - docker compose down
+
+  downv:
+    desc: 停止 + ボリューム削除（ベクトルDBも消える。作り直したいとき）
+    cmds:
+      - docker compose down -v
+
+  logs:
+    desc: ログを追う
+    cmds:
+      - docker compose logs -f
+
+  seed:
+    desc: backend/seed_docs/*.txt を登録する（デフォルト文書の投入）
+    cmds:
+      - docker compose exec -T backend python -m app.seed
+
+  # 例: 単一ファイルだけ入れたいときのテンプレ（拡張の見本）
+  # ingest-file:
+  #   desc: 指定ファイルを1つ登録する（task ingest-file FILE=path/to/x.txt）
+  #   cmds:
+  #     - docker compose exec -T backend python -m app.seed "{{.FILE}}"

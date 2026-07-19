@@ -1,0 +1,341 @@
+"use client";
+
+import { useState } from "react";
+
+// バックエンドの応答型（backend/app/main.py の返り値に対応）
+type ChatResponse = { answer: string; sources: string[] };
+type Message = { role: "user" | "bot"; text: string; sources?: string[] };
+
+// /search の応答型（backend/app/retrieval.py の search_stages に対応）
+type Hit = { rank: number; id: number; source: string; preview: string };
+type VectorHit = Hit & {
+  cosine_similarity: number; // 1に近いほど意味が近い（= 1 - コサイン距離）
+  cosine_distance: number;
+};
+type LexicalHit = Hit & {
+  trgm_similarity: number; // 0〜1。1に近いほど字面が一致
+};
+type Fused = Hit & {
+  score: number; // RRFスコア
+  vector_rank: number | null; // null = ベクトル検索には出てこなかった
+  lexical_rank: number | null; // null = 字面検索には出てこなかった
+  cosine_similarity: number | null; // 各検索が出した「生の類似度」
+  trgm_similarity: number | null;
+};
+type SearchStages = {
+  question: string;
+  lexical_min_similarity: number; // これ未満の字面ヒットはRRFに渡さない
+  vector_search: VectorHit[];
+  lexical_search: LexicalHit[];
+  fused: Fused[];
+};
+
+// バックエンドのエラー応答（main.py の _error に対応）
+type ApiError = { error: string; message: string; hint?: string };
+
+/** レスポンスがエラーならUI表示用の文字列を返す。正常なら null。 */
+async function errorMessage(res: Response): Promise<string | null> {
+  if (res.ok) return null;
+  try {
+    const e: ApiError = await res.json();
+    return e.hint ? `${e.message}\n${e.hint}` : e.message;
+  } catch {
+    return `エラーが発生しました（HTTP ${res.status}）`;
+  }
+}
+
+// 見出しにカーソルを当てると説明が出る。tabIndexでキーボード操作でも開く。
+function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="tip" tabIndex={0}>
+      {label}
+      <span className="tip-mark">?</span>
+      <span className="tip-body">{children}</span>
+    </span>
+  );
+}
+
+export default function Home() {
+  // --- 取り込みパネル（/ingest = 書き込みフロー）---
+  const [source, setSource] = useState("");
+  const [docText, setDocText] = useState("");
+  const [ingestStatus, setIngestStatus] = useState("");
+
+  // --- 検索パネル（/search = 検索の内訳。Claudeを呼ばない）---
+  const [searchQ, setSearchQ] = useState("");
+  const [stages, setStages] = useState<SearchStages | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+
+  // --- チャットパネル（/chat = 質問フロー）---
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [question, setQuestion] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function ingest() {
+    if (!source.trim() || !docText.trim()) return;
+    setIngestStatus("取り込み中…");
+    try {
+      const res = await fetch("/api/backend/ingest", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source, text: docText }),
+      });
+      const err = await errorMessage(res);
+      if (err) {
+        setIngestStatus(err);
+        return;
+      }
+      const data = await res.json();
+      // replaced > 0 = 同名の既存文書を置き換えた
+      const note = data.replaced ? "（同名の既存文書を置き換えました）" : "";
+      setIngestStatus(
+        `「${source}」を ${data.chunks_created} チャンクで登録しました${note}`,
+      );
+      setDocText("");
+    } catch (e) {
+      setIngestStatus(`エラー: ${String(e)}`);
+    }
+  }
+
+  async function runSearch() {
+    const q = searchQ.trim();
+    if (!q || searching) return;
+    setSearching(true);
+    setSearchError("");
+    try {
+      const res = await fetch(`/api/backend/search?q=${encodeURIComponent(q)}`);
+      const err = await errorMessage(res);
+      if (err) {
+        setSearchError(err); // レート制限・認証エラーなどをそのまま表示
+        setStages(null);
+        return;
+      }
+      setStages(await res.json());
+    } catch (e) {
+      setStages(null);
+      setSearchError(`通信に失敗しました: ${String(e)}`);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function ask() {
+    const q = question.trim();
+    if (!q || loading) return;
+    setMessages((m) => [...m, { role: "user", text: q }]);
+    setQuestion("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/backend/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: q }),
+      });
+      const err = await errorMessage(res);
+      if (err) {
+        // Anthropicキー未設定などをチャット欄にそのまま出す
+        setMessages((m) => [...m, { role: "bot", text: err }]);
+        return;
+      }
+      const data: ChatResponse = await res.json();
+      setMessages((m) => [
+        ...m,
+        { role: "bot", text: data.answer, sources: data.sources },
+      ]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: "bot", text: `エラー: ${String(e)}` }]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="container">
+      <h1>RAG Lab</h1>
+      <p className="sub">
+        埋め込み・検索・回答生成の挙動を観察するRAG検証ツール。
+        文書を登録し、検索の内訳（cos類似度 / 字面類似度 / RRF融合）を確かめてから質問できる。
+      </p>
+
+      {/* 書き込みフロー: text → chunk → embed → pgvector */}
+      <section className="panel">
+        <h2>① 文書を登録（/ingest）</h2>
+        <input
+          placeholder="文書名（例: 有給休暇.txt）"
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+        />
+        <textarea
+          placeholder="本文を貼り付け…"
+          value={docText}
+          onChange={(e) => setDocText(e.target.value)}
+        />
+        <button onClick={ingest} disabled={!source.trim() || !docText.trim()}>
+          登録する
+        </button>
+        {ingestStatus && <p className="hint">{ingestStatus}</p>}
+      </section>
+
+      {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}
+      <section className="panel">
+        <h2>② 検索の内訳を見る（/search・Claude不要）</h2>
+        <div className="chat-input">
+          <input
+            placeholder="検索したい質問…（例: 有給は入社何ヶ月で何日？）"
+            value={searchQ}
+            onChange={(e) => setSearchQ(e.target.value)}
+          />
+          <button onClick={runSearch} disabled={searching || !searchQ.trim()}>
+            検索
+          </button>
+        </div>
+
+        {searchError && <p className="error-note">{searchError}</p>}
+
+        {stages && (
+          <>
+            <h3 className="stage-title">RRF融合後（最終順位）</h3>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>順位</th>
+                    <th>
+                      <Tip label="RRFスコア">
+                        <strong>Reciprocal Rank Fusion</strong>（逆数・順位・融合）。
+                        各検索での順位を <code>1/(60+順位)</code> に変換して足し合わせた値。
+                        <br />
+                        <br />
+                        使うのは<strong>順位だけ</strong>。だから右の cos類似度と字面類似度のように
+                        スケールがまるで違う指標でも公平に混ぜられる。
+                        両方の検索が上位に挙げたチャンクほど逆数が重ねて足され、高スコアになる。
+                      </Tip>
+                    </th>
+                    <th>ベクトル順位</th>
+                    <th>
+                      <Tip label="cos類似度">
+                        質問と文書のベクトルが<strong>どれだけ同じ向きか</strong>。
+                        1に近いほど意味が近い。
+                        <br />
+                        <br />
+                        pgvectorの <code>&lt;=&gt;</code> が返すコサイン<em>距離</em>を
+                        <code>1 - 距離</code> で類似度に直した値。
+                        言葉が違っても意味が近い文書を拾えるのが強み。
+                      </Tip>
+                    </th>
+                    <th>字面順位</th>
+                    <th>
+                      <Tip label="字面類似度">
+                        pg_trgm による<strong>文字トライグラム</strong>（3文字の組）の重なり具合。
+                        0〜1で、1に近いほど字面が一致。
+                        <br />
+                        <br />
+                        型番・固有名詞など「その文字列そのもの」に強い一方、
+                        言い換えには弱い。日本語では値が小さめ（0.1〜0.3程度）に出やすい。
+                      </Tip>
+                    </th>
+                    <th>出典</th>
+                    <th>内容</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stages.fused.map((f) => (
+                    <tr key={f.id}>
+                      <td>{f.rank}</td>
+                      <td>{f.score}</td>
+                      {/* null は「その検索には出てこなかった」= 片方だけのヒット */}
+                      <td className={f.vector_rank === null ? "miss" : ""}>
+                        {f.vector_rank ?? "—"}
+                      </td>
+                      <td className={f.cosine_similarity === null ? "miss" : ""}>
+                        {f.cosine_similarity ?? "—"}
+                      </td>
+                      <td className={f.lexical_rank === null ? "miss" : ""}>
+                        {f.lexical_rank ?? "—"}
+                      </td>
+                      <td className={f.trgm_similarity === null ? "miss" : ""}>
+                        {f.trgm_similarity ?? "—"}
+                      </td>
+                      <td>{f.source}</td>
+                      <td className="preview">{f.preview}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="hint">
+              両方に順位が入っている＝2つの検索が揃って上位に挙げた → RRFスコアが高い。
+              「—」は片方の検索にしか出てこなかったチャンク。
+              cos類似度・字面類似度は各検索が実際に計算した生の値（1に近いほど近い）。
+              RRFはこの生スコアではなく<strong>順位</strong>だけを使う点に注目。
+            </p>
+
+            <div className="two-col">
+              <div>
+                <h3 className="stage-title">① ベクトル検索（意味・cos類似度）</h3>
+                <ol className="raw-list">
+                  {stages.vector_search.map((h) => (
+                    <li key={h.id}>
+                      <code>#{h.id}</code>{" "}
+                      <span className="metric">{h.cosine_similarity}</span>{" "}
+                      {h.preview}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+              <div>
+                <h3 className="stage-title">
+                  ① 字面検索（pg_trgm・類似度 ≥ {stages.lexical_min_similarity}）
+                </h3>
+                {stages.lexical_search.length === 0 ? (
+                  <p className="empty-note">
+                    閾値 {stages.lexical_min_similarity} 以上の字面一致なし。
+                    字面検索は票を投じないので、
+                    <strong>RRFはベクトル検索の順位だけで決まっています</strong>。
+                  </p>
+                ) : (
+                  <ol className="raw-list">
+                    {stages.lexical_search.map((h) => (
+                      <li key={h.id}>
+                        <code>#{h.id}</code>{" "}
+                        <span className="metric">{h.trgm_similarity}</span>{" "}
+                        {h.preview}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* 質問フロー: question → hybrid_search → rerank → Claude */}
+      <section className="panel">
+        <h2>③ 質問する（/chat・Anthropicキー必要）</h2>
+        <div className="messages">
+          {messages.map((m, i) => (
+            <div key={i} className={`msg ${m.role}`}>
+              {m.text}
+              {m.sources && m.sources.length > 0 && (
+                <div className="sources">根拠: {m.sources.join(" / ")}</div>
+              )}
+            </div>
+          ))}
+          {loading && <div className="msg bot">考え中…</div>}
+        </div>
+        <div className="chat-input">
+          <input
+            placeholder="質問を入力…"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+          />
+          <button onClick={ask} disabled={loading || !question.trim()}>
+            送信
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}

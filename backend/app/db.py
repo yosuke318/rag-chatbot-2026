@@ -42,6 +42,11 @@ def init_db() -> None:
             );
             """
         )
+        # 字面検索用：本文から名詞だけを抜き出した文字列（keywords.noun_text）
+        # 既存DBにも後から足せるよう ALTER で追加する
+        conn.execute(
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS content_nouns TEXT;"
+        )
         # コサイン距離での近傍探索用インデックス（件数が少ないうちは無くても動く）
         conn.execute(
             "CREATE INDEX IF NOT EXISTS chunks_embedding_idx "
@@ -49,6 +54,6 @@ def init_db() -> None:
         )
         # トライグラム字面検索用インデックス（件数が少ないうちは無くても動く）
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS chunks_content_trgm_idx "
-            "ON chunks USING gin (content gin_trgm_ops);"
+            "CREATE INDEX IF NOT EXISTS chunks_content_nouns_trgm_idx "
+            "ON chunks USING gin (content_nouns gin_trgm_ops);"
         )
