@@ -2,36 +2,18 @@
 
 import { useState } from "react";
 
-// バックエンドの応答型（backend/app/main.py の返り値に対応）
-type ChatResponse = { answer: string; sources: string[] };
+// ★型はバックエンドの OpenAPI スキーマから自動生成したものを使う★
+//   再生成: npm run gen:types （backend が :8000 で起動している状態で）
+//   手書きしないことで、BEの型を変えたらここで型エラーになりズレに気づける。
+import type { components } from "./api-types";
+
+type ChatResponse = components["schemas"]["ChatResponse"];
+type SearchStages = components["schemas"]["SearchResponse"];
+type Fused = components["schemas"]["FusedHit"];
+type ApiError = components["schemas"]["ErrorResponse"];
+
+// UI内部だけで使う型（APIには存在しない）
 type Message = { role: "user" | "bot"; text: string; sources?: string[] };
-
-// /search の応答型（backend/app/retrieval.py の search_stages に対応）
-type Hit = { rank: number; id: number; source: string; preview: string };
-type VectorHit = Hit & {
-  cosine_similarity: number; // 1に近いほど意味が近い（= 1 - コサイン距離）
-  cosine_distance: number;
-};
-type LexicalHit = Hit & {
-  trgm_similarity: number; // 0〜1。1に近いほど字面が一致
-};
-type Fused = Hit & {
-  score: number; // RRFスコア
-  vector_rank: number | null; // null = ベクトル検索には出てこなかった
-  lexical_rank: number | null; // null = 字面検索には出てこなかった
-  cosine_similarity: number | null; // 各検索が出した「生の類似度」
-  trgm_similarity: number | null;
-};
-type SearchStages = {
-  question: string;
-  lexical_min_similarity: number; // これ未満の字面ヒットはRRFに渡さない
-  vector_search: VectorHit[];
-  lexical_search: LexicalHit[];
-  fused: Fused[];
-};
-
-// バックエンドのエラー応答（main.py の _error に対応）
-type ApiError = { error: string; message: string; hint?: string };
 
 /** レスポンスがエラーならUI表示用の文字列を返す。正常なら null。 */
 async function errorMessage(res: Response): Promise<string | null> {
