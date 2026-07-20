@@ -22,7 +22,7 @@ body {
 }
 
 .container {
-  max-width: 820px;
+  max-width: 1240px; /* 手法が増えて表が横に広がるため拡張 */
   margin: 0 auto;
   padding: 24px 16px 64px;
 }
@@ -174,7 +174,33 @@ td.preview {
 }
 
 td.miss {
-  color: #b91c1c; /* 片方の検索に出なかった＝「—」を目立たせる */
+  color: #b91c1c; /* その手法に出なかった＝「—」を目立たせる */
+}
+
+/* 検索手法ごとのグループ見出し（手法が増えると列も増える） */
+th.group-head {
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+  background: #fafafa;
+}
+
+tr.sub-head th {
+  font-weight: 500;
+  font-size: 12px;
+  padding-top: 2px;
+}
+
+/* 順位セルに添える「この手法がRRFに足した分」 */
+.term {
+  display: block;
+  font-size: 10px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+p.hint .term {
+  display: inline;
+  font-size: 11px;
 }
 
 .two-col {
@@ -290,4 +316,152 @@ td.miss {
 th:nth-last-child(-n + 3) .tip-body {
   left: auto;
   right: 0;
+}
+
+/* 検索手法の選択（手法を増やすと自動で選択肢が増える） */
+.retriever-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.tip-bare {
+  border-bottom: none;
+}
+
+.retriever-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.retriever-option label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.retriever-option input {
+  margin: 0;
+  width: auto;
+}
+
+.picker-warn {
+  color: #b45309;
+  font-size: 12px;
+}
+
+/* 数式の定数を調整する入力欄（仕様から自動生成） */
+.param-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.param-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.param-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.param-owner {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.param-item input {
+  width: 120px;
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.param-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 項目ごとの「既定に戻す」 */
+.reset-one {
+  padding: 2px 7px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: #fff;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.reset-one:not(:disabled):hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.applied {
+  margin-left: 10px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* APIキーの要否メモ（登録と検索の両方でVoyageが要る点を明示する） */
+.keys-note {
+  font-size: 12px;
+  color: var(--muted);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 20px;
+  line-height: 1.8;
+}
+
+.keys-note strong {
+  color: var(--text);
+}
+
+.keys-note ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.keys-note code {
+  background: #f1f3f5;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--accent);
+}
+
+.keys-note b {
+  color: var(--text);
+}
+
+/* パネル見出し内のツールチップ（本文は通常の文字色で読ませる） */
+.panel h2 .tip-body {
+  width: 340px;
+  color: #f3f4f6;
+}
+
+.panel h2 .tip {
+  color: var(--muted);
 }

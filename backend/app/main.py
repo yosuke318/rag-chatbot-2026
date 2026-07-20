@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import anthropic
 import voyageai.error
@@ -11,7 +12,14 @@ from fastapi.responses import JSONResponse
 from app.db import init_db
 from app.ingest import ingest_text
 from app.llm import MissingAPIKey, generate_answer
-from app.retrieval import hybrid_search, search_stages
+from app.config import RETRIEVERS_DEFAULT
+from app.retrieval import (
+    UnknownRetriever,
+    hybrid_search,
+    FUSION_PARAM_SPECS,
+    retriever_infos,
+    search_stages,
+)
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -19,6 +27,7 @@ from app.schemas import (
     HealthResponse,
     IngestRequest,
     IngestResponse,
+    RetrieversResponse,
     SearchResponse,
 )
 
@@ -49,7 +58,7 @@ async def missing_api_key(request: Request, exc: Exception):
     name = str(exc)
     which = "生成API（Claude）" if "ANTHROPIC" in name else "埋め込みAPI（Voyage）"
     extra = (
-        "検索だけなら /search（Claude不要）が使えます。"
+        "検索の内訳だけなら /search が使えます（Anthropicキー不要・Voyageキーは必要）。"
         if "ANTHROPIC" in name
         else ""
     )
@@ -58,6 +67,17 @@ async def missing_api_key(request: Request, exc: Exception):
         "missing_api_key",
         f"{which}のAPIキーが未設定です。",
         f"backend/.env の {name} を設定して再起動してください。{extra}",
+        "",
+    )
+
+
+@app.exception_handler(UnknownRetriever)
+async def unknown_retriever(request: Request, exc: Exception):
+    return _error(
+        400,
+        "unknown_retriever",
+        "指定された検索手法が不正です。",
+        str(exc),
         "",
     )
 
@@ -125,7 +145,7 @@ async def anthropic_auth(request: Request, exc: Exception):
         "anthropic_auth",
         "生成API（Claude）の認証に失敗しました。回答生成にはAnthropicのAPIキーが必要です。",
         "backend/.env の ANTHROPIC_API_KEY を設定してください。"
-        "検索だけなら /search（Claude不要）が使えます。",
+        "検索の内訳だけなら /search が使えます（Anthropicキー不要・Voyageキーは必要）。",
         str(exc),
     )
 
@@ -163,14 +183,52 @@ def ingest(req: IngestRequest):
     return {"source": req.source, **result}
 
 
-@app.get("/search", response_model=SearchResponse, responses=_ERRORS)
-def search(q: str, top_n: int = 4):
-    """検索の各段階を返す（Claudeを呼ばない = Anthropicキー不要）。
+@app.get("/retrievers", response_model=RetrieversResponse)
+def retrievers_list():
+    """選択可能な検索手法の一覧。UIのチェックボックス生成に使う。"""
+    return {
+        "available": retriever_infos(),
+        "default": RETRIEVERS_DEFAULT,
+        "fusion_params": FUSION_PARAM_SPECS,
+    }
 
-    例: GET /search?q=有給は入社何ヶ月で何日？
-    ベクトル/字面それぞれの順位と、RRF融合後のスコアが見える。
+
+@app.get("/search", response_model=SearchResponse, responses=_ERRORS)
+def search(
+    q: str,
+    top_n: int = 4,
+    retrievers: Optional[str] = None,
+    rrf_k: Optional[int] = None,
+    trgm_min_similarity: Optional[float] = None,
+    bm25_k1: Optional[float] = None,
+    bm25_b: Optional[float] = None,
+):
+    """検索の各段階を返す。
+
+    Claude(Anthropic)は呼ばないのでANTHROPIC_API_KEYは不要。
+    ただし質問のベクトル化に埋め込みAPIを使うためVOYAGE_API_KEYは必要。
+
+    - GET /search?q=... … 設定の既定の手法で検索
+    - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
+    - GET /search?q=...&bm25_k1=2.0&bm25_b=0.3&rrf_k=10 … 定数を変えて挙動を比較
+      （指定しなかった定数は既定値が使われる）
+
+    各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
     """
-    return search_stages(q, top_n=top_n)
+    names = (
+        [n.strip() for n in retrievers.split(",") if n.strip()] if retrievers else None
+    )
+    # None のものは落として、その手法の既定値が使われるようにする
+    raw = {
+        "trgm": {"min_similarity": trgm_min_similarity},
+        "bm25": {"k1": bm25_k1, "b": bm25_b},
+    }
+    params = {
+        r: {k: v for k, v in vals.items() if v is not None} for r, vals in raw.items()
+    }
+    return search_stages(
+        q, top_n=top_n, retrievers=names, params=params, rrf_k=rrf_k
+    )
 
 
 @app.post("/chat", response_model=ChatResponse, responses=_ERRORS)

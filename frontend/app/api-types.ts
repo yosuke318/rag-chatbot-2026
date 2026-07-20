@@ -38,6 +38,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/retrievers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrievers List
+         * @description 選択可能な検索手法の一覧。UIのチェックボックス生成に使う。
+         */
+        get: operations["retrievers_list_retrievers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -49,8 +69,12 @@ export interface paths {
          * Search
          * @description 検索の各段階を返す（Claudeを呼ばない = Anthropicキー不要）。
          *
-         *     例: GET /search?q=有給は入社何ヶ月で何日？
-         *     ベクトル/字面それぞれの順位と、RRF融合後のスコアが見える。
+         *     - GET /search?q=... … 設定の既定の手法で検索
+         *     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
+         *     - GET /search?q=...&bm25_k1=2.0&bm25_b=0.3&rrf_k=10 … 定数を変えて挙動を比較
+         *       （指定しなかった定数は既定値が使われる）
+         *
+         *     各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
          */
         get: operations["search_search_get"];
         put?: never;
@@ -82,6 +106,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AppliedParams
+         * @description 実際に計算へ使われた値（未指定なら既定が入る）。
+         */
+        AppliedParams: {
+            /** Rrf K */
+            rrf_k: number;
+            /** Retrievers */
+            retrievers: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+        };
         /** ChatRequest */
         ChatRequest: {
             /**
@@ -99,6 +137,32 @@ export interface components {
              * @description 根拠に使ったチャンクの出典（重複排除済み）
              */
             sources: string[];
+        };
+        /**
+         * Contribution
+         * @description 融合結果1件に対する、各検索手法からの寄与。
+         *
+         *     RRFは「どの手法が何位に置いたか」の足し合わせなので、
+         *     手法ごとの内訳を持たせて寄与を追えるようにする。
+         */
+        Contribution: {
+            /** Retriever */
+            retriever: string;
+            /**
+             * Rank
+             * @description null = この手法のリストに出てこなかった
+             */
+            rank: number | null;
+            /**
+             * Metric Value
+             * @description その手法の生スコア
+             */
+            metric_value: number | null;
+            /**
+             * Rrf Term
+             * @description この手法が寄与したRRFスコア 1/(k + 順位 + 1)
+             */
+            rrf_term: number | null;
         };
         /**
          * ErrorResponse
@@ -141,23 +205,14 @@ export interface components {
             source: string;
             /**
              * Score
-             * @description RRFスコア。Σ 1/(60 + 各検索での順位)
+             * @description RRFスコア。各手法の rrf_term の合計
              */
             score: number;
             /**
-             * Vector Rank
-             * @description null = ベクトル検索に出てこなかった
+             * Contributions
+             * @description 検索手法ごとの内訳。手法を増やすと要素が増える
              */
-            vector_rank: number | null;
-            /**
-             * Lexical Rank
-             * @description null = 字面検索に出てこなかった
-             */
-            lexical_rank: number | null;
-            /** Cosine Similarity */
-            cosine_similarity: number | null;
-            /** Trgm Similarity */
-            trgm_similarity: number | null;
+            contributions: components["schemas"]["Contribution"][];
             /** Preview */
             preview: string;
         };
@@ -205,10 +260,122 @@ export interface components {
             replaced: number;
         };
         /**
-         * LexicalHit
-         * @description 字面検索（名詞のトライグラム一致）のヒット。
+         * ParamSpec
+         * @description 調整可能なパラメータの仕様。UIの入力欄はこれを元に生成する。
          */
-        LexicalHit: {
+        ParamSpec: {
+            /** Name */
+            name: string;
+            /** Label */
+            label: string;
+            /** Default */
+            default: number;
+            /** Min */
+            min: number;
+            /** Max */
+            max: number;
+            /** Step */
+            step: number;
+            /** Description */
+            description: string;
+        };
+        /**
+         * RetrieverInfo
+         * @description 選択可能な検索手法（UIの切り替え用）。
+         */
+        RetrieverInfo: {
+            /** Name */
+            name: string;
+            /** Label */
+            label: string;
+            /** Metric Label */
+            metric_label: string;
+            /**
+             * Params
+             * @description この手法で調整できる定数（空配列もあり）
+             */
+            params: components["schemas"]["ParamSpec"][];
+        };
+        /**
+         * RetrieverStage
+         * @description 検索手法1つ分のランキング（融合前）。
+         */
+        RetrieverStage: {
+            /**
+             * Name
+             * @description 手法の識別子: vector / trgm / bm25
+             */
+            name: string;
+            /**
+             * Label
+             * @description 表示名
+             */
+            label: string;
+            /**
+             * Metric Label
+             * @description metric_value の表示名（cos類似度 等）
+             */
+            metric_label: string;
+            /** Hits */
+            hits: components["schemas"]["StageHit"][];
+        };
+        /**
+         * RetrieversResponse
+         * @description 選択可能な検索手法と、設定されている既定。
+         */
+        RetrieversResponse: {
+            /** Available */
+            available: components["schemas"]["RetrieverInfo"][];
+            /**
+             * Default
+             * @description 環境変数 RETRIEVERS の値
+             */
+            default: string[];
+            /**
+             * Fusion Params
+             * @description 融合そのもののパラメータ（RRF k）
+             */
+            fusion_params: components["schemas"]["ParamSpec"][];
+        };
+        /**
+         * SearchResponse
+         * @description 検索の各段階（Claudeを呼ばない）。
+         *
+         *     検索手法の本数に依らない形にしてあるので、BM25等を足しても構造は変わらない。
+         */
+        SearchResponse: {
+            /** Question */
+            question: string;
+            /**
+             * Retrievers
+             * @description この検索で使った手法の並び
+             */
+            retrievers: string[];
+            /**
+             * Available Retrievers
+             * @description 指定可能な手法の一覧。/search?retrievers=a,b で選べる
+             */
+            available_retrievers: components["schemas"]["RetrieverInfo"][];
+            /** @description この検索で実際に使われた定数 */
+            applied_params: components["schemas"]["AppliedParams"];
+            /**
+             * Lexical Min Similarity
+             * @description これ未満の字面ヒットはRRFに渡さない閾値（trgm手法用・後方互換）
+             */
+            lexical_min_similarity: number;
+            /**
+             * Stages
+             * @description 融合前の各手法のランキング
+             */
+            stages: components["schemas"]["RetrieverStage"][];
+            /** Fused */
+            fused: components["schemas"]["FusedHit"][];
+        };
+        /**
+         * StageHit
+         * @description ある検索手法1つの中でのヒット。手法によらず同じ形にしてある。
+         */
+        StageHit: {
             /** Rank */
             rank: number;
             /** Id */
@@ -216,31 +383,12 @@ export interface components {
             /** Source */
             source: string;
             /**
-             * Trgm Similarity
-             * @description 0〜1。1に近いほど字面が一致
+             * Metric Value
+             * @description その手法が計算した生スコア（cos類似度 / 字面類似度 / BM25スコア）
              */
-            trgm_similarity: number;
+            metric_value: number;
             /** Preview */
             preview: string;
-        };
-        /**
-         * SearchResponse
-         * @description 検索の各段階（Claudeを呼ばない）。
-         */
-        SearchResponse: {
-            /** Question */
-            question: string;
-            /**
-             * Lexical Min Similarity
-             * @description これ未満の字面ヒットはRRFに渡さない閾値
-             */
-            lexical_min_similarity: number;
-            /** Vector Search */
-            vector_search: components["schemas"]["VectorHit"][];
-            /** Lexical Search */
-            lexical_search: components["schemas"]["LexicalHit"][];
-            /** Fused */
-            fused: components["schemas"]["FusedHit"][];
         };
         /** ValidationError */
         ValidationError: {
@@ -254,27 +402,6 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
-        };
-        /**
-         * VectorHit
-         * @description ベクトル検索（意味の近さ）のヒット。
-         */
-        VectorHit: {
-            /** Rank */
-            rank: number;
-            /** Id */
-            id: number;
-            /** Source */
-            source: string;
-            /**
-             * Cosine Similarity
-             * @description 1に近いほど意味が近い（1 - コサイン距離）
-             */
-            cosine_similarity: number;
-            /** Cosine Distance */
-            cosine_distance: number;
-            /** Preview */
-            preview: string;
         };
     };
     responses: never;
@@ -365,11 +492,36 @@ export interface operations {
             };
         };
     };
+    retrievers_list_retrievers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrieversResponse"];
+                };
+            };
+        };
+    };
     search_search_get: {
         parameters: {
             query: {
                 q: string;
                 top_n?: number;
+                retrievers?: string | null;
+                rrf_k?: number | null;
+                trgm_min_similarity?: number | null;
+                bm25_k1?: number | null;
+                bm25_b?: number | null;
             };
             header?: never;
             path?: never;

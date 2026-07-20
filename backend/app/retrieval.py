@@ -14,19 +14,25 @@
 from __future__ import annotations
 
 from app.config import (
+    BM25_B,
+    BM25_K1,
     LEXICAL_MIN_SIMILARITY,
     RERANK_CANDIDATES,
+    RETRIEVERS_DEFAULT,
     TOP_K,
     USE_RERANK,
 )
 from app.db import get_conn
-from app.keywords import noun_text
+from app.keywords import extract_nouns, noun_text
 from app.llm import embed_query, rank_by_relevance
 
 CANDIDATES = 20  # 各検索が融合前に返す候補数
+RRF_K = 60       # RRFの平滑化定数（順位差をなだらかにする）
 
 
-def vector_search(question: str, k: int = CANDIDATES) -> list[dict]:
+def vector_search(
+    question: str, k: int = CANDIDATES, params: dict | None = None
+) -> list[dict]:
     """意味の近さ（コサイン距離）で上位k件。
 
     pgvector の `<=>` はコサイン**距離**（0=完全一致、大きいほど遠い）。
@@ -58,9 +64,7 @@ def vector_search(question: str, k: int = CANDIDATES) -> list[dict]:
 
 
 def lexical_search(
-    question: str,
-    k: int = CANDIDATES,
-    min_similarity: float = LEXICAL_MIN_SIMILARITY,
+    question: str, k: int = CANDIDATES, params: dict | None = None
 ) -> list[dict]:
     """字面の一致（トライグラム類似度）で上位k件。閾値未満は返さない。
 
@@ -77,6 +81,8 @@ def lexical_search(
     全件が閾値未満のときは字面リストが空になり、RRFは自然とベクトルの順位だけで
     決まる ＝ 分岐を書かずに「cos類似度のみで評価」が成立する。
     """
+    min_similarity = (params or {}).get("min_similarity", LEXICAL_MIN_SIMILARITY)
+
     query_nouns = noun_text(question)
     if not query_nouns:  # 名詞が1つも無い質問は字面検索を行わない
         return []
@@ -105,8 +111,110 @@ def lexical_search(
     ]
 
 
+def bm25_search(
+    question: str, k: int = CANDIDATES, params: dict | None = None
+) -> list[dict]:
+    """BM25 で上位k件。名詞列(content_nouns)を単語列とみなして計算する。
+
+    score(D,Q) = Σ_t  IDF(t) · [ f(t,D)·(k1+1) ] / [ f(t,D) + k1·(1 - b + b·|D|/avgdl) ]
+    IDF(t)     = ln( (N - n(t) + 0.5) / (n(t) + 0.5) + 1 )
+
+      f(t,D) : 文書D中での語tの出現回数（TF）
+      n(t)   : 語tを含む文書数            N : 全文書数
+      |D|    : 文書Dの語数               avgdl : 平均語数
+
+    トライグラムとの決定的な違いは IDF。「どの文書にも出る語」を軽く、
+    「珍しい語」を重く扱うので、"会社"より"有給"の一致を高く評価できる。
+
+    ※ PostgreSQLの ts_rank は IDF を持たないため使わず、式をそのままSQLで書いている。
+      毎回コーパス統計を計算するので大規模では重い（本番は事前集計テーブルにする）。
+    """
+    p = params or {}
+    k1 = p.get("k1", BM25_K1)
+    b = p.get("b", BM25_B)
+
+    terms = extract_nouns(question)
+    if not terms:
+        return []
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            WITH
+            -- 質問の名詞（重複除去）
+            q AS (
+                SELECT DISTINCT term FROM unnest(%s::text[]) AS term
+            ),
+            -- 各チャンクの名詞を配列に。空文字は NULL にして語数0扱いにする
+            doc AS (
+                SELECT c.id,
+                       string_to_array(
+                           NULLIF(TRIM(COALESCE(c.content_nouns, '')), ''), ' '
+                       ) AS nouns
+                FROM chunks c
+            ),
+            -- |D| : 各文書の語数
+            lens AS (
+                SELECT id, COALESCE(cardinality(nouns), 0)::float AS doc_len FROM doc
+            ),
+            -- N と avgdl : コーパス全体の統計
+            stats AS (
+                SELECT count(*)::float AS n_docs, avg(doc_len) AS avgdl FROM lens
+            ),
+            -- f(t,D) : 質問に出てくる語だけTFを数える
+            tf AS (
+                SELECT d.id AS chunk_id, tok AS term, count(*)::float AS f
+                FROM doc d, unnest(d.nouns) AS tok
+                WHERE tok IN (SELECT term FROM q)
+                GROUP BY d.id, tok
+            ),
+            -- n(t) : その語を含む文書数
+            df AS (
+                SELECT term, count(DISTINCT chunk_id)::float AS n_t FROM tf GROUP BY term
+            ),
+            -- IDF(t)
+            idf AS (
+                SELECT df.term,
+                       ln(((s.n_docs - df.n_t + 0.5) / (df.n_t + 0.5)) + 1) AS idf
+                FROM df CROSS JOIN stats s
+            ),
+            -- 語ごとのスコアを文書単位で合算
+            scored AS (
+                SELECT tf.chunk_id,
+                       sum(
+                           i.idf * (tf.f * (%s + 1))
+                           / (tf.f + %s * (1 - %s + %s * l.doc_len / NULLIF(s.avgdl, 0)))
+                       ) AS bm25
+                FROM tf
+                JOIN idf i ON i.term = tf.term
+                JOIN lens l ON l.id = tf.chunk_id
+                CROSS JOIN stats s
+                GROUP BY tf.chunk_id
+            )
+            SELECT c.id, c.content, d.source, sc.bm25
+            FROM scored sc
+            JOIN chunks c ON c.id = sc.chunk_id
+            JOIN documents d ON d.id = c.document_id
+            WHERE sc.bm25 > 0
+            ORDER BY sc.bm25 DESC
+            LIMIT %s
+            """,
+            (terms, k1, k1, b, b, k),
+        ).fetchall()
+
+    return [
+        {
+            "id": r[0],
+            "content": r[1],
+            "source": r[2],
+            "bm25_score": float(r[3]),
+        }
+        for r in rows
+    ]
+
+
 def _rrf_scores(
-    ranked_lists: list[list[dict]], k: int = 60
+    ranked_lists: list[list[dict]], k: int = RRF_K
 ) -> list[tuple[dict, float, dict[int, int]]]:
     """RRFの計算本体。(アイテム, 合計スコア, {リスト番号: 順位}) をスコア降順で返す。
 
@@ -129,7 +237,7 @@ def _rrf_scores(
     return [(items[cid], scores[cid], ranks[cid]) for cid in ordered_ids]
 
 
-def reciprocal_rank_fusion(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
+def reciprocal_rank_fusion(ranked_lists: list[list[dict]], k: int = RRF_K) -> list[dict]:
     """複数のランキングを RRF で融合し、スコア降順のアイテム列を返す。"""
     return [item for item, _score, _ranks in _rrf_scores(ranked_lists, k)]
 
@@ -149,20 +257,147 @@ def llm_rerank(question: str, candidates: list[dict], top_n: int = TOP_K) -> lis
     return [candidates[i] for i in order[:top_n]]
 
 
-def hybrid_search(
-    question: str, top_n: int = TOP_K, rerank: bool | None = None
-) -> list[dict]:
-    """ベクトル検索 + 字面検索 を RRF で融合。rerank=True ならLLMで再並べ替え。
 
-    rerank を省略すると設定(USE_RERANK)に従う。有り/無しを切り替えて
-    評価で比較できるようにしている。
+# --- 検索手法のレジストリ -----------------------------------------------------
+# 手法を足すときはここに1行増やすだけ。RRFは可変長リストを受けるので変更不要。
+RETRIEVERS = {
+    "vector": vector_search,
+    "trgm": lexical_search,
+    "bm25": bm25_search,
+}
+
+# 各手法の「生スコア」がどのキーに入っているか
+METRIC_KEY = {
+    "vector": "cosine_similarity",
+    "trgm": "trgm_similarity",
+    "bm25": "bm25_score",
+}
+
+RETRIEVER_META = {
+    "vector": {"label": "ベクトル検索（意味）", "metric_label": "cos類似度"},
+    "trgm": {"label": "字面検索（名詞トライグラム）", "metric_label": "字面類似度"},
+    "bm25": {"label": "BM25全文検索（名詞）", "metric_label": "BM25スコア"},
+}
+
+
+# --- 調整可能なパラメータの仕様 -----------------------------------------------
+# UIのフォームはこの定義から生成する（画面側に定数をハードコードしない）。
+PARAM_SPECS: dict[str, list[dict]] = {
+    "vector": [],  # コサイン類似度に調整可能な定数はない
+    "trgm": [
+        {
+            "name": "min_similarity",
+            "label": "閾値",
+            "default": LEXICAL_MIN_SIMILARITY,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.001,
+            "description": "これ未満の一致はRRFに票を投じない。上げるほどノイズ票が減る",
+        },
+    ],
+    "bm25": [
+        {
+            "name": "k1",
+            "label": "k1（TF飽和）",
+            "default": BM25_K1,
+            "min": 0.0,
+            "max": 3.0,
+            "step": 0.1,
+            "description": "大きいほど「出現回数が多い」ことを強く評価する（定番 1.2〜2.0）",
+        },
+        {
+            "name": "b",
+            "label": "b（長さ正規化）",
+            "default": BM25_B,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "description": "1に近いほど長い文書を不利にする。0で文書長を無視（定番 0.75）",
+        },
+    ],
+}
+
+# 融合そのもののパラメータ（手法によらない）
+FUSION_PARAM_SPECS: list[dict] = [
+    {
+        "name": "rrf_k",
+        "label": "RRF k",
+        "default": RRF_K,
+        "min": 1.0,
+        "max": 300.0,
+        "step": 1.0,
+        "description": "順位差を平滑化する定数。大きいほど1位と2位の差が縮まる",
+    },
+]
+
+
+def default_params(name: str) -> dict:
+    """その手法の既定パラメータ。"""
+    return {spec["name"]: spec["default"] for spec in PARAM_SPECS.get(name, [])}
+
+
+def retriever_infos() -> list[dict]:
+    """選択可能な手法の一覧（UIのチェックボックス用）。"""
+    return [
+        {
+            "name": n,
+            "label": m["label"],
+            "metric_label": m["metric_label"],
+            "params": PARAM_SPECS.get(n, []),
+        }
+        for n, m in RETRIEVER_META.items()
+    ]
+
+
+class UnknownRetriever(ValueError):
+    """未知の検索手法が指定された（/search?retrievers=... のtypo等）。"""
+
+
+def resolve_retrievers(names: list[str] | None = None) -> list[str]:
+    """使用する手法名を確定し、妥当性を検証する。
+
+    names=None（未指定）なら設定の既定（RETRIEVERS_DEFAULT）を使う。
+    names=[]（明示的に空）はエラーにする。UIで全ての手法のチェックを外したときに
+    黙って既定へ戻して結果を出すと混乱するため、None と [] を区別している。
+    未知の名前はここで弾き、SQLを投げる前にエラーにする。
+    """
+    resolved = list(RETRIEVERS_DEFAULT) if names is None else [n for n in names if n]
+    if not resolved:
+        raise UnknownRetriever(
+            f"検索手法が1つも指定されていません / 利用可能: {', '.join(RETRIEVERS)}"
+        )
+    unknown = [n for n in resolved if n not in RETRIEVERS]
+    if unknown:
+        raise UnknownRetriever(
+            f"未知の検索手法: {', '.join(unknown)} / 利用可能: {', '.join(RETRIEVERS)}"
+        )
+    # 同じ手法を2度渡すと票が二重に入るため除去（順序は保つ）
+    return list(dict.fromkeys(resolved))
+
+
+def hybrid_search(
+    question: str,
+    top_n: int = TOP_K,
+    rerank: bool | None = None,
+    retrievers: list[str] | None = None,
+    params: dict[str, dict] | None = None,
+    rrf_k: int | None = None,
+) -> list[dict]:
+    """指定した検索手法を RRF で融合。rerank=True ならLLMで再並べ替え。
+
+    retrievers 未指定なら設定の既定を使う。手法を増やしても
+    reciprocal_rank_fusion は可変長リストを受けるので変更不要。
+    rerank を省略すると設定(USE_RERANK)に従う。
     """
     if rerank is None:
         rerank = USE_RERANK
 
-    vec = vector_search(question)
-    lex = lexical_search(question)
-    fused = reciprocal_rank_fusion([vec, lex])
+    names = resolve_retrievers(retrievers)
+    p = params or {}
+    fused = reciprocal_rank_fusion(
+        [RETRIEVERS[n](question, params=p.get(n)) for n in names],
+        k=rrf_k if rrf_k is not None else RRF_K,
+    )
 
     if rerank:
         # 融合上位を少し多めにリランク対象へ渡し、そこから top_n を選ばせる
@@ -175,70 +410,93 @@ def _preview(text: str, n: int = 80) -> str:
     return text[:n] + ("…" if len(text) > n else "")
 
 
-def search_stages(question: str, top_n: int = TOP_K, show: int = 5) -> dict:
-    """検索の各段階を返す（学習・デバッグ用。★Claudeを呼ばないのでAnthropicキー不要★）
+def search_stages(
+    question: str,
+    top_n: int = TOP_K,
+    retrievers: list[str] | None = None,
+    params: dict[str, dict] | None = None,
+    rrf_k: int | None = None,
+    show: int = 5,
+) -> dict:
+    """検索の各段階を返す（学習・デバッグ用）。
 
-    ベクトル検索の順位 / 字面検索の順位 / 融合後のスコアを並べて返すので、
-    「両方の検索が上位に挙げたチャンクがRRFで上に来る」挙動を実データで確認できる。
+    ★Claudeを呼ばないのでANTHROPIC_API_KEYは不要★
+    ただし質問のベクトル化で埋め込みAPIを使うためVOYAGE_API_KEYは必要
+    （vector を外して trgm/bm25 だけにすれば埋め込みも呼ばない）。
+
+    検索手法の本数に依らない形で返す。手法を足しても構造は変わらない。
+    fused の contributions に「どの手法が何位に置き、いくら寄与したか」が入る。
     """
-    vec = vector_search(question)
-    lex = lexical_search(question)
-    scored = _rrf_scores([vec, lex])  # リスト番号 0=ベクトル, 1=字面
+    names = resolve_retrievers(retrievers)
+    given = params or {}
+    # 未指定のパラメータは既定で埋める（実際に使われた値をそのまま返せるように）
+    effective = {n: {**default_params(n), **(given.get(n) or {})} for n in names}
+    effective_rrf_k = int(rrf_k if rrf_k is not None else RRF_K)
 
-    # 融合後の行に「元の生スコア」を戻すための引き当て表
-    # （_rrf_scores のitemは後勝ちで上書きされるため、ここで各リストから取り直す）
-    vec_by_id = {h["id"]: h for h in vec}
-    lex_by_id = {h["id"]: h for h in lex}
+    lists = [RETRIEVERS[n](question, params=effective[n]) for n in names]
+    scored = _rrf_scores(lists, k=effective_rrf_k)
 
-    def rounded(value: float | None, digits: int = 4) -> float | None:
-        return None if value is None else round(value, digits)
+    # 融合後の行から各手法の生スコアを引くための索引
+    by_id = [{h["id"]: h for h in lst} for lst in lists]
 
-    return {
-        "question": question,
-        # 字面リストが空 = 全候補が閾値未満 → 実質ベクトル検索のみで順位が決まる
-        "lexical_min_similarity": LEXICAL_MIN_SIMILARITY,
-        "vector_search": [
-            {
-                "rank": i,
-                "id": h["id"],
-                "source": h["source"],
-                "cosine_similarity": rounded(h["cosine_similarity"]),
-                "cosine_distance": rounded(h["cosine_distance"]),
-                "preview": _preview(h["content"]),
-            }
-            for i, h in enumerate(vec[:show])
-        ],
-        "lexical_search": [
-            {
-                "rank": i,
-                "id": h["id"],
-                "source": h["source"],
-                "trgm_similarity": rounded(h["trgm_similarity"]),
-                "preview": _preview(h["content"]),
-            }
-            for i, h in enumerate(lex[:show])
-        ],
-        "fused": [
+    def metric_of(list_index: int, chunk_id: int) -> float | None:
+        hit = by_id[list_index].get(chunk_id)
+        if hit is None:
+            return None
+        return round(float(hit[METRIC_KEY[names[list_index]]]), 4)
+
+    stages = [
+        {
+            "name": name,
+            "label": RETRIEVER_META[name]["label"],
+            "metric_label": RETRIEVER_META[name]["metric_label"],
+            "hits": [
+                {
+                    "rank": i,
+                    "id": h["id"],
+                    "source": h["source"],
+                    "metric_value": round(float(h[METRIC_KEY[name]]), 4),
+                    "preview": _preview(h["content"]),
+                }
+                for i, h in enumerate(lst[:show])
+            ],
+        }
+        for name, lst in zip(names, lists)
+    ]
+
+    fused = []
+    for i, (item, score, ranks) in enumerate(scored[:top_n]):
+        contributions = []
+        for li, name in enumerate(names):
+            rank = ranks.get(li)  # None = この手法のリストに出てこなかった
+            contributions.append(
+                {
+                    "retriever": name,
+                    "rank": rank,
+                    "metric_value": metric_of(li, item["id"]),
+                    # この手法が RRF スコアに足した分
+                    "rrf_term": round(1.0 / (effective_rrf_k + rank + 1), 5)
+                    if rank is not None
+                    else None,
+                }
+            )
+        fused.append(
             {
                 "rank": i,
                 "id": item["id"],
                 "source": item["source"],
                 "score": round(score, 5),
-                "vector_rank": ranks.get(0),  # None = そのリストには出なかった
-                "lexical_rank": ranks.get(1),
-                # 各検索が出した「生の類似度」。出てこなかった検索側は None
-                "cosine_similarity": rounded(
-                    vec_by_id[item["id"]]["cosine_similarity"]
-                    if item["id"] in vec_by_id
-                    else None
-                ),
-                "trgm_similarity": rounded(
-                    lex_by_id[item["id"]]["trgm_similarity"]
-                    if item["id"] in lex_by_id
-                    else None
-                ),
+                "contributions": contributions,
                 "preview": _preview(item["content"]),
             }
-            for i, (item, score, ranks) in enumerate(scored[:top_n])
-        ],
+        )
+
+    return {
+        "question": question,
+        "retrievers": names,
+        "available_retrievers": retriever_infos(),
+        "applied_params": {"rrf_k": effective_rrf_k, "retrievers": effective},
+        "lexical_min_similarity": LEXICAL_MIN_SIMILARITY,
+        "stages": stages,
+        "fused": fused,
     }

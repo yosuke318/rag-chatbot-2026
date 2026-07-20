@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 // ★型はバックエンドの OpenAPI スキーマから自動生成したものを使う★
 //   再生成: npm run gen:types （backend が :8000 で起動している状態で）
@@ -9,8 +9,38 @@ import type { components } from "./api-types";
 
 type ChatResponse = components["schemas"]["ChatResponse"];
 type SearchStages = components["schemas"]["SearchResponse"];
-type Fused = components["schemas"]["FusedHit"];
 type ApiError = components["schemas"]["ErrorResponse"];
+type RetrieverInfo = components["schemas"]["RetrieverInfo"];
+type ParamSpec = components["schemas"]["ParamSpec"];
+
+// 検索手法ごとの説明（表ヘッダーのツールチップ）。手法を足したらここに1件追加する。
+const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
+  vector: (
+    <>
+      質問と文書のベクトルが<strong>どれだけ同じ向きか</strong>。1に近いほど意味が近い。
+      <br />
+      <br />
+      pgvectorの <code>&lt;=&gt;</code> が返すコサイン<em>距離</em>を{" "}
+      <code>1 - 距離</code> で類似度に直した値。言葉が違っても意味が近い文書を拾える。
+    </>
+  ),
+  trgm: (
+    <>
+      <strong>名詞だけ</strong>を取り出して、文字トライグラム（3文字組）の重なりを見た値。
+      0〜1で1に近いほど字面が一致。
+      <br />
+      <br />
+      式は <code>|T(A)∩T(B)| / |T(A)∪T(B)|</code>。分母に文書側の長さが効くため、
+      長い文書ほど値が下がる（名詞に絞ったのはこの分母を小さくするため）。
+    </>
+  ),
+  bm25: (
+    <>
+      単語の一致を<strong>希少度(IDF)で重み付け</strong>したスコア。
+      どの文書にも出る語より、珍しい語の一致を高く評価する。
+    </>
+  ),
+};
 
 // UI内部だけで使う型（APIには存在しない）
 type Message = { role: "user" | "bot"; text: string; sources?: string[] };
@@ -27,9 +57,9 @@ async function errorMessage(res: Response): Promise<string | null> {
 }
 
 // 見出しにカーソルを当てると説明が出る。tabIndexでキーボード操作でも開く。
-function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+function Tip({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
-    <span className="tip" tabIndex={0}>
+    <span className={label ? "tip" : "tip tip-bare"} tabIndex={0}>
       {label}
       <span className="tip-mark">?</span>
       <span className="tip-body">{children}</span>
@@ -48,6 +78,43 @@ export default function Home() {
   const [stages, setStages] = useState<SearchStages | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
+  // 選択可能な検索手法（起動時に /retrievers から取得）
+  const [available, setAvailable] = useState<RetrieverInfo[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [fusionParams, setFusionParams] = useState<ParamSpec[]>([]);
+  // 入力値。空文字なら送らない = バックエンドの既定が使われる
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    fetch("/api/backend/retrievers")
+      .then((r) => r.json())
+      .then((d) => {
+        setAvailable(d.available);
+        setSelected(d.default); // 初期選択は .env の RETRIEVERS
+        setFusionParams(d.fusion_params);
+        // 入力欄に既定値を入れておく。空欄のままだとステッパー(▲▼)が
+        // 既定値からの増減にならないため。
+        const defaults: Record<string, string> = {};
+        for (const sp of d.fusion_params) defaults[sp.name] = String(sp.default);
+        for (const r of d.available)
+          for (const sp of r.params)
+            defaults[`${r.name}_${sp.name}`] = String(sp.default);
+        setParamValues(defaults);
+      })
+      .catch(() => {});
+  }, []);
+
+  function toggleRetriever(name: string) {
+    setSelected((prev) => {
+      const next = prev.includes(name)
+        ? prev.filter((n) => n !== name)
+        : [...prev, name];
+      // 選択した順ではなく、常にチェックボックスの並び順に揃える。
+      // これを省くと「あとから入れ直した手法」が表の右端に来て、
+      // チェックボックスの並びと列順がズレる。
+      return available.map((r) => r.name).filter((n) => next.includes(n));
+    });
+  }
 
   // --- チャットパネル（/chat = 質問フロー）---
   const [messages, setMessages] = useState<Message[]>([]);
@@ -86,7 +153,13 @@ export default function Home() {
     setSearching(true);
     setSearchError("");
     try {
-      const res = await fetch(`/api/backend/search?q=${encodeURIComponent(q)}`);
+      const params = new URLSearchParams({ q });
+      if (selected.length > 0) params.set("retrievers", selected.join(","));
+      // 空欄のものは送らず、バックエンドの既定値を使わせる
+      for (const [key, value] of Object.entries(paramValues)) {
+        if (value !== "") params.set(key, value);
+      }
+      const res = await fetch(`/api/backend/search?${params}`);
       const err = await errorMessage(res);
       if (err) {
         setSearchError(err); // レート制限・認証エラーなどをそのまま表示
@@ -140,9 +213,25 @@ export default function Home() {
         文書を登録し、検索の内訳（cos類似度 / 字面類似度 / RRF融合）を確かめてから質問できる。
       </p>
 
+      {/* どの操作にどのAPIキーが要るか。混同しやすいのでここで一度だけ説明する */}
+      <div className="keys-note">
+        <strong>APIキーの要否</strong>
+        <ul>
+          <li>
+            <code>VOYAGE_API_KEY</code>（埋め込み）… <b>登録と検索の両方で必要</b>。
+            文書も質問も同じモデルでベクトル化するため、検索のたびに1回呼ぶ
+            （消費するのは質問文ぶんの数十トークン）
+          </li>
+          <li>
+            <code>ANTHROPIC_API_KEY</code>（生成）… <b>回答生成とLLMリランクのみ</b>。
+            検索の内訳を見るだけなら不要
+          </li>
+        </ul>
+      </div>
+
       {/* 書き込みフロー: text → chunk → embed → pgvector */}
       <section className="panel">
-        <h2>① 文書を登録（/ingest）</h2>
+        <h2>① 文書を登録（/ingest・Voyageキー必要）</h2>
         <input
           placeholder="文書名（例: 有給休暇.txt）"
           value={source}
@@ -161,23 +250,135 @@ export default function Home() {
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}
       <section className="panel">
-        <h2>② 検索の内訳を見る（/search・Claude不要）</h2>
+        <h2>
+          <Tip label="② 検索の内訳を見る">
+            ここでは<strong>ハイブリッド検索</strong>を行う。
+            性質の違う複数の検索を同時に走らせ、結果を1つの順位に統合する方式。
+            <br />
+            <br />
+            <strong>1.</strong> 下のチェックボックスで<strong>選んだ手法だけ</strong>が実行される。
+            各手法は着眼点が違う（意味の近さ / 字面の一致 / 単語の希少度）ので、
+            それぞれ独立に別の順位を付ける。
+            <br />
+            <br />
+            <strong>2.</strong> それらの順位を<strong>RRF</strong>で融合し、1つの最終順位にまとめる。
+            複数の手法が揃って上位に挙げた文書ほど上に来る。
+            <br />
+            <br />
+            <strong>3.</strong> 融合後の<strong>上位ほど質問に合う文書</strong>と判断される。
+            1位が質問の内容と一致していれば検索は成功。
+            この上位チャンクが、そのまま ③ の回答生成で根拠として使われる。
+          </Tip>
+          （/search・Voyageキー必要 / Anthropicキー不要）
+        </h2>
         <div className="chat-input">
           <input
             placeholder="検索したい質問…（例: 有給は入社何ヶ月で何日？）"
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
           />
-          <button onClick={runSearch} disabled={searching || !searchQ.trim()}>
+          <button
+            onClick={runSearch}
+            disabled={searching || !searchQ.trim() || selected.length === 0}
+          >
             検索
           </button>
         </div>
+
+        {/* 使う検索手法を選ぶ。RRFは可変長なので何本でも融合できる */}
+        <div className="retriever-picker">
+          {available.map((r) => (
+            <span key={r.name} className="retriever-option">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={selected.includes(r.name)}
+                  onChange={() => toggleRetriever(r.name)}
+                />
+                {r.label}
+              </label>
+              {/* 手法の説明。表ヘッダーと同じ内容を使い回す */}
+              <Tip>{RETRIEVER_TIPS[r.name] ?? "この手法が計算した生スコア。"}</Tip>
+            </span>
+          ))}
+          {selected.length === 0 && (
+            <span className="picker-warn">手法を1つ以上選んでください</span>
+          )}
+        </div>
+
+        {/* 数式の定数。仕様(PARAM_SPECS)から生成するので画面に定数を持たない */}
+        {(() => {
+          const rows: { key: string; spec: ParamSpec; owner: string }[] = [];
+          // 融合(RRF)は手法によらず常に効くので先頭に固定
+          for (const sp of fusionParams) {
+            rows.push({ key: sp.name, spec: sp, owner: "RRF融合" });
+          }
+          for (const r of available) {
+            if (!selected.includes(r.name)) continue; // 選択中の手法だけ
+            for (const sp of r.params) {
+              rows.push({ key: `${r.name}_${sp.name}`, spec: sp, owner: r.label });
+            }
+          }
+          if (rows.length === 0) return null;
+          return (
+            <div className="param-grid">
+              {rows.map(({ key, spec, owner }) => (
+                <label key={key} className="param-item">
+                  <span className="param-label">
+                    <span className="param-owner">{owner}</span>
+                    <Tip label={spec.label}>{spec.description}</Tip>
+                  </span>
+                  <span className="param-input">
+                    <input
+                      type="number"
+                      min={spec.min}
+                      max={spec.max}
+                      step={spec.step}
+                      placeholder={`既定 ${spec.default}`}
+                      value={paramValues[key] ?? ""}
+                      onChange={(e) =>
+                        setParamValues((prev) => ({ ...prev, [key]: e.target.value }))
+                      }
+                    />
+                    {/* この項目だけ既定に戻す */}
+                    <button
+                      className="reset-one"
+                      title={`既定 ${spec.default} に戻す`}
+                      onClick={() =>
+                        setParamValues((prev) => ({
+                          ...prev,
+                          [key]: String(spec.default),
+                        }))
+                      }
+                      disabled={paramValues[key] === String(spec.default)}
+                    >
+                      ↺
+                    </button>
+                  </span>
+                </label>
+              ))}
+            </div>
+          );
+        })()}
 
         {searchError && <p className="error-note">{searchError}</p>}
 
         {stages && (
           <>
-            <h3 className="stage-title">RRF融合後（最終順位）</h3>
+            <h3 className="stage-title">
+              RRF融合後（最終順位）
+              <span className="applied">
+                rrf_k={stages.applied_params.rrf_k}
+                {Object.entries(stages.applied_params.retrievers).map(([r, ps]) =>
+                  Object.entries(ps).map(([k, v]) => (
+                    <span key={`${r}.${k}`}>
+                      {" · "}
+                      {r}.{k}={v}
+                    </span>
+                  )),
+                )}
+              </span>
+            </h3>
             <div className="table-wrap">
               <table>
                 <thead>
@@ -189,36 +390,35 @@ export default function Home() {
                         各検索での順位を <code>1/(60+順位)</code> に変換して足し合わせた値。
                         <br />
                         <br />
-                        使うのは<strong>順位だけ</strong>。だから右の cos類似度と字面類似度のように
-                        スケールがまるで違う指標でも公平に混ぜられる。
-                        両方の検索が上位に挙げたチャンクほど逆数が重ねて足され、高スコアになる。
+                        使うのは<strong>順位だけ</strong>。だから生スコアのスケールが
+                        まるで違う手法同士でも公平に混ぜられる。
+                        複数の検索が上位に挙げたチャンクほど逆数が重ねて足され、高スコアになる。
                       </Tip>
                     </th>
-                    <th>ベクトル順位</th>
-                    <th>
-                      <Tip label="cos類似度">
-                        質問と文書のベクトルが<strong>どれだけ同じ向きか</strong>。
-                        1に近いほど意味が近い。
-                        <br />
-                        <br />
-                        pgvectorの <code>&lt;=&gt;</code> が返すコサイン<em>距離</em>を
-                        <code>1 - 距離</code> で類似度に直した値。
-                        言葉が違っても意味が近い文書を拾えるのが強み。
-                      </Tip>
-                    </th>
-                    <th>字面順位</th>
-                    <th>
-                      <Tip label="字面類似度">
-                        pg_trgm による<strong>文字トライグラム</strong>（3文字の組）の重なり具合。
-                        0〜1で、1に近いほど字面が一致。
-                        <br />
-                        <br />
-                        型番・固有名詞など「その文字列そのもの」に強い一方、
-                        言い換えには弱い。日本語では値が小さめ（0.1〜0.3程度）に出やすい。
-                      </Tip>
-                    </th>
+                    {/* 検索手法ごとに2列（順位・生スコア）。手法が増えれば列も増える */}
+                    {stages.stages.map((st) => (
+                      <th key={st.name} colSpan={2} className="group-head">
+                        {st.label}
+                      </th>
+                    ))}
                     <th>出典</th>
                     <th>内容</th>
+                  </tr>
+                  <tr className="sub-head">
+                    <th />
+                    <th />
+                    {stages.stages.map((st) => (
+                      <Fragment key={st.name}>
+                        <th>順位</th>
+                        <th>
+                          <Tip label={st.metric_label}>
+                            {RETRIEVER_TIPS[st.name] ?? "この手法が計算した生スコア。"}
+                          </Tip>
+                        </th>
+                      </Fragment>
+                    ))}
+                    <th />
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -226,19 +426,20 @@ export default function Home() {
                     <tr key={f.id}>
                       <td>{f.rank}</td>
                       <td>{f.score}</td>
-                      {/* null は「その検索には出てこなかった」= 片方だけのヒット */}
-                      <td className={f.vector_rank === null ? "miss" : ""}>
-                        {f.vector_rank ?? "—"}
-                      </td>
-                      <td className={f.cosine_similarity === null ? "miss" : ""}>
-                        {f.cosine_similarity ?? "—"}
-                      </td>
-                      <td className={f.lexical_rank === null ? "miss" : ""}>
-                        {f.lexical_rank ?? "—"}
-                      </td>
-                      <td className={f.trgm_similarity === null ? "miss" : ""}>
-                        {f.trgm_similarity ?? "—"}
-                      </td>
+                      {f.contributions.map((c) => (
+                        <Fragment key={c.retriever}>
+                          {/* rank が null = その手法のリストに出てこなかった */}
+                          <td className={c.rank === null ? "miss" : ""}>
+                            {c.rank ?? "—"}
+                            {c.rrf_term !== null && (
+                              <span className="term">+{c.rrf_term}</span>
+                            )}
+                          </td>
+                          <td className={c.metric_value === null ? "miss" : ""}>
+                            {c.metric_value ?? "—"}
+                          </td>
+                        </Fragment>
+                      ))}
                       <td>{f.source}</td>
                       <td className="preview">{f.preview}</td>
                     </tr>
@@ -247,47 +448,38 @@ export default function Home() {
               </table>
             </div>
             <p className="hint">
-              両方に順位が入っている＝2つの検索が揃って上位に挙げた → RRFスコアが高い。
-              「—」は片方の検索にしか出てこなかったチャンク。
-              cos類似度・字面類似度は各検索が実際に計算した生の値（1に近いほど近い）。
-              RRFはこの生スコアではなく<strong>順位</strong>だけを使う点に注目。
+              各手法の「順位」の下にある <span className="term">+0.0164</span> が
+              <strong>その手法がRRFスコアに足した分</strong>。
+              複数の手法が票を投じたチャンクほど合計が大きくなる。
+              「—」はその手法のリストに出てこなかったことを示す。
             </p>
 
+            {/* 融合前：各手法の生ランキング */}
             <div className="two-col">
-              <div>
-                <h3 className="stage-title">① ベクトル検索（意味・cos類似度）</h3>
-                <ol className="raw-list">
-                  {stages.vector_search.map((h) => (
-                    <li key={h.id}>
-                      <code>#{h.id}</code>{" "}
-                      <span className="metric">{h.cosine_similarity}</span>{" "}
-                      {h.preview}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-              <div>
-                <h3 className="stage-title">
-                  ① 字面検索（pg_trgm・類似度 ≥ {stages.lexical_min_similarity}）
-                </h3>
-                {stages.lexical_search.length === 0 ? (
-                  <p className="empty-note">
-                    閾値 {stages.lexical_min_similarity} 以上の字面一致なし。
-                    字面検索は票を投じないので、
-                    <strong>RRFはベクトル検索の順位だけで決まっています</strong>。
-                  </p>
-                ) : (
-                  <ol className="raw-list">
-                    {stages.lexical_search.map((h) => (
-                      <li key={h.id}>
-                        <code>#{h.id}</code>{" "}
-                        <span className="metric">{h.trgm_similarity}</span>{" "}
-                        {h.preview}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
+              {stages.stages.map((st) => (
+                <div key={st.name}>
+                  <h3 className="stage-title">
+                    {st.label}（{st.metric_label}）
+                  </h3>
+                  {st.hits.length === 0 ? (
+                    <p className="empty-note">
+                      ヒットなし。この手法は票を投じないので、
+                      <strong>RRFは他の手法の順位だけで決まっています</strong>。
+                      {st.name === "trgm" &&
+                        `（閾値 ${stages.lexical_min_similarity} 未満は除外）`}
+                    </p>
+                  ) : (
+                    <ol className="raw-list">
+                      {st.hits.map((h) => (
+                        <li key={h.id}>
+                          <code>#{h.id}</code>{" "}
+                          <span className="metric">{h.metric_value}</span> {h.preview}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              ))}
             </div>
           </>
         )}
@@ -295,7 +487,7 @@ export default function Home() {
 
       {/* 質問フロー: question → hybrid_search → rerank → Claude */}
       <section className="panel">
-        <h2>③ 質問する（/chat・Anthropicキー必要）</h2>
+        <h2>③ 質問する（/chat・Voyage + Anthropicキー必要）</h2>
         <div className="messages">
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>

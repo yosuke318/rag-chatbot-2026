@@ -36,9 +36,11 @@ uvicorn app.main:app --reload    # 起動時にスキーマ自動作成
 python -m app.seed               # 文書投入
 ```
 
-## 検索の中身を見る（Anthropicキー不要）
+## 検索の中身を見る（Anthropicキー不要・Voyageキーは必要）
 
-`/search` は Claude を呼ばないので **VOYAGE_API_KEY だけで動く**。
+`/search` は Claude を呼ばないので **ANTHROPIC_API_KEY なしで動く**。
+ただし質問をベクトル化するため **VOYAGE_API_KEY は必要**（文書登録と同じ埋め込みモデルを使う）。
+`?retrievers=trgm,bm25` のようにベクトル検索を外せば、埋め込みAPIも呼ばずに動かせる。
 ベクトル/字面それぞれの順位と、RRF融合後のスコアが返るので、
 「両方の検索が上位に挙げたチャンクが融合で上に来る」挙動を実データで確認できる。
 

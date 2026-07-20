@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -37,25 +37,40 @@ class IngestResponse(BaseModel):
     replaced: int = Field(description="置き換えた既存文書の件数（0なら新規）")
 
 
-class VectorHit(BaseModel):
-    """ベクトル検索（意味の近さ）のヒット。"""
+class StageHit(BaseModel):
+    """ある検索手法1つの中でのヒット。手法によらず同じ形にしてある。"""
 
     rank: int
     id: int
     source: str
-    cosine_similarity: float = Field(description="1に近いほど意味が近い（1 - コサイン距離）")
-    cosine_distance: float
+    metric_value: float = Field(
+        description="その手法が計算した生スコア（cos類似度 / 字面類似度 / BM25スコア）"
+    )
     preview: str
 
 
-class LexicalHit(BaseModel):
-    """字面検索（名詞のトライグラム一致）のヒット。"""
+class RetrieverStage(BaseModel):
+    """検索手法1つ分のランキング（融合前）。"""
 
-    rank: int
-    id: int
-    source: str
-    trgm_similarity: float = Field(description="0〜1。1に近いほど字面が一致")
-    preview: str
+    name: str = Field(description="手法の識別子: vector / trgm / bm25")
+    label: str = Field(description="表示名")
+    metric_label: str = Field(description="metric_value の表示名（cos類似度 等）")
+    hits: List[StageHit]
+
+
+class Contribution(BaseModel):
+    """融合結果1件に対する、各検索手法からの寄与。
+
+    RRFは「どの手法が何位に置いたか」の足し合わせなので、
+    手法ごとの内訳を持たせて寄与を追えるようにする。
+    """
+
+    retriever: str
+    rank: Optional[int] = Field(description="null = この手法のリストに出てこなかった")
+    metric_value: Optional[float] = Field(description="その手法の生スコア")
+    rrf_term: Optional[float] = Field(
+        description="この手法が寄与したRRFスコア 1/(k + 順位 + 1)"
+    )
 
 
 class FusedHit(BaseModel):
@@ -64,23 +79,66 @@ class FusedHit(BaseModel):
     rank: int
     id: int
     source: str
-    score: float = Field(description="RRFスコア。Σ 1/(60 + 各検索での順位)")
-    vector_rank: Optional[int] = Field(description="null = ベクトル検索に出てこなかった")
-    lexical_rank: Optional[int] = Field(description="null = 字面検索に出てこなかった")
-    cosine_similarity: Optional[float]
-    trgm_similarity: Optional[float]
+    score: float = Field(description="RRFスコア。各手法の rrf_term の合計")
+    contributions: List[Contribution] = Field(
+        description="検索手法ごとの内訳。手法を増やすと要素が増える"
+    )
     preview: str
 
 
+class ParamSpec(BaseModel):
+    """調整可能なパラメータの仕様。UIの入力欄はこれを元に生成する。"""
+
+    name: str
+    label: str
+    default: float
+    min: float
+    max: float
+    step: float
+    description: str
+
+
+class RetrieverInfo(BaseModel):
+    """選択可能な検索手法（UIの切り替え用）。"""
+
+    name: str
+    label: str
+    metric_label: str
+    # 常に返すので必須。任意にすると生成TS型が undefined を含み扱いづらくなる
+    params: List[ParamSpec] = Field(description="この手法で調整できる定数（空配列もあり）")
+
+
+class AppliedParams(BaseModel):
+    """実際に計算へ使われた値（未指定なら既定が入る）。"""
+
+    rrf_k: int
+    retrievers: Dict[str, Dict[str, float]]
+
+
+class RetrieversResponse(BaseModel):
+    """選択可能な検索手法と、設定されている既定。"""
+
+    available: List[RetrieverInfo]
+    default: List[str] = Field(description="環境変数 RETRIEVERS の値")
+    fusion_params: List[ParamSpec] = Field(description="融合そのもののパラメータ（RRF k）")
+
+
 class SearchResponse(BaseModel):
-    """検索の各段階（Claudeを呼ばない）。"""
+    """検索の各段階（Claudeを呼ばない）。
+
+    検索手法の本数に依らない形にしてあるので、BM25等を足しても構造は変わらない。
+    """
 
     question: str
-    lexical_min_similarity: float = Field(
-        description="これ未満の字面ヒットはRRFに渡さない閾値"
+    retrievers: List[str] = Field(description="この検索で使った手法の並び")
+    available_retrievers: List[RetrieverInfo] = Field(
+        description="指定可能な手法の一覧。/search?retrievers=a,b で選べる"
     )
-    vector_search: List[VectorHit]
-    lexical_search: List[LexicalHit]
+    applied_params: AppliedParams = Field(description="この検索で実際に使われた定数")
+    lexical_min_similarity: float = Field(
+        description="これ未満の字面ヒットはRRFに渡さない閾値（trgm手法用・後方互換）"
+    )
+    stages: List[RetrieverStage] = Field(description="融合前の各手法のランキング")
     fused: List[FusedHit]
 
 
