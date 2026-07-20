@@ -423,3 +423,35 @@ th:nth-last-child(-n + 3) .tip-body {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
+
+/* APIキーの要否メモ（登録と検索の両方でVoyageが要る点を明示する） */
+.keys-note {
+  font-size: 12px;
+  color: var(--muted);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 20px;
+  line-height: 1.8;
+}
+
+.keys-note strong {
+  color: var(--text);
+}
+
+.keys-note ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.keys-note code {
+  background: #f1f3f5;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--accent);
+}
+
+.keys-note b {
+  color: var(--text);
+}

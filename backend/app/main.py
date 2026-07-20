@@ -58,7 +58,7 @@ async def missing_api_key(request: Request, exc: Exception):
     name = str(exc)
     which = "生成API（Claude）" if "ANTHROPIC" in name else "埋め込みAPI（Voyage）"
     extra = (
-        "検索だけなら /search（Claude不要）が使えます。"
+        "検索の内訳だけなら /search が使えます（Anthropicキー不要・Voyageキーは必要）。"
         if "ANTHROPIC" in name
         else ""
     )
@@ -145,7 +145,7 @@ async def anthropic_auth(request: Request, exc: Exception):
         "anthropic_auth",
         "生成API（Claude）の認証に失敗しました。回答生成にはAnthropicのAPIキーが必要です。",
         "backend/.env の ANTHROPIC_API_KEY を設定してください。"
-        "検索だけなら /search（Claude不要）が使えます。",
+        "検索の内訳だけなら /search が使えます（Anthropicキー不要・Voyageキーは必要）。",
         str(exc),
     )
 
@@ -203,7 +203,10 @@ def search(
     bm25_k1: Optional[float] = None,
     bm25_b: Optional[float] = None,
 ):
-    """検索の各段階を返す（Claudeを呼ばない = Anthropicキー不要）。
+    """検索の各段階を返す。
+
+    Claude(Anthropic)は呼ばないのでANTHROPIC_API_KEYは不要。
+    ただし質問のベクトル化に埋め込みAPIを使うためVOYAGE_API_KEYは必要。
 
     - GET /search?q=... … 設定の既定の手法で検索
     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較

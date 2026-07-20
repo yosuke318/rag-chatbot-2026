@@ -213,9 +213,25 @@ export default function Home() {
         文書を登録し、検索の内訳（cos類似度 / 字面類似度 / RRF融合）を確かめてから質問できる。
       </p>
 
+      {/* どの操作にどのAPIキーが要るか。混同しやすいのでここで一度だけ説明する */}
+      <div className="keys-note">
+        <strong>APIキーの要否</strong>
+        <ul>
+          <li>
+            <code>VOYAGE_API_KEY</code>（埋め込み）… <b>登録と検索の両方で必要</b>。
+            文書も質問も同じモデルでベクトル化するため、検索のたびに1回呼ぶ
+            （消費するのは質問文ぶんの数十トークン）
+          </li>
+          <li>
+            <code>ANTHROPIC_API_KEY</code>（生成）… <b>回答生成とLLMリランクのみ</b>。
+            検索の内訳を見るだけなら不要
+          </li>
+        </ul>
+      </div>
+
       {/* 書き込みフロー: text → chunk → embed → pgvector */}
       <section className="panel">
-        <h2>① 文書を登録（/ingest）</h2>
+        <h2>① 文書を登録（/ingest・Voyageキー必要）</h2>
         <input
           placeholder="文書名（例: 有給休暇.txt）"
           value={source}
@@ -234,7 +250,7 @@ export default function Home() {
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}
       <section className="panel">
-        <h2>② 検索の内訳を見る（/search・Claude不要）</h2>
+        <h2>② 検索の内訳を見る（/search・Voyageキー必要 / Anthropicキー不要）</h2>
         <div className="chat-input">
           <input
             placeholder="検索したい質問…（例: 有給は入社何ヶ月で何日？）"
@@ -451,7 +467,7 @@ export default function Home() {
 
       {/* 質問フロー: question → hybrid_search → rerank → Claude */}
       <section className="panel">
-        <h2>③ 質問する（/chat・Anthropicキー必要）</h2>
+        <h2>③ 質問する（/chat・Voyage + Anthropicキー必要）</h2>
         <div className="messages">
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>

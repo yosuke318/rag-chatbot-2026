@@ -418,7 +418,11 @@ def search_stages(
     rrf_k: int | None = None,
     show: int = 5,
 ) -> dict:
-    """検索の各段階を返す（学習・デバッグ用。★Claudeを呼ばないのでAnthropicキー不要★）
+    """検索の各段階を返す（学習・デバッグ用）。
+
+    ★Claudeを呼ばないのでANTHROPIC_API_KEYは不要★
+    ただし質問のベクトル化で埋め込みAPIを使うためVOYAGE_API_KEYは必要
+    （vector を外して trgm/bm25 だけにすれば埋め込みも呼ばない）。
 
     検索手法の本数に依らない形で返す。手法を足しても構造は変わらない。
     fused の contributions に「どの手法が何位に置き、いくら寄与したか」が入る。
