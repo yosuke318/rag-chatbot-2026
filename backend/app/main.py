@@ -3,18 +3,24 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import anthropic
 import voyageai.error
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
 from app.db import init_db
 from app.ingest import ingest_text
 from app.llm import MissingAPIKey, generate_answer
 from app.retrieval import hybrid_search, search_stages
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ErrorResponse,
+    HealthResponse,
+    IngestRequest,
+    IngestResponse,
+    SearchResponse,
+)
 
 
 @asynccontextmanager
@@ -23,7 +29,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="RAG Lab API", lifespan=lifespan)
+app = FastAPI(title="RAG Inspector API", lifespan=lifespan)
 
 logger = logging.getLogger(__name__)
 
@@ -136,29 +142,28 @@ async def anthropic_other(request: Request, exc: Exception):
     )
 
 
-class IngestRequest(BaseModel):
-    source: str            # 文書名（例: "就業規則.txt"）
-    text: str              # 本文
-    category: Optional[str] = None
+# 各エンドポイントが返しうるエラーもスキーマに載せる
+# （フロントは生成された ErrorResponse 型でそのまま扱える）
+_ERRORS = {
+    401: {"model": ErrorResponse, "description": "APIキー未設定・認証失敗"},
+    429: {"model": ErrorResponse, "description": "レート制限"},
+    502: {"model": ErrorResponse, "description": "外部API呼び出し失敗"},
+}
 
 
-class ChatRequest(BaseModel):
-    question: str
-
-
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 async def health():
     return {"status": "ok"}
 
 
-@app.post("/ingest")
+@app.post("/ingest", response_model=IngestResponse, responses=_ERRORS)
 def ingest(req: IngestRequest):
     result = ingest_text(req.source, req.text, req.category)
     # replaced > 0 = 同名の既存文書を置き換えた（重複登録を防いでいる）
     return {"source": req.source, **result}
 
 
-@app.get("/search")
+@app.get("/search", response_model=SearchResponse, responses=_ERRORS)
 def search(q: str, top_n: int = 4):
     """検索の各段階を返す（Claudeを呼ばない = Anthropicキー不要）。
 
@@ -168,7 +173,7 @@ def search(q: str, top_n: int = 4):
     return search_stages(q, top_n=top_n)
 
 
-@app.post("/chat")
+@app.post("/chat", response_model=ChatResponse, responses=_ERRORS)
 def chat(req: ChatRequest):
     hits = hybrid_search(req.question)
     answer = generate_answer(req.question, [h["content"] for h in hits])
