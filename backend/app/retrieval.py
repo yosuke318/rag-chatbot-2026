@@ -16,6 +16,7 @@ from __future__ import annotations
 from app.config import (
     LEXICAL_MIN_SIMILARITY,
     RERANK_CANDIDATES,
+    RETRIEVERS_DEFAULT,
     TOP_K,
     USE_RERANK,
 )
@@ -169,24 +170,50 @@ RETRIEVER_META = {
     "trgm": {"label": "字面検索（名詞トライグラム）", "metric_label": "字面類似度"},
 }
 
-# 既定の構成。BM25を実装したら "vector,bm25" に切り替える（案A）
-RETRIEVERS_DEFAULT = ["vector", "trgm"]
+
+class UnknownRetriever(ValueError):
+    """未知の検索手法が指定された（/search?retrievers=... のtypo等）。"""
+
+
+def resolve_retrievers(names: list[str] | None = None) -> list[str]:
+    """使用する手法名を確定し、妥当性を検証する。
+
+    names=None（未指定）なら設定の既定（RETRIEVERS_DEFAULT）を使う。
+    names=[]（明示的に空）はエラーにする。UIで全ての手法のチェックを外したときに
+    黙って既定へ戻して結果を出すと混乱するため、None と [] を区別している。
+    未知の名前はここで弾き、SQLを投げる前にエラーにする。
+    """
+    resolved = list(RETRIEVERS_DEFAULT) if names is None else [n for n in names if n]
+    if not resolved:
+        raise UnknownRetriever(
+            f"検索手法が1つも指定されていません / 利用可能: {', '.join(RETRIEVERS)}"
+        )
+    unknown = [n for n in resolved if n not in RETRIEVERS]
+    if unknown:
+        raise UnknownRetriever(
+            f"未知の検索手法: {', '.join(unknown)} / 利用可能: {', '.join(RETRIEVERS)}"
+        )
+    # 同じ手法を2度渡すと票が二重に入るため除去（順序は保つ）
+    return list(dict.fromkeys(resolved))
 
 
 def hybrid_search(
-    question: str, top_n: int = TOP_K, rerank: bool | None = None
+    question: str,
+    top_n: int = TOP_K,
+    rerank: bool | None = None,
+    retrievers: list[str] | None = None,
 ) -> list[dict]:
-    """ベクトル検索 + 字面検索 を RRF で融合。rerank=True ならLLMで再並べ替え。
+    """指定した検索手法を RRF で融合。rerank=True ならLLMで再並べ替え。
 
-    rerank を省略すると設定(USE_RERANK)に従う。有り/無しを切り替えて
-    評価で比較できるようにしている。
+    retrievers 未指定なら設定の既定を使う。手法を増やしても
+    reciprocal_rank_fusion は可変長リストを受けるので変更不要。
+    rerank を省略すると設定(USE_RERANK)に従う。
     """
     if rerank is None:
         rerank = USE_RERANK
 
-    vec = vector_search(question)
-    lex = lexical_search(question)
-    fused = reciprocal_rank_fusion([vec, lex])
+    names = resolve_retrievers(retrievers)
+    fused = reciprocal_rank_fusion([RETRIEVERS[n](question) for n in names])
 
     if rerank:
         # 融合上位を少し多めにリランク対象へ渡し、そこから top_n を選ばせる
@@ -207,7 +234,7 @@ def search_stages(
     検索手法の本数に依らない形で返す。手法を足しても構造は変わらない。
     fused の contributions に「どの手法が何位に置き、いくら寄与したか」が入る。
     """
-    names = list(retrievers or RETRIEVERS_DEFAULT)
+    names = resolve_retrievers(retrievers)
     lists = [RETRIEVERS[n](question) for n in names]
     scored = _rrf_scores(lists)
 
@@ -269,6 +296,10 @@ def search_stages(
     return {
         "question": question,
         "retrievers": names,
+        "available_retrievers": [
+            {"name": n, "label": m["label"], "metric_label": m["metric_label"]}
+            for n, m in RETRIEVER_META.items()
+        ],
         "lexical_min_similarity": LEXICAL_MIN_SIMILARITY,
         "stages": stages,
         "fused": fused,

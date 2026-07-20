@@ -27,6 +27,15 @@ TOP_K = 4  # 回答生成に使うチャンク数
 # 名詞抽出を入れて類似度の値域が上がったら、この値も上げて再調整すること。
 LEXICAL_MIN_SIMILARITY = float(os.getenv("LEXICAL_MIN_SIMILARITY", "0.005"))
 
+# ハイブリッド検索で使う手法の既定（カンマ区切り）。
+#   "vector,trgm"       … 現状
+#   "vector,bm25"       … BM25実装後の本命（案A：字面系を1本に統一）
+#   "vector,trgm,bm25"  … 検証用（案C：字面系2本。票が字面に偏る点に注意）
+# 個別のリクエストでは /search?retrievers=... で上書きできる。
+RETRIEVERS_DEFAULT = [
+    n.strip() for n in os.getenv("RETRIEVERS", "vector,trgm").split(",") if n.strip()
+]
+
 # LLMリランク（有り/無しを比較できるようフラグ化）
 USE_RERANK = os.getenv("USE_RERANK", "false").lower() == "true"
 RERANK_CANDIDATES = 10  # 融合結果の上位いくつをリランク対象にするか

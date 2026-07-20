@@ -49,8 +49,10 @@ export interface paths {
          * Search
          * @description 検索の各段階を返す（Claudeを呼ばない = Anthropicキー不要）。
          *
-         *     例: GET /search?q=有給は入社何ヶ月で何日？
-         *     ベクトル/字面それぞれの順位と、RRF融合後のスコアが見える。
+         *     - GET /search?q=... … 設定の既定の手法で検索
+         *     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
+         *
+         *     各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
          */
         get: operations["search_search_get"];
         put?: never;
@@ -222,6 +224,18 @@ export interface components {
             replaced: number;
         };
         /**
+         * RetrieverInfo
+         * @description 選択可能な検索手法（UIの切り替え用）。
+         */
+        RetrieverInfo: {
+            /** Name */
+            name: string;
+            /** Label */
+            label: string;
+            /** Metric Label */
+            metric_label: string;
+        };
+        /**
          * RetrieverStage
          * @description 検索手法1つ分のランキング（融合前）。
          */
@@ -258,6 +272,11 @@ export interface components {
              * @description この検索で使った手法の並び
              */
             retrievers: string[];
+            /**
+             * Available Retrievers
+             * @description 指定可能な手法の一覧。/search?retrievers=a,b で選べる
+             */
+            available_retrievers: components["schemas"]["RetrieverInfo"][];
             /**
              * Lexical Min Similarity
              * @description これ未満の字面ヒットはRRFに渡さない閾値（trgm手法用）
@@ -397,6 +416,7 @@ export interface operations {
             query: {
                 q: string;
                 top_n?: number;
+                retrievers?: string | null;
             };
             header?: never;
             path?: never;

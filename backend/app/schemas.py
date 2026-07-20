@@ -86,6 +86,14 @@ class FusedHit(BaseModel):
     preview: str
 
 
+class RetrieverInfo(BaseModel):
+    """選択可能な検索手法（UIの切り替え用）。"""
+
+    name: str
+    label: str
+    metric_label: str
+
+
 class SearchResponse(BaseModel):
     """検索の各段階（Claudeを呼ばない）。
 
@@ -94,6 +102,9 @@ class SearchResponse(BaseModel):
 
     question: str
     retrievers: List[str] = Field(description="この検索で使った手法の並び")
+    available_retrievers: List[RetrieverInfo] = Field(
+        description="指定可能な手法の一覧。/search?retrievers=a,b で選べる"
+    )
     lexical_min_similarity: float = Field(
         description="これ未満の字面ヒットはRRFに渡さない閾値（trgm手法用）"
     )
