@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 
 // ★型はバックエンドの OpenAPI スキーマから自動生成したものを使う★
 //   再生成: npm run gen:types （backend が :8000 で起動している状態で）
@@ -9,8 +9,36 @@ import type { components } from "./api-types";
 
 type ChatResponse = components["schemas"]["ChatResponse"];
 type SearchStages = components["schemas"]["SearchResponse"];
-type Fused = components["schemas"]["FusedHit"];
 type ApiError = components["schemas"]["ErrorResponse"];
+
+// 検索手法ごとの説明（表ヘッダーのツールチップ）。手法を足したらここに1件追加する。
+const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
+  vector: (
+    <>
+      質問と文書のベクトルが<strong>どれだけ同じ向きか</strong>。1に近いほど意味が近い。
+      <br />
+      <br />
+      pgvectorの <code>&lt;=&gt;</code> が返すコサイン<em>距離</em>を{" "}
+      <code>1 - 距離</code> で類似度に直した値。言葉が違っても意味が近い文書を拾える。
+    </>
+  ),
+  trgm: (
+    <>
+      <strong>名詞だけ</strong>を取り出して、文字トライグラム（3文字組）の重なりを見た値。
+      0〜1で1に近いほど字面が一致。
+      <br />
+      <br />
+      式は <code>|T(A)∩T(B)| / |T(A)∪T(B)|</code>。分母に文書側の長さが効くため、
+      長い文書ほど値が下がる（名詞に絞ったのはこの分母を小さくするため）。
+    </>
+  ),
+  bm25: (
+    <>
+      単語の一致を<strong>希少度(IDF)で重み付け</strong>したスコア。
+      どの文書にも出る語より、珍しい語の一致を高く評価する。
+    </>
+  ),
+};
 
 // UI内部だけで使う型（APIには存在しない）
 type Message = { role: "user" | "bot"; text: string; sources?: string[] };
@@ -189,36 +217,35 @@ export default function Home() {
                         各検索での順位を <code>1/(60+順位)</code> に変換して足し合わせた値。
                         <br />
                         <br />
-                        使うのは<strong>順位だけ</strong>。だから右の cos類似度と字面類似度のように
-                        スケールがまるで違う指標でも公平に混ぜられる。
-                        両方の検索が上位に挙げたチャンクほど逆数が重ねて足され、高スコアになる。
+                        使うのは<strong>順位だけ</strong>。だから生スコアのスケールが
+                        まるで違う手法同士でも公平に混ぜられる。
+                        複数の検索が上位に挙げたチャンクほど逆数が重ねて足され、高スコアになる。
                       </Tip>
                     </th>
-                    <th>ベクトル順位</th>
-                    <th>
-                      <Tip label="cos類似度">
-                        質問と文書のベクトルが<strong>どれだけ同じ向きか</strong>。
-                        1に近いほど意味が近い。
-                        <br />
-                        <br />
-                        pgvectorの <code>&lt;=&gt;</code> が返すコサイン<em>距離</em>を
-                        <code>1 - 距離</code> で類似度に直した値。
-                        言葉が違っても意味が近い文書を拾えるのが強み。
-                      </Tip>
-                    </th>
-                    <th>字面順位</th>
-                    <th>
-                      <Tip label="字面類似度">
-                        pg_trgm による<strong>文字トライグラム</strong>（3文字の組）の重なり具合。
-                        0〜1で、1に近いほど字面が一致。
-                        <br />
-                        <br />
-                        型番・固有名詞など「その文字列そのもの」に強い一方、
-                        言い換えには弱い。日本語では値が小さめ（0.1〜0.3程度）に出やすい。
-                      </Tip>
-                    </th>
+                    {/* 検索手法ごとに2列（順位・生スコア）。手法が増えれば列も増える */}
+                    {stages.stages.map((st) => (
+                      <th key={st.name} colSpan={2} className="group-head">
+                        {st.label}
+                      </th>
+                    ))}
                     <th>出典</th>
                     <th>内容</th>
+                  </tr>
+                  <tr className="sub-head">
+                    <th />
+                    <th />
+                    {stages.stages.map((st) => (
+                      <Fragment key={st.name}>
+                        <th>順位</th>
+                        <th>
+                          <Tip label={st.metric_label}>
+                            {RETRIEVER_TIPS[st.name] ?? "この手法が計算した生スコア。"}
+                          </Tip>
+                        </th>
+                      </Fragment>
+                    ))}
+                    <th />
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -226,19 +253,20 @@ export default function Home() {
                     <tr key={f.id}>
                       <td>{f.rank}</td>
                       <td>{f.score}</td>
-                      {/* null は「その検索には出てこなかった」= 片方だけのヒット */}
-                      <td className={f.vector_rank === null ? "miss" : ""}>
-                        {f.vector_rank ?? "—"}
-                      </td>
-                      <td className={f.cosine_similarity === null ? "miss" : ""}>
-                        {f.cosine_similarity ?? "—"}
-                      </td>
-                      <td className={f.lexical_rank === null ? "miss" : ""}>
-                        {f.lexical_rank ?? "—"}
-                      </td>
-                      <td className={f.trgm_similarity === null ? "miss" : ""}>
-                        {f.trgm_similarity ?? "—"}
-                      </td>
+                      {f.contributions.map((c) => (
+                        <Fragment key={c.retriever}>
+                          {/* rank が null = その手法のリストに出てこなかった */}
+                          <td className={c.rank === null ? "miss" : ""}>
+                            {c.rank ?? "—"}
+                            {c.rrf_term !== null && (
+                              <span className="term">+{c.rrf_term}</span>
+                            )}
+                          </td>
+                          <td className={c.metric_value === null ? "miss" : ""}>
+                            {c.metric_value ?? "—"}
+                          </td>
+                        </Fragment>
+                      ))}
                       <td>{f.source}</td>
                       <td className="preview">{f.preview}</td>
                     </tr>
@@ -247,47 +275,38 @@ export default function Home() {
               </table>
             </div>
             <p className="hint">
-              両方に順位が入っている＝2つの検索が揃って上位に挙げた → RRFスコアが高い。
-              「—」は片方の検索にしか出てこなかったチャンク。
-              cos類似度・字面類似度は各検索が実際に計算した生の値（1に近いほど近い）。
-              RRFはこの生スコアではなく<strong>順位</strong>だけを使う点に注目。
+              各手法の「順位」の下にある <span className="term">+0.0164</span> が
+              <strong>その手法がRRFスコアに足した分</strong>。
+              複数の手法が票を投じたチャンクほど合計が大きくなる。
+              「—」はその手法のリストに出てこなかったことを示す。
             </p>
 
+            {/* 融合前：各手法の生ランキング */}
             <div className="two-col">
-              <div>
-                <h3 className="stage-title">① ベクトル検索（意味・cos類似度）</h3>
-                <ol className="raw-list">
-                  {stages.vector_search.map((h) => (
-                    <li key={h.id}>
-                      <code>#{h.id}</code>{" "}
-                      <span className="metric">{h.cosine_similarity}</span>{" "}
-                      {h.preview}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-              <div>
-                <h3 className="stage-title">
-                  ① 字面検索（pg_trgm・類似度 ≥ {stages.lexical_min_similarity}）
-                </h3>
-                {stages.lexical_search.length === 0 ? (
-                  <p className="empty-note">
-                    閾値 {stages.lexical_min_similarity} 以上の字面一致なし。
-                    字面検索は票を投じないので、
-                    <strong>RRFはベクトル検索の順位だけで決まっています</strong>。
-                  </p>
-                ) : (
-                  <ol className="raw-list">
-                    {stages.lexical_search.map((h) => (
-                      <li key={h.id}>
-                        <code>#{h.id}</code>{" "}
-                        <span className="metric">{h.trgm_similarity}</span>{" "}
-                        {h.preview}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
+              {stages.stages.map((st) => (
+                <div key={st.name}>
+                  <h3 className="stage-title">
+                    {st.label}（{st.metric_label}）
+                  </h3>
+                  {st.hits.length === 0 ? (
+                    <p className="empty-note">
+                      ヒットなし。この手法は票を投じないので、
+                      <strong>RRFは他の手法の順位だけで決まっています</strong>。
+                      {st.name === "trgm" &&
+                        `（閾値 ${stages.lexical_min_similarity} 未満は除外）`}
+                    </p>
+                  ) : (
+                    <ol className="raw-list">
+                      {st.hits.map((h) => (
+                        <li key={h.id}>
+                          <code>#{h.id}</code>{" "}
+                          <span className="metric">{h.metric_value}</span> {h.preview}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              ))}
             </div>
           </>
         )}

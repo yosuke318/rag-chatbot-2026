@@ -174,7 +174,33 @@ td.preview {
 }
 
 td.miss {
-  color: #b91c1c; /* 片方の検索に出なかった＝「—」を目立たせる */
+  color: #b91c1c; /* その手法に出なかった＝「—」を目立たせる */
+}
+
+/* 検索手法ごとのグループ見出し（手法が増えると列も増える） */
+th.group-head {
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+  background: #fafafa;
+}
+
+tr.sub-head th {
+  font-weight: 500;
+  font-size: 12px;
+  padding-top: 2px;
+}
+
+/* 順位セルに添える「この手法がRRFに足した分」 */
+.term {
+  display: block;
+  font-size: 10px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+p.hint .term {
+  display: inline;
+  font-size: 11px;
 }
 
 .two-col {
