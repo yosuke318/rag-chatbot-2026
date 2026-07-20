@@ -250,7 +250,27 @@ export default function Home() {
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}
       <section className="panel">
-        <h2>② 検索の内訳を見る（/search・Voyageキー必要 / Anthropicキー不要）</h2>
+        <h2>
+          <Tip label="② 検索の内訳を見る">
+            ここでは<strong>ハイブリッド検索</strong>を行う。
+            性質の違う複数の検索を同時に走らせ、結果を1つの順位に統合する方式。
+            <br />
+            <br />
+            <strong>1.</strong> 下のチェックボックスで<strong>選んだ手法だけ</strong>が実行される。
+            各手法は着眼点が違う（意味の近さ / 字面の一致 / 単語の希少度）ので、
+            それぞれ独立に別の順位を付ける。
+            <br />
+            <br />
+            <strong>2.</strong> それらの順位を<strong>RRF</strong>で融合し、1つの最終順位にまとめる。
+            複数の手法が揃って上位に挙げた文書ほど上に来る。
+            <br />
+            <br />
+            <strong>3.</strong> 融合後の<strong>上位ほど質問に合う文書</strong>と判断される。
+            1位が質問の内容と一致していれば検索は成功。
+            この上位チャンクが、そのまま ③ の回答生成で根拠として使われる。
+          </Tip>
+          （/search・Voyageキー必要 / Anthropicキー不要）
+        </h2>
         <div className="chat-input">
           <input
             placeholder="検索したい質問…（例: 有給は入社何ヶ月で何日？）"

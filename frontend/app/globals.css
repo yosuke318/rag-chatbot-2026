@@ -455,3 +455,13 @@ th:nth-last-child(-n + 3) .tip-body {
 .keys-note b {
   color: var(--text);
 }
+
+/* パネル見出し内のツールチップ（本文は通常の文字色で読ませる） */
+.panel h2 .tip-body {
+  width: 340px;
+  color: #f3f4f6;
+}
+
+.panel h2 .tip {
+  color: var(--muted);
+}
