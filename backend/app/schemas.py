@@ -94,6 +94,13 @@ class RetrieverInfo(BaseModel):
     metric_label: str
 
 
+class RetrieversResponse(BaseModel):
+    """選択可能な検索手法と、設定されている既定。"""
+
+    available: List[RetrieverInfo]
+    default: List[str] = Field(description="環境変数 RETRIEVERS の値")
+
+
 class SearchResponse(BaseModel):
     """検索の各段階（Claudeを呼ばない）。
 

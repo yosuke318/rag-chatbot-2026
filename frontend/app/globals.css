@@ -317,3 +317,26 @@ th:nth-last-child(-n + 3) .tip-body {
   left: auto;
   right: 0;
 }
+
+/* 検索手法の選択（手法を増やすと自動で選択肢が増える） */
+.retriever-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.retriever-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.picker-warn {
+  color: #b45309;
+  font-size: 12px;
+}

@@ -38,6 +38,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/retrievers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrievers List
+         * @description 選択可能な検索手法の一覧。UIのチェックボックス生成に使う。
+         */
+        get: operations["retrievers_list_retrievers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -259,6 +279,19 @@ export interface components {
             hits: components["schemas"]["StageHit"][];
         };
         /**
+         * RetrieversResponse
+         * @description 選択可能な検索手法と、設定されている既定。
+         */
+        RetrieversResponse: {
+            /** Available */
+            available: components["schemas"]["RetrieverInfo"][];
+            /**
+             * Default
+             * @description 環境変数 RETRIEVERS の値
+             */
+            default: string[];
+        };
+        /**
          * SearchResponse
          * @description 検索の各段階（Claudeを呼ばない）。
          *
@@ -407,6 +440,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    retrievers_list_retrievers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrieversResponse"];
                 };
             };
         };

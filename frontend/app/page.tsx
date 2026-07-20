@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 // ★型はバックエンドの OpenAPI スキーマから自動生成したものを使う★
 //   再生成: npm run gen:types （backend が :8000 で起動している状態で）
@@ -10,6 +10,7 @@ import type { components } from "./api-types";
 type ChatResponse = components["schemas"]["ChatResponse"];
 type SearchStages = components["schemas"]["SearchResponse"];
 type ApiError = components["schemas"]["ErrorResponse"];
+type RetrieverInfo = components["schemas"]["RetrieverInfo"];
 
 // 検索手法ごとの説明（表ヘッダーのツールチップ）。手法を足したらここに1件追加する。
 const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
@@ -76,6 +77,25 @@ export default function Home() {
   const [stages, setStages] = useState<SearchStages | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
+  // 選択可能な検索手法（起動時に /retrievers から取得）
+  const [available, setAvailable] = useState<RetrieverInfo[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch("/api/backend/retrievers")
+      .then((r) => r.json())
+      .then((d) => {
+        setAvailable(d.available);
+        setSelected(d.default); // 初期選択は .env の RETRIEVERS
+      })
+      .catch(() => {});
+  }, []);
+
+  function toggleRetriever(name: string) {
+    setSelected((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+    );
+  }
 
   // --- チャットパネル（/chat = 質問フロー）---
   const [messages, setMessages] = useState<Message[]>([]);
@@ -114,7 +134,9 @@ export default function Home() {
     setSearching(true);
     setSearchError("");
     try {
-      const res = await fetch(`/api/backend/search?q=${encodeURIComponent(q)}`);
+      const params = new URLSearchParams({ q });
+      if (selected.length > 0) params.set("retrievers", selected.join(","));
+      const res = await fetch(`/api/backend/search?${params}`);
       const err = await errorMessage(res);
       if (err) {
         setSearchError(err); // レート制限・認証エラーなどをそのまま表示
@@ -196,9 +218,29 @@ export default function Home() {
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
           />
-          <button onClick={runSearch} disabled={searching || !searchQ.trim()}>
+          <button
+            onClick={runSearch}
+            disabled={searching || !searchQ.trim() || selected.length === 0}
+          >
             検索
           </button>
+        </div>
+
+        {/* 使う検索手法を選ぶ。RRFは可変長なので何本でも融合できる */}
+        <div className="retriever-picker">
+          {available.map((r) => (
+            <label key={r.name} className="retriever-option">
+              <input
+                type="checkbox"
+                checked={selected.includes(r.name)}
+                onChange={() => toggleRetriever(r.name)}
+              />
+              {r.label}
+            </label>
+          ))}
+          {selected.length === 0 && (
+            <span className="picker-warn">手法を1つ以上選んでください</span>
+          )}
         </div>
 
         {searchError && <p className="error-note">{searchError}</p>}

@@ -12,7 +12,13 @@ from fastapi.responses import JSONResponse
 from app.db import init_db
 from app.ingest import ingest_text
 from app.llm import MissingAPIKey, generate_answer
-from app.retrieval import UnknownRetriever, hybrid_search, search_stages
+from app.config import RETRIEVERS_DEFAULT
+from app.retrieval import (
+    UnknownRetriever,
+    hybrid_search,
+    retriever_infos,
+    search_stages,
+)
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -20,6 +26,7 @@ from app.schemas import (
     HealthResponse,
     IngestRequest,
     IngestResponse,
+    RetrieversResponse,
     SearchResponse,
 )
 
@@ -173,6 +180,12 @@ def ingest(req: IngestRequest):
     result = ingest_text(req.source, req.text, req.category)
     # replaced > 0 = 同名の既存文書を置き換えた（重複登録を防いでいる）
     return {"source": req.source, **result}
+
+
+@app.get("/retrievers", response_model=RetrieversResponse)
+def retrievers_list():
+    """選択可能な検索手法の一覧。UIのチェックボックス生成に使う。"""
+    return {"available": retriever_infos(), "default": RETRIEVERS_DEFAULT}
 
 
 @app.get("/search", response_model=SearchResponse, responses=_ERRORS)

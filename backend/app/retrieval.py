@@ -272,6 +272,14 @@ RETRIEVER_META = {
 }
 
 
+def retriever_infos() -> list[dict]:
+    """選択可能な手法の一覧（UIのチェックボックス用）。"""
+    return [
+        {"name": n, "label": m["label"], "metric_label": m["metric_label"]}
+        for n, m in RETRIEVER_META.items()
+    ]
+
+
 class UnknownRetriever(ValueError):
     """未知の検索手法が指定された（/search?retrievers=... のtypo等）。"""
 
@@ -397,10 +405,7 @@ def search_stages(
     return {
         "question": question,
         "retrievers": names,
-        "available_retrievers": [
-            {"name": n, "label": m["label"], "metric_label": m["metric_label"]}
-            for n, m in RETRIEVER_META.items()
-        ],
+        "available_retrievers": retriever_infos(),
         "lexical_min_similarity": LEXICAL_MIN_SIMILARITY,
         "stages": stages,
         "fused": fused,
