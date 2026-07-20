@@ -56,9 +56,9 @@ async function errorMessage(res: Response): Promise<string | null> {
 }
 
 // 見出しにカーソルを当てると説明が出る。tabIndexでキーボード操作でも開く。
-function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+function Tip({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
-    <span className="tip" tabIndex={0}>
+    <span className={label ? "tip" : "tip tip-bare"} tabIndex={0}>
       {label}
       <span className="tip-mark">?</span>
       <span className="tip-body">{children}</span>
@@ -92,9 +92,15 @@ export default function Home() {
   }, []);
 
   function toggleRetriever(name: string) {
-    setSelected((prev) =>
-      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
-    );
+    setSelected((prev) => {
+      const next = prev.includes(name)
+        ? prev.filter((n) => n !== name)
+        : [...prev, name];
+      // 選択した順ではなく、常にチェックボックスの並び順に揃える。
+      // これを省くと「あとから入れ直した手法」が表の右端に来て、
+      // チェックボックスの並びと列順がズレる。
+      return available.map((r) => r.name).filter((n) => next.includes(n));
+    });
   }
 
   // --- チャットパネル（/chat = 質問フロー）---
@@ -229,14 +235,18 @@ export default function Home() {
         {/* 使う検索手法を選ぶ。RRFは可変長なので何本でも融合できる */}
         <div className="retriever-picker">
           {available.map((r) => (
-            <label key={r.name} className="retriever-option">
-              <input
-                type="checkbox"
-                checked={selected.includes(r.name)}
-                onChange={() => toggleRetriever(r.name)}
-              />
-              {r.label}
-            </label>
+            <span key={r.name} className="retriever-option">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={selected.includes(r.name)}
+                  onChange={() => toggleRetriever(r.name)}
+                />
+                {r.label}
+              </label>
+              {/* 手法の説明。表ヘッダーと同じ内容を使い回す */}
+              <Tip>{RETRIEVER_TIPS[r.name] ?? "この手法が計算した生スコア。"}</Tip>
+            </span>
           ))}
           {selected.length === 0 && (
             <span className="picker-warn">手法を1つ以上選んでください</span>

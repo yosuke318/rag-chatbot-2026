@@ -22,7 +22,7 @@ body {
 }
 
 .container {
-  max-width: 820px;
+  max-width: 1240px; /* 手法が増えて表が横に広がるため拡張 */
   margin: 0 auto;
   padding: 24px 16px 64px;
 }
@@ -328,12 +328,27 @@ th:nth-last-child(-n + 3) .tip-body {
   font-size: 13px;
 }
 
+.tip-bare {
+  border-bottom: none;
+}
+
 .retriever-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.retriever-option label {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   cursor: pointer;
   user-select: none;
+}
+
+.retriever-option input {
+  margin: 0;
+  width: auto;
 }
 
 .picker-warn {
