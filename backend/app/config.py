@@ -36,6 +36,12 @@ RETRIEVERS_DEFAULT = [
     n.strip() for n in os.getenv("RETRIEVERS", "vector,trgm").split(",") if n.strip()
 ]
 
+# BM25のパラメータ（式は retrieval.bm25_search を参照）
+#   k1: TFの飽和度。大きいほど「出現回数が多い」ことを強く評価する（1.2〜2.0が定番）
+#   b : 長さ正規化の強さ。1.0=長い文書を強く不利に、0=長さを無視（0.75が定番）
+BM25_K1 = float(os.getenv("BM25_K1", "1.2"))
+BM25_B = float(os.getenv("BM25_B", "0.75"))
+
 # LLMリランク（有り/無しを比較できるようフラグ化）
 USE_RERANK = os.getenv("USE_RERANK", "false").lower() == "true"
 RERANK_CANDIDATES = 10  # 融合結果の上位いくつをリランク対象にするか

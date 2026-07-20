@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 from app.config import (
+    BM25_B,
+    BM25_K1,
     LEXICAL_MIN_SIMILARITY,
     RERANK_CANDIDATES,
     RETRIEVERS_DEFAULT,
@@ -21,7 +23,7 @@ from app.config import (
     USE_RERANK,
 )
 from app.db import get_conn
-from app.keywords import noun_text
+from app.keywords import extract_nouns, noun_text
 from app.llm import embed_query, rank_by_relevance
 
 CANDIDATES = 20  # 各検索が融合前に返す候補数
@@ -107,6 +109,102 @@ def lexical_search(
     ]
 
 
+def bm25_search(question: str, k: int = CANDIDATES) -> list[dict]:
+    """BM25 で上位k件。名詞列(content_nouns)を単語列とみなして計算する。
+
+    score(D,Q) = Σ_t  IDF(t) · [ f(t,D)·(k1+1) ] / [ f(t,D) + k1·(1 - b + b·|D|/avgdl) ]
+    IDF(t)     = ln( (N - n(t) + 0.5) / (n(t) + 0.5) + 1 )
+
+      f(t,D) : 文書D中での語tの出現回数（TF）
+      n(t)   : 語tを含む文書数            N : 全文書数
+      |D|    : 文書Dの語数               avgdl : 平均語数
+
+    トライグラムとの決定的な違いは IDF。「どの文書にも出る語」を軽く、
+    「珍しい語」を重く扱うので、"会社"より"有給"の一致を高く評価できる。
+
+    ※ PostgreSQLの ts_rank は IDF を持たないため使わず、式をそのままSQLで書いている。
+      毎回コーパス統計を計算するので大規模では重い（本番は事前集計テーブルにする）。
+    """
+    terms = extract_nouns(question)
+    if not terms:
+        return []
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            WITH
+            -- 質問の名詞（重複除去）
+            q AS (
+                SELECT DISTINCT term FROM unnest(%s::text[]) AS term
+            ),
+            -- 各チャンクの名詞を配列に。空文字は NULL にして語数0扱いにする
+            doc AS (
+                SELECT c.id,
+                       string_to_array(
+                           NULLIF(TRIM(COALESCE(c.content_nouns, '')), ''), ' '
+                       ) AS nouns
+                FROM chunks c
+            ),
+            -- |D| : 各文書の語数
+            lens AS (
+                SELECT id, COALESCE(cardinality(nouns), 0)::float AS doc_len FROM doc
+            ),
+            -- N と avgdl : コーパス全体の統計
+            stats AS (
+                SELECT count(*)::float AS n_docs, avg(doc_len) AS avgdl FROM lens
+            ),
+            -- f(t,D) : 質問に出てくる語だけTFを数える
+            tf AS (
+                SELECT d.id AS chunk_id, tok AS term, count(*)::float AS f
+                FROM doc d, unnest(d.nouns) AS tok
+                WHERE tok IN (SELECT term FROM q)
+                GROUP BY d.id, tok
+            ),
+            -- n(t) : その語を含む文書数
+            df AS (
+                SELECT term, count(DISTINCT chunk_id)::float AS n_t FROM tf GROUP BY term
+            ),
+            -- IDF(t)
+            idf AS (
+                SELECT df.term,
+                       ln(((s.n_docs - df.n_t + 0.5) / (df.n_t + 0.5)) + 1) AS idf
+                FROM df CROSS JOIN stats s
+            ),
+            -- 語ごとのスコアを文書単位で合算
+            scored AS (
+                SELECT tf.chunk_id,
+                       sum(
+                           i.idf * (tf.f * (%s + 1))
+                           / (tf.f + %s * (1 - %s + %s * l.doc_len / NULLIF(s.avgdl, 0)))
+                       ) AS bm25
+                FROM tf
+                JOIN idf i ON i.term = tf.term
+                JOIN lens l ON l.id = tf.chunk_id
+                CROSS JOIN stats s
+                GROUP BY tf.chunk_id
+            )
+            SELECT c.id, c.content, d.source, sc.bm25
+            FROM scored sc
+            JOIN chunks c ON c.id = sc.chunk_id
+            JOIN documents d ON d.id = c.document_id
+            WHERE sc.bm25 > 0
+            ORDER BY sc.bm25 DESC
+            LIMIT %s
+            """,
+            (terms, BM25_K1, BM25_K1, BM25_B, BM25_B, k),
+        ).fetchall()
+
+    return [
+        {
+            "id": r[0],
+            "content": r[1],
+            "source": r[2],
+            "bm25_score": float(r[3]),
+        }
+        for r in rows
+    ]
+
+
 def _rrf_scores(
     ranked_lists: list[list[dict]], k: int = RRF_K
 ) -> list[tuple[dict, float, dict[int, int]]]:
@@ -157,17 +255,20 @@ def llm_rerank(question: str, candidates: list[dict], top_n: int = TOP_K) -> lis
 RETRIEVERS = {
     "vector": vector_search,
     "trgm": lexical_search,
+    "bm25": bm25_search,
 }
 
 # 各手法の「生スコア」がどのキーに入っているか
 METRIC_KEY = {
     "vector": "cosine_similarity",
     "trgm": "trgm_similarity",
+    "bm25": "bm25_score",
 }
 
 RETRIEVER_META = {
     "vector": {"label": "ベクトル検索（意味）", "metric_label": "cos類似度"},
     "trgm": {"label": "字面検索（名詞トライグラム）", "metric_label": "字面類似度"},
+    "bm25": {"label": "BM25全文検索（名詞）", "metric_label": "BM25スコア"},
 }
 
 
