@@ -11,6 +11,7 @@ type ChatResponse = components["schemas"]["ChatResponse"];
 type SearchStages = components["schemas"]["SearchResponse"];
 type ApiError = components["schemas"]["ErrorResponse"];
 type RetrieverInfo = components["schemas"]["RetrieverInfo"];
+type ParamSpec = components["schemas"]["ParamSpec"];
 
 // 検索手法ごとの説明（表ヘッダーのツールチップ）。手法を足したらここに1件追加する。
 const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
@@ -80,6 +81,9 @@ export default function Home() {
   // 選択可能な検索手法（起動時に /retrievers から取得）
   const [available, setAvailable] = useState<RetrieverInfo[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
+  const [fusionParams, setFusionParams] = useState<ParamSpec[]>([]);
+  // 入力値。空文字なら送らない = バックエンドの既定が使われる
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetch("/api/backend/retrievers")
@@ -87,6 +91,15 @@ export default function Home() {
       .then((d) => {
         setAvailable(d.available);
         setSelected(d.default); // 初期選択は .env の RETRIEVERS
+        setFusionParams(d.fusion_params);
+        // 入力欄に既定値を入れておく。空欄のままだとステッパー(▲▼)が
+        // 既定値からの増減にならないため。
+        const defaults: Record<string, string> = {};
+        for (const sp of d.fusion_params) defaults[sp.name] = String(sp.default);
+        for (const r of d.available)
+          for (const sp of r.params)
+            defaults[`${r.name}_${sp.name}`] = String(sp.default);
+        setParamValues(defaults);
       })
       .catch(() => {});
   }, []);
@@ -142,6 +155,10 @@ export default function Home() {
     try {
       const params = new URLSearchParams({ q });
       if (selected.length > 0) params.set("retrievers", selected.join(","));
+      // 空欄のものは送らず、バックエンドの既定値を使わせる
+      for (const [key, value] of Object.entries(paramValues)) {
+        if (value !== "") params.set(key, value);
+      }
       const res = await fetch(`/api/backend/search?${params}`);
       const err = await errorMessage(res);
       if (err) {
@@ -253,11 +270,79 @@ export default function Home() {
           )}
         </div>
 
+        {/* 数式の定数。仕様(PARAM_SPECS)から生成するので画面に定数を持たない */}
+        {(() => {
+          const rows: { key: string; spec: ParamSpec; owner: string }[] = [];
+          // 融合(RRF)は手法によらず常に効くので先頭に固定
+          for (const sp of fusionParams) {
+            rows.push({ key: sp.name, spec: sp, owner: "RRF融合" });
+          }
+          for (const r of available) {
+            if (!selected.includes(r.name)) continue; // 選択中の手法だけ
+            for (const sp of r.params) {
+              rows.push({ key: `${r.name}_${sp.name}`, spec: sp, owner: r.label });
+            }
+          }
+          if (rows.length === 0) return null;
+          return (
+            <div className="param-grid">
+              {rows.map(({ key, spec, owner }) => (
+                <label key={key} className="param-item">
+                  <span className="param-label">
+                    <span className="param-owner">{owner}</span>
+                    <Tip label={spec.label}>{spec.description}</Tip>
+                  </span>
+                  <span className="param-input">
+                    <input
+                      type="number"
+                      min={spec.min}
+                      max={spec.max}
+                      step={spec.step}
+                      placeholder={`既定 ${spec.default}`}
+                      value={paramValues[key] ?? ""}
+                      onChange={(e) =>
+                        setParamValues((prev) => ({ ...prev, [key]: e.target.value }))
+                      }
+                    />
+                    {/* この項目だけ既定に戻す */}
+                    <button
+                      className="reset-one"
+                      title={`既定 ${spec.default} に戻す`}
+                      onClick={() =>
+                        setParamValues((prev) => ({
+                          ...prev,
+                          [key]: String(spec.default),
+                        }))
+                      }
+                      disabled={paramValues[key] === String(spec.default)}
+                    >
+                      ↺
+                    </button>
+                  </span>
+                </label>
+              ))}
+            </div>
+          );
+        })()}
+
         {searchError && <p className="error-note">{searchError}</p>}
 
         {stages && (
           <>
-            <h3 className="stage-title">RRF融合後（最終順位）</h3>
+            <h3 className="stage-title">
+              RRF融合後（最終順位）
+              <span className="applied">
+                rrf_k={stages.applied_params.rrf_k}
+                {Object.entries(stages.applied_params.retrievers).map(([r, ps]) =>
+                  Object.entries(ps).map(([k, v]) => (
+                    <span key={`${r}.${k}`}>
+                      {" · "}
+                      {r}.{k}={v}
+                    </span>
+                  )),
+                )}
+              </span>
+            </h3>
             <div className="table-wrap">
               <table>
                 <thead>

@@ -30,7 +30,9 @@ CANDIDATES = 20  # 各検索が融合前に返す候補数
 RRF_K = 60       # RRFの平滑化定数（順位差をなだらかにする）
 
 
-def vector_search(question: str, k: int = CANDIDATES) -> list[dict]:
+def vector_search(
+    question: str, k: int = CANDIDATES, params: dict | None = None
+) -> list[dict]:
     """意味の近さ（コサイン距離）で上位k件。
 
     pgvector の `<=>` はコサイン**距離**（0=完全一致、大きいほど遠い）。
@@ -62,9 +64,7 @@ def vector_search(question: str, k: int = CANDIDATES) -> list[dict]:
 
 
 def lexical_search(
-    question: str,
-    k: int = CANDIDATES,
-    min_similarity: float = LEXICAL_MIN_SIMILARITY,
+    question: str, k: int = CANDIDATES, params: dict | None = None
 ) -> list[dict]:
     """字面の一致（トライグラム類似度）で上位k件。閾値未満は返さない。
 
@@ -81,6 +81,8 @@ def lexical_search(
     全件が閾値未満のときは字面リストが空になり、RRFは自然とベクトルの順位だけで
     決まる ＝ 分岐を書かずに「cos類似度のみで評価」が成立する。
     """
+    min_similarity = (params or {}).get("min_similarity", LEXICAL_MIN_SIMILARITY)
+
     query_nouns = noun_text(question)
     if not query_nouns:  # 名詞が1つも無い質問は字面検索を行わない
         return []
@@ -109,7 +111,9 @@ def lexical_search(
     ]
 
 
-def bm25_search(question: str, k: int = CANDIDATES) -> list[dict]:
+def bm25_search(
+    question: str, k: int = CANDIDATES, params: dict | None = None
+) -> list[dict]:
     """BM25 で上位k件。名詞列(content_nouns)を単語列とみなして計算する。
 
     score(D,Q) = Σ_t  IDF(t) · [ f(t,D)·(k1+1) ] / [ f(t,D) + k1·(1 - b + b·|D|/avgdl) ]
@@ -125,6 +129,10 @@ def bm25_search(question: str, k: int = CANDIDATES) -> list[dict]:
     ※ PostgreSQLの ts_rank は IDF を持たないため使わず、式をそのままSQLで書いている。
       毎回コーパス統計を計算するので大規模では重い（本番は事前集計テーブルにする）。
     """
+    p = params or {}
+    k1 = p.get("k1", BM25_K1)
+    b = p.get("b", BM25_B)
+
     terms = extract_nouns(question)
     if not terms:
         return []
@@ -191,7 +199,7 @@ def bm25_search(question: str, k: int = CANDIDATES) -> list[dict]:
             ORDER BY sc.bm25 DESC
             LIMIT %s
             """,
-            (terms, BM25_K1, BM25_K1, BM25_B, BM25_B, k),
+            (terms, k1, k1, b, b, k),
         ).fetchall()
 
     return [
@@ -272,10 +280,71 @@ RETRIEVER_META = {
 }
 
 
+# --- 調整可能なパラメータの仕様 -----------------------------------------------
+# UIのフォームはこの定義から生成する（画面側に定数をハードコードしない）。
+PARAM_SPECS: dict[str, list[dict]] = {
+    "vector": [],  # コサイン類似度に調整可能な定数はない
+    "trgm": [
+        {
+            "name": "min_similarity",
+            "label": "閾値",
+            "default": LEXICAL_MIN_SIMILARITY,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.001,
+            "description": "これ未満の一致はRRFに票を投じない。上げるほどノイズ票が減る",
+        },
+    ],
+    "bm25": [
+        {
+            "name": "k1",
+            "label": "k1（TF飽和）",
+            "default": BM25_K1,
+            "min": 0.0,
+            "max": 3.0,
+            "step": 0.1,
+            "description": "大きいほど「出現回数が多い」ことを強く評価する（定番 1.2〜2.0）",
+        },
+        {
+            "name": "b",
+            "label": "b（長さ正規化）",
+            "default": BM25_B,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+            "description": "1に近いほど長い文書を不利にする。0で文書長を無視（定番 0.75）",
+        },
+    ],
+}
+
+# 融合そのもののパラメータ（手法によらない）
+FUSION_PARAM_SPECS: list[dict] = [
+    {
+        "name": "rrf_k",
+        "label": "RRF k",
+        "default": RRF_K,
+        "min": 1.0,
+        "max": 300.0,
+        "step": 1.0,
+        "description": "順位差を平滑化する定数。大きいほど1位と2位の差が縮まる",
+    },
+]
+
+
+def default_params(name: str) -> dict:
+    """その手法の既定パラメータ。"""
+    return {spec["name"]: spec["default"] for spec in PARAM_SPECS.get(name, [])}
+
+
 def retriever_infos() -> list[dict]:
     """選択可能な手法の一覧（UIのチェックボックス用）。"""
     return [
-        {"name": n, "label": m["label"], "metric_label": m["metric_label"]}
+        {
+            "name": n,
+            "label": m["label"],
+            "metric_label": m["metric_label"],
+            "params": PARAM_SPECS.get(n, []),
+        }
         for n, m in RETRIEVER_META.items()
     ]
 
@@ -311,6 +380,8 @@ def hybrid_search(
     top_n: int = TOP_K,
     rerank: bool | None = None,
     retrievers: list[str] | None = None,
+    params: dict[str, dict] | None = None,
+    rrf_k: int | None = None,
 ) -> list[dict]:
     """指定した検索手法を RRF で融合。rerank=True ならLLMで再並べ替え。
 
@@ -322,7 +393,11 @@ def hybrid_search(
         rerank = USE_RERANK
 
     names = resolve_retrievers(retrievers)
-    fused = reciprocal_rank_fusion([RETRIEVERS[n](question) for n in names])
+    p = params or {}
+    fused = reciprocal_rank_fusion(
+        [RETRIEVERS[n](question, params=p.get(n)) for n in names],
+        k=rrf_k if rrf_k is not None else RRF_K,
+    )
 
     if rerank:
         # 融合上位を少し多めにリランク対象へ渡し、そこから top_n を選ばせる
@@ -336,7 +411,12 @@ def _preview(text: str, n: int = 80) -> str:
 
 
 def search_stages(
-    question: str, top_n: int = TOP_K, retrievers: list[str] | None = None, show: int = 5
+    question: str,
+    top_n: int = TOP_K,
+    retrievers: list[str] | None = None,
+    params: dict[str, dict] | None = None,
+    rrf_k: int | None = None,
+    show: int = 5,
 ) -> dict:
     """検索の各段階を返す（学習・デバッグ用。★Claudeを呼ばないのでAnthropicキー不要★）
 
@@ -344,8 +424,13 @@ def search_stages(
     fused の contributions に「どの手法が何位に置き、いくら寄与したか」が入る。
     """
     names = resolve_retrievers(retrievers)
-    lists = [RETRIEVERS[n](question) for n in names]
-    scored = _rrf_scores(lists)
+    given = params or {}
+    # 未指定のパラメータは既定で埋める（実際に使われた値をそのまま返せるように）
+    effective = {n: {**default_params(n), **(given.get(n) or {})} for n in names}
+    effective_rrf_k = int(rrf_k if rrf_k is not None else RRF_K)
+
+    lists = [RETRIEVERS[n](question, params=effective[n]) for n in names]
+    scored = _rrf_scores(lists, k=effective_rrf_k)
 
     # 融合後の行から各手法の生スコアを引くための索引
     by_id = [{h["id"]: h for h in lst} for lst in lists]
@@ -386,7 +471,7 @@ def search_stages(
                     "rank": rank,
                     "metric_value": metric_of(li, item["id"]),
                     # この手法が RRF スコアに足した分
-                    "rrf_term": round(1.0 / (RRF_K + rank + 1), 5)
+                    "rrf_term": round(1.0 / (effective_rrf_k + rank + 1), 5)
                     if rank is not None
                     else None,
                 }
@@ -406,6 +491,7 @@ def search_stages(
         "question": question,
         "retrievers": names,
         "available_retrievers": retriever_infos(),
+        "applied_params": {"rrf_k": effective_rrf_k, "retrievers": effective},
         "lexical_min_similarity": LEXICAL_MIN_SIMILARITY,
         "stages": stages,
         "fused": fused,

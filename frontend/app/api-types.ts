@@ -71,6 +71,8 @@ export interface paths {
          *
          *     - GET /search?q=... … 設定の既定の手法で検索
          *     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
+         *     - GET /search?q=...&bm25_k1=2.0&bm25_b=0.3&rrf_k=10 … 定数を変えて挙動を比較
+         *       （指定しなかった定数は既定値が使われる）
          *
          *     各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
          */
@@ -104,6 +106,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AppliedParams
+         * @description 実際に計算へ使われた値（未指定なら既定が入る）。
+         */
+        AppliedParams: {
+            /** Rrf K */
+            rrf_k: number;
+            /** Retrievers */
+            retrievers: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+        };
         /** ChatRequest */
         ChatRequest: {
             /**
@@ -244,6 +260,26 @@ export interface components {
             replaced: number;
         };
         /**
+         * ParamSpec
+         * @description 調整可能なパラメータの仕様。UIの入力欄はこれを元に生成する。
+         */
+        ParamSpec: {
+            /** Name */
+            name: string;
+            /** Label */
+            label: string;
+            /** Default */
+            default: number;
+            /** Min */
+            min: number;
+            /** Max */
+            max: number;
+            /** Step */
+            step: number;
+            /** Description */
+            description: string;
+        };
+        /**
          * RetrieverInfo
          * @description 選択可能な検索手法（UIの切り替え用）。
          */
@@ -254,6 +290,11 @@ export interface components {
             label: string;
             /** Metric Label */
             metric_label: string;
+            /**
+             * Params
+             * @description この手法で調整できる定数（空配列もあり）
+             */
+            params: components["schemas"]["ParamSpec"][];
         };
         /**
          * RetrieverStage
@@ -290,6 +331,11 @@ export interface components {
              * @description 環境変数 RETRIEVERS の値
              */
             default: string[];
+            /**
+             * Fusion Params
+             * @description 融合そのもののパラメータ（RRF k）
+             */
+            fusion_params: components["schemas"]["ParamSpec"][];
         };
         /**
          * SearchResponse
@@ -310,9 +356,11 @@ export interface components {
              * @description 指定可能な手法の一覧。/search?retrievers=a,b で選べる
              */
             available_retrievers: components["schemas"]["RetrieverInfo"][];
+            /** @description この検索で実際に使われた定数 */
+            applied_params: components["schemas"]["AppliedParams"];
             /**
              * Lexical Min Similarity
-             * @description これ未満の字面ヒットはRRFに渡さない閾値（trgm手法用）
+             * @description これ未満の字面ヒットはRRFに渡さない閾値（trgm手法用・後方互換）
              */
             lexical_min_similarity: number;
             /**
@@ -470,6 +518,10 @@ export interface operations {
                 q: string;
                 top_n?: number;
                 retrievers?: string | null;
+                rrf_k?: number | null;
+                trgm_min_similarity?: number | null;
+                bm25_k1?: number | null;
+                bm25_b?: number | null;
             };
             header?: never;
             path?: never;

@@ -355,3 +355,71 @@ th:nth-last-child(-n + 3) .tip-body {
   color: #b45309;
   font-size: 12px;
 }
+
+/* 数式の定数を調整する入力欄（仕様から自動生成） */
+.param-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.param-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.param-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.param-owner {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.param-item input {
+  width: 120px;
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.param-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 項目ごとの「既定に戻す」 */
+.reset-one {
+  padding: 2px 7px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: #fff;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.reset-one:not(:disabled):hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.applied {
+  margin-left: 10px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}

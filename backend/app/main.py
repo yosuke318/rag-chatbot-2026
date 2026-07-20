@@ -16,6 +16,7 @@ from app.config import RETRIEVERS_DEFAULT
 from app.retrieval import (
     UnknownRetriever,
     hybrid_search,
+    FUSION_PARAM_SPECS,
     retriever_infos,
     search_stages,
 )
@@ -185,22 +186,46 @@ def ingest(req: IngestRequest):
 @app.get("/retrievers", response_model=RetrieversResponse)
 def retrievers_list():
     """選択可能な検索手法の一覧。UIのチェックボックス生成に使う。"""
-    return {"available": retriever_infos(), "default": RETRIEVERS_DEFAULT}
+    return {
+        "available": retriever_infos(),
+        "default": RETRIEVERS_DEFAULT,
+        "fusion_params": FUSION_PARAM_SPECS,
+    }
 
 
 @app.get("/search", response_model=SearchResponse, responses=_ERRORS)
-def search(q: str, top_n: int = 4, retrievers: Optional[str] = None):
+def search(
+    q: str,
+    top_n: int = 4,
+    retrievers: Optional[str] = None,
+    rrf_k: Optional[int] = None,
+    trgm_min_similarity: Optional[float] = None,
+    bm25_k1: Optional[float] = None,
+    bm25_b: Optional[float] = None,
+):
     """検索の各段階を返す（Claudeを呼ばない = Anthropicキー不要）。
 
     - GET /search?q=... … 設定の既定の手法で検索
     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
+    - GET /search?q=...&bm25_k1=2.0&bm25_b=0.3&rrf_k=10 … 定数を変えて挙動を比較
+      （指定しなかった定数は既定値が使われる）
 
     各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
     """
     names = (
         [n.strip() for n in retrievers.split(",") if n.strip()] if retrievers else None
     )
-    return search_stages(q, top_n=top_n, retrievers=names)
+    # None のものは落として、その手法の既定値が使われるようにする
+    raw = {
+        "trgm": {"min_similarity": trgm_min_similarity},
+        "bm25": {"k1": bm25_k1, "b": bm25_b},
+    }
+    params = {
+        r: {k: v for k, v in vals.items() if v is not None} for r, vals in raw.items()
+    }
+    return search_stages(
+        q, top_n=top_n, retrievers=names, params=params, rrf_k=rrf_k
+    )
 
 
 @app.post("/chat", response_model=ChatResponse, responses=_ERRORS)

@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -86,12 +86,33 @@ class FusedHit(BaseModel):
     preview: str
 
 
+class ParamSpec(BaseModel):
+    """調整可能なパラメータの仕様。UIの入力欄はこれを元に生成する。"""
+
+    name: str
+    label: str
+    default: float
+    min: float
+    max: float
+    step: float
+    description: str
+
+
 class RetrieverInfo(BaseModel):
     """選択可能な検索手法（UIの切り替え用）。"""
 
     name: str
     label: str
     metric_label: str
+    # 常に返すので必須。任意にすると生成TS型が undefined を含み扱いづらくなる
+    params: List[ParamSpec] = Field(description="この手法で調整できる定数（空配列もあり）")
+
+
+class AppliedParams(BaseModel):
+    """実際に計算へ使われた値（未指定なら既定が入る）。"""
+
+    rrf_k: int
+    retrievers: Dict[str, Dict[str, float]]
 
 
 class RetrieversResponse(BaseModel):
@@ -99,6 +120,7 @@ class RetrieversResponse(BaseModel):
 
     available: List[RetrieverInfo]
     default: List[str] = Field(description="環境変数 RETRIEVERS の値")
+    fusion_params: List[ParamSpec] = Field(description="融合そのもののパラメータ（RRF k）")
 
 
 class SearchResponse(BaseModel):
@@ -112,8 +134,9 @@ class SearchResponse(BaseModel):
     available_retrievers: List[RetrieverInfo] = Field(
         description="指定可能な手法の一覧。/search?retrievers=a,b で選べる"
     )
+    applied_params: AppliedParams = Field(description="この検索で実際に使われた定数")
     lexical_min_similarity: float = Field(
-        description="これ未満の字面ヒットはRRFに渡さない閾値（trgm手法用）"
+        description="これ未満の字面ヒットはRRFに渡さない閾値（trgm手法用・後方互換）"
     )
     stages: List[RetrieverStage] = Field(description="融合前の各手法のランキング")
     fused: List[FusedHit]
