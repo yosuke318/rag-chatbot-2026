@@ -599,34 +599,6 @@ export default function Home() {
               複数の手法が票を投じたチャンクほど合計が大きくなる。
               「—」はその手法のリストに出てこなかったことを示す。
             </p>
-
-            {/* 融合前：各手法の生ランキング */}
-            <div className="two-col">
-              {stages.stages.map((st) => (
-                <div key={st.name}>
-                  <h3 className="stage-title">
-                    {st.label}（{st.metric_label}）
-                  </h3>
-                  {st.hits.length === 0 ? (
-                    <p className="empty-note">
-                      ヒットなし。この手法は票を投じないので、
-                      <strong>RRFは他の手法の順位だけで決まっています</strong>。
-                      {st.name === "trgm" &&
-                        `（閾値 ${stages.lexical_min_similarity} 未満は除外）`}
-                    </p>
-                  ) : (
-                    <ol className="raw-list">
-                      {st.hits.map((h) => (
-                        <li key={h.id}>
-                          <code>#{h.id}</code>{" "}
-                          <span className="metric">{h.metric_value}</span> {h.preview}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              ))}
-            </div>
           </>
         )}
       </section>

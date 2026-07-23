@@ -311,33 +311,6 @@ p.hint .term {
   font-size: 11px;
 }
 
-.two-col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
-@media (max-width: 640px) {
-  .two-col {
-    grid-template-columns: 1fr;
-  }
-}
-
-.raw-list {
-  font-size: 12px;
-  padding-left: 20px;
-  margin: 0;
-  color: var(--muted);
-}
-
-.raw-list li {
-  margin-bottom: 4px;
-}
-
-.raw-list code {
-  color: var(--accent);
-}
-
 .error-note {
   font-size: 13px;
   color: #991b1b;
@@ -359,12 +332,6 @@ p.hint .term {
   padding: 8px 10px;
   margin: 0;
   line-height: 1.7;
-}
-
-.raw-list .metric {
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-  font-weight: 600;
 }
 
 /* --- ツールチップ（見出しにカーソル/フォーカスで説明を表示）--- */
