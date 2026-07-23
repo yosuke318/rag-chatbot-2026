@@ -45,10 +45,11 @@ services:
       minio:
         condition: service_healthy
     # --ignore-existing: バケットが既にあってもエラーにせず正常終了させる（再実行に耐える）
+    # ※ -p は --ignore-existing の短縮形なので併用不可。長い方だけを使う。
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 minioadmin minioadmin &&
-      mc mb -p --ignore-existing local/rag-docs
+      mc mb --ignore-existing local/rag-docs
       "
 
   backend:
