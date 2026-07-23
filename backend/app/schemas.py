@@ -24,6 +24,26 @@ class ChatRequest(BaseModel):
     question: str = Field(description="質問文")
 
 
+class FeedbackRequest(BaseModel):
+    """回答への 👍/👎。評価(eval)のQA候補として貯める。"""
+
+    question: str = Field(description="評価対象の質問")
+    answer: str = Field(description="評価対象の回答")
+    rating: int = Field(description="+1 = 👍 / -1 = 👎")
+    sources: List[str] = Field(default_factory=list, description="回答の根拠に使った出典")
+    comment: Optional[str] = Field(default=None, description="自由記述（任意）")
+
+
+class EvalQuestionRequest(BaseModel):
+    """評価用の質問1件（正解ラベル付き）。会社・部署ごとに分けて登録できる。"""
+
+    question: str = Field(description="評価する質問")
+    expected_source: str = Field(description="正解の文書名（この文書が上位に来れば正解）")
+    company: Optional[str] = Field(default=None, description="会社（未指定は共通）")
+    department: Optional[str] = Field(default=None, description="部署（未指定は共通）")
+    note: Optional[str] = Field(default=None, description="何を確かめる質問かのメモ（任意）")
+
+
 # --- レスポンス ---------------------------------------------------------------
 
 
@@ -145,6 +165,54 @@ class SearchResponse(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: List[str] = Field(description="根拠に使ったチャンクの出典（重複排除済み）")
+
+
+class FeedbackResponse(BaseModel):
+    id: int = Field(description="保存したフィードバックのID")
+    rating: int = Field(description="記録した評価（+1 / -1）")
+
+
+class EvalQuestion(BaseModel):
+    """登録済みの評価用質問1件。"""
+
+    id: int
+    question: str
+    expected_source: str
+    company: Optional[str] = None
+    department: Optional[str] = None
+    note: Optional[str] = None
+
+
+class EvalQuestionsResponse(BaseModel):
+    """評価用質問の一覧（会社・部署で絞り込める）。"""
+
+    questions: List[EvalQuestion]
+
+
+class EvalResult(BaseModel):
+    """評価1問分の結果。"""
+
+    question: str
+    expected_source: str = Field(description="正解の文書名")
+    hit: bool = Field(description="上位k件に正解が入ったか")
+    rank: Optional[int] = Field(description="正解の順位（0始まり）。null=圏外")
+    retrieved: List[str] = Field(description="実際に上位で引いた文書名の並び")
+
+
+class EvalReport(BaseModel):
+    """質問集全体の評価結果。UIの評価パネルはこれを描画する。"""
+
+    n: int = Field(description="評価した質問数")
+    top_k: int
+    retrievers: Optional[List[str]] = Field(description="使った手法（null=設定の既定）")
+    rerank: Optional[bool] = Field(description="リランクの有無（null=設定の既定）")
+    rrf_k: Optional[int] = Field(default=None, description="使ったRRF k（null=既定）")
+    params: Optional[Dict[str, Dict[str, float]]] = Field(
+        default=None, description="使った数値パラメータ（手法ごと。null/空=既定）"
+    )
+    hit_at_k: float = Field(description="上位k件に正解が入った質問の割合")
+    mrr: float = Field(description="正解順位の逆数平均（1位=1.0 / 圏外=0）")
+    results: List[EvalResult]
 
 
 class ErrorResponse(BaseModel):
