@@ -10,6 +10,7 @@ import voyageai.error
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from app.db import get_conn, init_db
+from app.eval import evaluate, load_questions
 from app.ingest import ingest_text
 from app.llm import MissingAPIKey, generate_answer
 from app.config import RETRIEVERS_DEFAULT
@@ -27,6 +28,7 @@ from app.schemas import (
     EvalQuestion,
     EvalQuestionRequest,
     EvalQuestionsResponse,
+    EvalReport,
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
@@ -263,14 +265,29 @@ def feedback(req: FeedbackRequest):
     return {"id": new_id, "rating": rating}
 
 
-@app.post("/eval-questions", response_model=EvalQuestion)
+@app.post(
+    "/eval-questions",
+    response_model=EvalQuestion,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
 def add_eval_question(req: EvalQuestionRequest):
     """評価用の質問を1件登録する（会社・部署ごとに分けられる）。
 
     正解ラベル(expected_source)付きでDBに貯め、`python -m app.eval` がここから
     読んで Hit@k / MRR を測る。コードの定数を編集せずに質問を足せるようにするため
     のエンドポイント。外部APIは呼ばないのでキーは不要。
+
+    質問と正解の文書名は評価の必須要素なので、空文字なら400で弾く（Pydanticは
+    空文字を str として通してしまうため、ここで明示的に検査する）。
     """
+    if not req.question.strip() or not req.expected_source.strip():
+        return _error(
+            400,
+            "invalid_eval_question",
+            "質問と正解の文書名は必須です。",
+            "question と expected_source の両方を入力してください。",
+            "",
+        )
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO eval_questions "
@@ -325,3 +342,27 @@ def list_eval_questions(
             for r in rows
         ]
     }
+
+
+@app.get("/eval", response_model=EvalReport, responses=_ERRORS)
+def run_eval(
+    top_k: int = 4,
+    retrievers: Optional[str] = None,
+    rerank: Optional[bool] = None,
+    company: Optional[str] = None,
+    department: Optional[str] = None,
+):
+    """DBの評価用質問集で検索精度(Hit@k / MRR)を測って返す。
+
+    検索の内訳(/search)が「1問を深く見る」のに対し、こちらは「質問集全体で
+    どれだけ当たるか」を集計する。company/department で評価対象を絞れる。
+
+    Claudeは rerank=True のときだけ呼ぶ（検索評価そのものは Voyage のみ）。
+    質問が0件なら n=0 の空レポートを返す（UI側で「まず質問を登録」と促す）。
+    contexts など内部フィールドは response_model(EvalReport)で自動的に落ちる。
+    """
+    names = (
+        [n.strip() for n in retrievers.split(",") if n.strip()] if retrievers else None
+    )
+    gold = load_questions(company=company, department=department)
+    return evaluate(top_k=top_k, retrievers=names, rerank=rerank, gold=gold)

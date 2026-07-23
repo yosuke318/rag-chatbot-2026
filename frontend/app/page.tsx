@@ -13,6 +13,26 @@ type ApiError = components["schemas"]["ErrorResponse"];
 type RetrieverInfo = components["schemas"]["RetrieverInfo"];
 type ParamSpec = components["schemas"]["ParamSpec"];
 
+// 評価パネル用。api-types.ts は backend 起動下で `npm run gen:types` して再生成する
+// ため、それまでの間はここで最小の型を持つ（再生成後は components["schemas"]["EvalReport"]
+// に寄せられる）。
+type EvalResult = {
+  question: string;
+  expected_source: string;
+  hit: boolean;
+  rank: number | null;
+  retrieved: string[];
+};
+type EvalReport = {
+  n: number;
+  top_k: number;
+  retrievers: string[] | null;
+  rerank: boolean | null;
+  hit_at_k: number;
+  mrr: number;
+  results: EvalResult[];
+};
+
 // 検索手法ごとの説明（表ヘッダーのツールチップ）。手法を足したらここに1件追加する。
 const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
   vector: (
@@ -100,6 +120,7 @@ export default function Home() {
       .then((d) => {
         setAvailable(d.available);
         setSelected(d.default); // 初期選択は .env の RETRIEVERS
+        setEvalSelected(d.default); // 評価パネルも同じ既定から始める
         setFusionParams(d.fusion_params);
         // 入力欄に既定値を入れておく。空欄のままだとステッパー(▲▼)が
         // 既定値からの増減にならないため。
@@ -129,6 +150,93 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // --- 評価パネル（/eval = 質問集で Hit@k / MRR を測る）---
+  const [evalSelected, setEvalSelected] = useState<string[]>([]);
+  const [evalRerank, setEvalRerank] = useState(false);
+  const [evalCompany, setEvalCompany] = useState("");
+  const [evalDepartment, setEvalDepartment] = useState("");
+  const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
+  const [evalRunning, setEvalRunning] = useState(false);
+  const [evalError, setEvalError] = useState("");
+
+  // 評価用の質問を登録するフォーム（POST /eval-questions）
+  const [newQ, setNewQ] = useState("");
+  const [newExpected, setNewExpected] = useState("");
+  const [newQCompany, setNewQCompany] = useState("");
+  const [newQDepartment, setNewQDepartment] = useState("");
+  const [newQNote, setNewQNote] = useState("");
+  const [addQStatus, setAddQStatus] = useState("");
+  const [addingQ, setAddingQ] = useState(false);
+
+  async function addEvalQuestion() {
+    if (addingQ) return;
+    setAddingQ(true);
+    setAddQStatus("");
+    try {
+      const res = await fetch("/api/backend/eval-questions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: newQ,
+          expected_source: newExpected,
+          // 空欄は送らない（＝共通の質問として登録）
+          company: newQCompany.trim() || null,
+          department: newQDepartment.trim() || null,
+          note: newQNote.trim() || null,
+        }),
+      });
+      // 空入力なら backend が 400 を返す。その message をそのまま表示する
+      const err = await errorMessage(res);
+      if (err) {
+        setAddQStatus(err);
+        return;
+      }
+      setAddQStatus(`「${newQ}」を登録しました（正解: ${newExpected}）`);
+      setNewQ("");
+      setNewExpected("");
+      setNewQNote("");
+    } catch (e) {
+      setAddQStatus(`エラー: ${String(e)}`);
+    } finally {
+      setAddingQ(false);
+    }
+  }
+
+  function toggleEvalRetriever(name: string) {
+    setEvalSelected((prev) => {
+      const next = prev.includes(name)
+        ? prev.filter((n) => n !== name)
+        : [...prev, name];
+      return available.map((r) => r.name).filter((n) => next.includes(n));
+    });
+  }
+
+  async function runEval() {
+    if (evalRunning) return;
+    setEvalRunning(true);
+    setEvalError("");
+    try {
+      const params = new URLSearchParams({ top_k: "4" });
+      if (evalSelected.length > 0) params.set("retrievers", evalSelected.join(","));
+      if (evalRerank) params.set("rerank", "true");
+      if (evalCompany.trim()) params.set("company", evalCompany.trim());
+      if (evalDepartment.trim()) params.set("department", evalDepartment.trim());
+      const res = await fetch(`/api/backend/eval?${params}`);
+      const err = await errorMessage(res);
+      if (err) {
+        setEvalError(err);
+        setEvalReport(null);
+        return;
+      }
+      setEvalReport(await res.json());
+    } catch (e) {
+      setEvalReport(null);
+      setEvalError(`通信に失敗しました: ${String(e)}`);
+    } finally {
+      setEvalRunning(false);
+    }
+  }
 
   async function ingest() {
     if (!source.trim() || !docText.trim()) return;
@@ -571,6 +679,174 @@ export default function Home() {
             送信
           </button>
         </div>
+      </section>
+
+      {/* 評価フロー: 質問集(eval_questions) → 各問を検索 → Hit@k / MRR を集計 */}
+      <section className="panel">
+        <h2>
+          <Tip label="④ 評価する">
+            登録済みの<strong>質問集（正解ラベル付き）</strong>を一気に検索して、
+            <strong>どれだけ正解文書を上位で拾えたか</strong>を集計する。
+            <br />
+            <br />
+            ② が「1問を深く見る」のに対し、④ は「質問集<strong>全体</strong>で当たるか」を見る。
+            手法やリランクを変えて<strong>数字が上がるか下がるか</strong>で改良の効果を判定できる。
+            <br />
+            <br />
+            質問は会社・部署ごとに分けて登録できる（<code>POST /eval-questions</code>）。
+            まだ無ければ <code>python -m app.eval --seed</code> でサンプルを投入。
+          </Tip>
+          （/eval・Voyageキー必要 / リランク時のみAnthropic）
+        </h2>
+
+        {/* 評価用の質問を登録する（正解ラベル付き） */}
+        <div className="eval-add">
+          <h3 className="stage-title">評価用の質問を登録（/eval-questions）</h3>
+          <input
+            placeholder="質問（例: 有給は入社何ヶ月で何日？）"
+            value={newQ}
+            onChange={(e) => setNewQ(e.target.value)}
+          />
+          <input
+            placeholder="正解の文書名（例: 有給休暇.txt）"
+            value={newExpected}
+            onChange={(e) => setNewExpected(e.target.value)}
+          />
+          <div className="eval-add-row">
+            <input
+              placeholder="会社（任意）"
+              value={newQCompany}
+              onChange={(e) => setNewQCompany(e.target.value)}
+            />
+            <input
+              placeholder="部署（任意）"
+              value={newQDepartment}
+              onChange={(e) => setNewQDepartment(e.target.value)}
+            />
+          </div>
+          <input
+            placeholder="メモ（任意・何を確かめる質問か）"
+            value={newQNote}
+            onChange={(e) => setNewQNote(e.target.value)}
+          />
+          <button onClick={addEvalQuestion} disabled={addingQ}>
+            {addingQ ? "登録中…" : "質問を追加"}
+          </button>
+          {addQStatus && <p className="hint">{addQStatus}</p>}
+        </div>
+
+        {/* 評価対象の絞り込みと手法選択 */}
+        <div className="eval-controls">
+          <input
+            placeholder="会社（任意）"
+            value={evalCompany}
+            onChange={(e) => setEvalCompany(e.target.value)}
+          />
+          <input
+            placeholder="部署（任意）"
+            value={evalDepartment}
+            onChange={(e) => setEvalDepartment(e.target.value)}
+          />
+          <button onClick={runEval} disabled={evalRunning || evalSelected.length === 0}>
+            {evalRunning ? "評価中…" : "検証する"}
+          </button>
+        </div>
+        <div className="retriever-picker">
+          {available.map((r) => (
+            <span key={r.name} className="retriever-option">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={evalSelected.includes(r.name)}
+                  onChange={() => toggleEvalRetriever(r.name)}
+                />
+                {r.label}
+              </label>
+            </span>
+          ))}
+          <span className="retriever-option">
+            <label>
+              <input
+                type="checkbox"
+                checked={evalRerank}
+                onChange={(e) => setEvalRerank(e.target.checked)}
+              />
+              LLMリランク（要Anthropic）
+            </label>
+          </span>
+          {evalSelected.length === 0 && (
+            <span className="picker-warn">手法を1つ以上選んでください</span>
+          )}
+        </div>
+
+        {evalError && <p className="error-note">{evalError}</p>}
+
+        {evalReport &&
+          (evalReport.n === 0 ? (
+            <p className="empty-note">
+              評価用の質問がありません。
+              <code>python -m app.eval --seed</code> でサンプルを投入するか、
+              <code>POST /eval-questions</code> で登録してください。
+            </p>
+          ) : (
+            <>
+              {/* 集計スコア（大きく表示） */}
+              <div className="eval-score">
+                <div className="eval-metric">
+                  <span className="eval-metric-value">
+                    {evalReport.hit_at_k.toFixed(3)}
+                  </span>
+                  <span className="eval-metric-label">
+                    Hit@{evalReport.top_k}（上位{evalReport.top_k}件に正解が入った割合）
+                  </span>
+                </div>
+                <div className="eval-metric">
+                  <span className="eval-metric-value">
+                    {evalReport.mrr.toFixed(3)}
+                  </span>
+                  <span className="eval-metric-label">
+                    MRR（正解順位の逆数平均・1.0が満点）
+                  </span>
+                </div>
+                <div className="eval-meta">
+                  N={evalReport.n} ・ 手法=
+                  {evalReport.retrievers ? evalReport.retrievers.join(",") : "既定"} ・
+                  リランク=
+                  {evalReport.rerank === null ? "既定" : evalReport.rerank ? "有効" : "無効"}
+                </div>
+              </div>
+
+              {/* 1問ずつの結果。×の行が改善対象 */}
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>判定</th>
+                      <th>順位</th>
+                      <th>質問</th>
+                      <th>正解</th>
+                      <th>検索で引いた文書（上位順）</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {evalReport.results.map((r, i) => (
+                      <tr key={i} className={r.hit ? "" : "miss"}>
+                        <td>{r.hit ? "○" : "×"}</td>
+                        <td>{r.rank === null ? "圏外" : `${r.rank + 1}位`}</td>
+                        <td className="preview">{r.question}</td>
+                        <td>{r.expected_source}</td>
+                        <td className="preview">{r.retrieved.join(" / ") || "(なし)"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="hint">
+                <strong>×</strong> の行は正解文書を上位{evalReport.top_k}件に拾えなかった質問。
+                手法やリランクを変えて再検証し、Hit@k / MRR が上がるかで改良の効果を確かめる。
+              </p>
+            </>
+          ))}
       </section>
     </div>
   );

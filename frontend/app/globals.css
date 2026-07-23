@@ -172,6 +172,76 @@ button:disabled {
   flex-shrink: 0;
 }
 
+/* --- 評価パネル --- */
+.eval-add {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+
+.eval-add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.eval-add-row input {
+  flex: 1;
+}
+
+.eval-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.eval-controls input {
+  margin-bottom: 0;
+}
+
+.eval-controls button {
+  flex-shrink: 0;
+}
+
+.eval-score {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 24px;
+  margin: 14px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.eval-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.eval-metric-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.eval-metric-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.eval-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+/* 評価テーブルの不正解行を薄く強調 */
+tr.miss td {
+  background: color-mix(in srgb, var(--bot-bubble) 60%, transparent);
+}
+
 /* --- 検索の内訳パネル --- */
 .stage-title {
   font-size: 13px;

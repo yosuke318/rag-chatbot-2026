@@ -189,6 +189,28 @@ class EvalQuestionsResponse(BaseModel):
     questions: List[EvalQuestion]
 
 
+class EvalResult(BaseModel):
+    """評価1問分の結果。"""
+
+    question: str
+    expected_source: str = Field(description="正解の文書名")
+    hit: bool = Field(description="上位k件に正解が入ったか")
+    rank: Optional[int] = Field(description="正解の順位（0始まり）。null=圏外")
+    retrieved: List[str] = Field(description="実際に上位で引いた文書名の並び")
+
+
+class EvalReport(BaseModel):
+    """質問集全体の評価結果。UIの評価パネルはこれを描画する。"""
+
+    n: int = Field(description="評価した質問数")
+    top_k: int
+    retrievers: Optional[List[str]] = Field(description="使った手法（null=設定の既定）")
+    rerank: Optional[bool] = Field(description="リランクの有無（null=設定の既定）")
+    hit_at_k: float = Field(description="上位k件に正解が入った質問の割合")
+    mrr: float = Field(description="正解順位の逆数平均（1位=1.0 / 圏外=0）")
+    results: List[EvalResult]
+
+
 class ErrorResponse(BaseModel):
     """エラー時の共通形。UIはこれをそのまま表示する。"""
 
