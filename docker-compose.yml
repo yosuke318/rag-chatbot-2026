@@ -1,5 +1,5 @@
 # ローカルでフルスタックを再現する compose。
-#   db(pgvector) + backend(FastAPI) + frontend(Next.js)
+#   db(pgvector) + backend(FastAPI) + frontend(Next.js) + minio(S3互換・原本保存)
 # 前提: backend/.env を用意しておく（cp backend/.env.example backend/.env → キー記入）
 services:
   db:
@@ -18,6 +18,37 @@ services:
       timeout: 3s
       retries: 10
 
+  # S3のローカル再現。原本ファイル（PDF・抽出画像）の保存先。
+  # コンソール: http://localhost:9001 （minioadmin / minioadmin）
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # 管理コンソール
+    volumes:
+      - miniodata:/data # ★名前付きボリューム：原本を永続化（pgdataと同じ扱い）
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # 起動時にバケットを作るだけの一発コンテナ（作成済みなら何もしない）
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/rag-docs
+      "
+
   backend:
     build: ./backend
     env_file:
@@ -25,10 +56,17 @@ services:
     environment:
       # compose 内では db サービス名で接続（.env の localhost 設定を上書き）
       DATABASE_URL: postgresql://rag:rag@db:5432/rag
+      # compose 内では minio サービス名で接続（本番はこの変数を消せば実S3に向く）
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: rag-docs
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
       - "8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     volumes:
       - ./backend/seed_docs:/app/seed_docs # seed用の文書（ホストで足せる）
@@ -44,3 +82,4 @@ services:
 
 volumes:
   pgdata: # `task downv`（down -v）で削除、`task down` では残る
+  miniodata:
