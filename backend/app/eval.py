@@ -84,9 +84,12 @@ def evaluate(
     """GOLD を1問ずつ検索にかけ、Hit@k と MRR を集計して返す。
 
     各問について hybrid_search を実行し、正解文書が上位 top_k に入ったか・
-    何位だったかを記録する。回答生成はしない（検索性能だけを見る）。
+    何位だったかを記録する。ここでは回答生成はしないが、--gen で回答を目視する
+    ときに「評価と同じ検索結果」を使い回せるよう、引いたチャンク本文(contexts)も
+    results に持たせておく（--gen で再検索しないための保存）。
     """
-    gold = gold or GOLD
+    # None のときだけ既定を使う。空リスト [] は「0問で評価」の明示指定として尊重する
+    gold = GOLD if gold is None else gold
     results = []
     hit_count = 0
     reciprocal_sum = 0.0
@@ -108,6 +111,8 @@ def evaluate(
                 "hit": hit,
                 "rank": rank,  # None = 圏外
                 "retrieved": [h["source"] for h in hits],
+                # --gen 用。評価に使ったのと同一のヒット本文を回答生成へ渡す
+                "contexts": [h["content"] for h in hits],
             }
         )
 
@@ -115,6 +120,9 @@ def evaluate(
     return {
         "n": n,
         "top_k": top_k,
+        # この評価で実際に使った検索条件（Noneは「設定の既定を使用」の意味）
+        "retrievers": retrievers,
+        "rerank": rerank,
         "hit_at_k": round(hit_count / n, 3) if n else 0.0,
         "mrr": round(reciprocal_sum / n, 3) if n else 0.0,
         "results": results,
@@ -124,8 +132,11 @@ def evaluate(
 def _print_report(report: dict, generate: bool = False) -> None:
     """人が読めるように結果を整形して標準出力に出す。"""
     k = report["top_k"]
+    # 評価に使った検索条件（Noneは設定の既定）
+    retrievers = ",".join(report["retrievers"]) if report["retrievers"] else "既定"
+    rerank = {True: "有効", False: "無効", None: "既定"}[report["rerank"]]
     print(f"\n{'='*60}")
-    print(f"検索評価  N={report['n']}  top_k={k}")
+    print(f"検索評価  N={report['n']}  top_k={k}  手法={retrievers}  リランク={rerank}")
     print(f"  Hit@{k} = {report['hit_at_k']:.3f}   （上位{k}件に正解が入った割合）")
     print(f"  MRR    = {report['mrr']:.3f}   （正解の順位の逆数平均・1.0が満点）")
     print(f"{'='*60}")
@@ -139,10 +150,9 @@ def _print_report(report: dict, generate: bool = False) -> None:
 
         if generate:
             # 目視確認用。回答生成には ANTHROPIC_API_KEY が要る。
-            from app.retrieval import hybrid_search as _hs
-
-            hits = _hs(r["question"], top_n=k)
-            answer = generate_answer(r["question"], [h["content"] for h in hits])
+            # 再検索はせず、評価と同一のヒット(contexts)から回答を作る
+            # ＝ 上の○×・順位と回答が必ず同じ検索結果に基づく。
+            answer = generate_answer(r["question"], r["contexts"])
             print(f"    回答: {answer.strip()}")
 
 
