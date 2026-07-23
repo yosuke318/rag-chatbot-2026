@@ -50,14 +50,12 @@ def embed_query(text: str) -> list[float]:
 
 
 # ============================================================
-# 検索 / 回答生成 (Claude)
+# 検索（Voyageのみ / Claudeは任意のリランクだけ）
+#   検索そのもの（ベクトル / 字面 / BM25 → RRF）は retrieval.py 側にあり、
+#   必要なAPIは質問のベクトル化に使う Voyage の埋め込みだけ。Claudeは呼ばない。
+#   下の rank_by_relevance は「任意」のLLMリランク（USE_RERANK有効時のみ）で、
+#   これだけは例外的にClaudeを使う。素の検索・検索評価に生成APIは要らない。
 # ============================================================
-
-SYSTEM_PROMPT = (
-    "あなたは文書検索アシスタントです。以下のコンテキストだけを根拠に、"
-    "日本語で簡潔に回答してください。コンテキストに答えが無い場合は"
-    "「資料からは分かりません」と答えてください。"
-)
 
 
 def rank_by_relevance(question: str, passages: list[str]) -> list[int]:
@@ -87,6 +85,18 @@ def rank_by_relevance(question: str, passages: list[str]) -> list[int]:
         if 0 <= i < len(passages) and i not in order:
             order.append(i)
     return order
+
+
+# ============================================================
+# 回答生成 (Claude)
+#   検索で拾ったチャンクを根拠に、実際の回答文を作る工程。ここはClaudeが必須。
+# ============================================================
+
+SYSTEM_PROMPT = (
+    "あなたは文書検索アシスタントです。以下のコンテキストだけを根拠に、"
+    "日本語で簡潔に回答してください。コンテキストに答えが無い場合は"
+    "「資料からは分かりません」と答えてください。"
+)
 
 
 def generate_answer(question: str, contexts: list[str]) -> str:
