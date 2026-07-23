@@ -156,6 +156,8 @@ def evaluate(
     retrievers: list[str] | None = None,
     rerank: bool | None = None,
     gold: list[dict] | None = None,
+    params: dict[str, dict] | None = None,
+    rrf_k: int | None = None,
 ) -> dict:
     """GOLD を1問ずつ検索にかけ、Hit@k と MRR を集計して返す。
 
@@ -163,6 +165,10 @@ def evaluate(
     何位だったかを記録する。ここでは回答生成はしないが、--gen で回答を目視する
     ときに「評価と同じ検索結果」を使い回せるよう、引いたチャンク本文(contexts)も
     results に持たせておく（--gen で再検索しないための保存）。
+
+    params / rrf_k を渡すと、検索の数値パラメータ（字面の閾値・BM25のk1/b・RRFのk）を
+    変えて評価できる。「k1を上げるとHit@kは上がるか」を数値で測るための引数。
+    未指定なら設定の既定値で評価する。
     """
     # None のときだけ既定を使う。空リスト [] は「0問で評価」の明示指定として尊重する
     gold = GOLD if gold is None else gold
@@ -172,7 +178,12 @@ def evaluate(
 
     for item in gold:
         hits = hybrid_search(
-            item["question"], top_n=top_k, rerank=rerank, retrievers=retrievers
+            item["question"],
+            top_n=top_k,
+            rerank=rerank,
+            retrievers=retrievers,
+            params=params,
+            rrf_k=rrf_k,
         )
         rank = _rank_of(hits, item["expected_source"])
         hit = rank is not None and rank < top_k
@@ -199,6 +210,8 @@ def evaluate(
         # この評価で実際に使った検索条件（Noneは「設定の既定を使用」の意味）
         "retrievers": retrievers,
         "rerank": rerank,
+        "rrf_k": rrf_k,
+        "params": params,
         "hit_at_k": round(hit_count / n, 3) if n else 0.0,
         "mrr": round(reciprocal_sum / n, 3) if n else 0.0,
         "results": results,

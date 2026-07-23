@@ -351,11 +351,19 @@ def run_eval(
     rerank: Optional[bool] = None,
     company: Optional[str] = None,
     department: Optional[str] = None,
+    rrf_k: Optional[int] = None,
+    trgm_min_similarity: Optional[float] = None,
+    bm25_k1: Optional[float] = None,
+    bm25_b: Optional[float] = None,
 ):
     """DBの評価用質問集で検索精度(Hit@k / MRR)を測って返す。
 
     検索の内訳(/search)が「1問を深く見る」のに対し、こちらは「質問集全体で
     どれだけ当たるか」を集計する。company/department で評価対象を絞れる。
+
+    検索の数値パラメータ(rrf_k / trgm_min_similarity / bm25_k1 / bm25_b)は /search と
+    同じ意味で、指定するとその値で評価する（例: k1を上げてHit@kが上がるか測る）。
+    未指定なら設定の既定値。
 
     Claudeは rerank=True のときだけ呼ぶ（検索評価そのものは Voyage のみ）。
     質問が0件なら n=0 の空レポートを返す（UI側で「まず質問を登録」と促す）。
@@ -364,5 +372,20 @@ def run_eval(
     names = (
         [n.strip() for n in retrievers.split(",") if n.strip()] if retrievers else None
     )
+    # None のものは落として、その手法の既定値が使われるようにする（/search と同じ組み立て）
+    raw = {
+        "trgm": {"min_similarity": trgm_min_similarity},
+        "bm25": {"k1": bm25_k1, "b": bm25_b},
+    }
+    params = {
+        r: {k: v for k, v in vals.items() if v is not None} for r, vals in raw.items()
+    }
     gold = load_questions(company=company, department=department)
-    return evaluate(top_k=top_k, retrievers=names, rerank=rerank, gold=gold)
+    return evaluate(
+        top_k=top_k,
+        retrievers=names,
+        rerank=rerank,
+        gold=gold,
+        params=params,
+        rrf_k=rrf_k,
+    )

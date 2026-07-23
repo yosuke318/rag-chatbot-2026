@@ -28,6 +28,8 @@ type EvalReport = {
   top_k: number;
   retrievers: string[] | null;
   rerank: boolean | null;
+  rrf_k: number | null;
+  params: Record<string, Record<string, number>> | null;
   hit_at_k: number;
   mrr: number;
   results: EvalResult[];
@@ -130,6 +132,7 @@ export default function Home() {
           for (const sp of r.params)
             defaults[`${r.name}_${sp.name}`] = String(sp.default);
         setParamValues(defaults);
+        setEvalParamValues(defaults); // 評価パネルも同じ既定から始める
       })
       .catch(() => {});
   }, []);
@@ -159,6 +162,8 @@ export default function Home() {
   const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
   const [evalError, setEvalError] = useState("");
+  // 評価用の数値パラメータ。②と同じキー（rrf_k / trgm_min_similarity / bm25_k1 / bm25_b）
+  const [evalParamValues, setEvalParamValues] = useState<Record<string, string>>({});
 
   // 評価用の質問を登録するフォーム（POST /eval-questions）
   const [newQ, setNewQ] = useState("");
@@ -222,6 +227,16 @@ export default function Home() {
       if (evalRerank) params.set("rerank", "true");
       if (evalCompany.trim()) params.set("company", evalCompany.trim());
       if (evalDepartment.trim()) params.set("department", evalDepartment.trim());
+      // 数値パラメータ。空欄は送らず backend の既定値を使わせる（②と同じ）。
+      // trgm/bm25 のパラメータは、その手法を選んでいるときだけ送る。
+      for (const [key, value] of Object.entries(evalParamValues)) {
+        if (value === "") continue;
+        const owner = key.split("_")[0]; // "trgm" / "bm25" / "rrf"(=rrf_k)
+        if ((owner === "trgm" || owner === "bm25") && !evalSelected.includes(owner)) {
+          continue;
+        }
+        params.set(key, value);
+      }
       const res = await fetch(`/api/backend/eval?${params}`);
       const err = await errorMessage(res);
       if (err) {
@@ -751,6 +766,63 @@ export default function Home() {
           )}
         </div>
 
+        {/* 数値パラメータ。②と同じ仕様(PARAM_SPECS)から生成し、同じキーで送る。
+            これを変えて再検証すると Hit@k / MRR が動く＝パラメータの効果を数値化できる */}
+        {(() => {
+          const rows: { key: string; spec: ParamSpec; owner: string }[] = [];
+          for (const sp of fusionParams) {
+            rows.push({ key: sp.name, spec: sp, owner: "RRF融合" });
+          }
+          for (const r of available) {
+            if (!evalSelected.includes(r.name)) continue;
+            for (const sp of r.params) {
+              rows.push({ key: `${r.name}_${sp.name}`, spec: sp, owner: r.label });
+            }
+          }
+          if (rows.length === 0) return null;
+          return (
+            <div className="param-grid">
+              {rows.map(({ key, spec, owner }) => (
+                <label key={key} className="param-item">
+                  <span className="param-label">
+                    <span className="param-owner">{owner}</span>
+                    <Tip label={spec.label}>{spec.description}</Tip>
+                  </span>
+                  <span className="param-input">
+                    <input
+                      type="number"
+                      min={spec.min}
+                      max={spec.max}
+                      step={spec.step}
+                      placeholder={`既定 ${spec.default}`}
+                      value={evalParamValues[key] ?? ""}
+                      onChange={(e) =>
+                        setEvalParamValues((prev) => ({
+                          ...prev,
+                          [key]: e.target.value,
+                        }))
+                      }
+                    />
+                    <button
+                      className="reset-one"
+                      title={`既定 ${spec.default} に戻す`}
+                      onClick={() =>
+                        setEvalParamValues((prev) => ({
+                          ...prev,
+                          [key]: String(spec.default),
+                        }))
+                      }
+                      disabled={evalParamValues[key] === String(spec.default)}
+                    >
+                      ↺
+                    </button>
+                  </span>
+                </label>
+              ))}
+            </div>
+          );
+        })()}
+
         {evalError && <p className="error-note">{evalError}</p>}
 
         {evalReport &&
@@ -785,6 +857,16 @@ export default function Home() {
                   {evalReport.retrievers ? evalReport.retrievers.join(",") : "既定"} ・
                   リランク=
                   {evalReport.rerank === null ? "既定" : evalReport.rerank ? "有効" : "無効"}
+                  {evalReport.rrf_k != null && <> ・ rrf_k={evalReport.rrf_k}</>}
+                  {evalReport.params &&
+                    Object.entries(evalReport.params).map(([r, ps]) =>
+                      Object.entries(ps).map(([k, v]) => (
+                        <span key={`${r}.${k}`}>
+                          {" · "}
+                          {r}.{k}={v}
+                        </span>
+                      )),
+                    )}
                 </div>
               </div>
 

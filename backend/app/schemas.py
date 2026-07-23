@@ -206,6 +206,10 @@ class EvalReport(BaseModel):
     top_k: int
     retrievers: Optional[List[str]] = Field(description="使った手法（null=設定の既定）")
     rerank: Optional[bool] = Field(description="リランクの有無（null=設定の既定）")
+    rrf_k: Optional[int] = Field(default=None, description="使ったRRF k（null=既定）")
+    params: Optional[Dict[str, Dict[str, float]]] = Field(
+        default=None, description="使った数値パラメータ（手法ごと。null/空=既定）"
+    )
     hit_at_k: float = Field(description="上位k件に正解が入った質問の割合")
     mrr: float = Field(description="正解順位の逆数平均（1位=1.0 / 圏外=0）")
     results: List[EvalResult]
