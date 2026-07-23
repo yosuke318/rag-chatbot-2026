@@ -57,3 +57,19 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS chunks_content_nouns_trgm_idx "
             "ON chunks USING gin (content_nouns gin_trgm_ops);"
         )
+        # 回答フィードバック：👍/👎 を貯めて評価(eval)のQA候補に回す。
+        # 会話履歴(conversations)は未実装なので、まずは回答そのものを丸ごと残す
+        # 独立テーブルにする。conversations 実装時に conversation_id を足せばよい。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback (
+                id         BIGSERIAL PRIMARY KEY,
+                question   TEXT NOT NULL,
+                answer     TEXT NOT NULL,
+                sources    TEXT[] NOT NULL DEFAULT '{}',
+                rating     SMALLINT NOT NULL,   -- +1 = 👍 / -1 = 👎
+                comment    TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            );
+            """
+        )

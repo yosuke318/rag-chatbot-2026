@@ -9,7 +9,7 @@ import anthropic
 import voyageai.error
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from app.db import init_db
+from app.db import get_conn, init_db
 from app.ingest import ingest_text
 from app.llm import MissingAPIKey, generate_answer
 from app.config import RETRIEVERS_DEFAULT
@@ -24,6 +24,8 @@ from app.schemas import (
     ChatRequest,
     ChatResponse,
     ErrorResponse,
+    FeedbackRequest,
+    FeedbackResponse,
     HealthResponse,
     IngestRequest,
     IngestResponse,
@@ -238,3 +240,21 @@ def chat(req: ChatRequest):
     # 根拠として使ったチャンクの出典も返す（重複排除）
     sources = list(dict.fromkeys(h["source"] for h in hits))
     return {"answer": answer, "sources": sources}
+
+
+@app.post("/feedback", response_model=FeedbackResponse)
+def feedback(req: FeedbackRequest):
+    """回答への 👍/👎 を記録する。
+
+    貯めたフィードバック（特に👎）は eval のQA候補に回す運用を想定。
+    外部APIを呼ばないので ANTHROPIC/VOYAGE キーは不要。
+    rating は +1 / -1 のどちらかに正規化する（0や他の値は符号で丸める）。
+    """
+    rating = 1 if req.rating > 0 else -1
+    with get_conn() as conn:
+        new_id = conn.execute(
+            "INSERT INTO feedback (question, answer, sources, rating, comment) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (req.question, req.answer, req.sources, rating, req.comment),
+        ).fetchone()[0]
+    return {"id": new_id, "rating": rating}

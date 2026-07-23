@@ -24,6 +24,16 @@ class ChatRequest(BaseModel):
     question: str = Field(description="質問文")
 
 
+class FeedbackRequest(BaseModel):
+    """回答への 👍/👎。評価(eval)のQA候補として貯める。"""
+
+    question: str = Field(description="評価対象の質問")
+    answer: str = Field(description="評価対象の回答")
+    rating: int = Field(description="+1 = 👍 / -1 = 👎")
+    sources: List[str] = Field(default_factory=list, description="回答の根拠に使った出典")
+    comment: Optional[str] = Field(default=None, description="自由記述（任意）")
+
+
 # --- レスポンス ---------------------------------------------------------------
 
 
@@ -145,6 +155,11 @@ class SearchResponse(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: List[str] = Field(description="根拠に使ったチャンクの出典（重複排除済み）")
+
+
+class FeedbackResponse(BaseModel):
+    id: int = Field(description="保存したフィードバックのID")
+    rating: int = Field(description="記録した評価（+1 / -1）")
 
 
 class ErrorResponse(BaseModel):

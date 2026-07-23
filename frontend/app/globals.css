@@ -120,6 +120,44 @@ button:disabled {
   margin-top: 6px;
 }
 
+/* 回答への 👍/👎（フィードバック記録） */
+.feedback {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.feedback .fb {
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.feedback .fb:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.feedback .fb.fb-on {
+  opacity: 1;
+  border-color: var(--user-bubble);
+  background: var(--bot-bubble);
+}
+
+.feedback .fb:disabled {
+  cursor: default;
+}
+
+.feedback .fb-thanks {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .chat-input {
   display: flex;
   gap: 8px;

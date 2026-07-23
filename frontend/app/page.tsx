@@ -43,7 +43,16 @@ const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
 };
 
 // UI内部だけで使う型（APIには存在しない）
-type Message = { role: "user" | "bot"; text: string; sources?: string[] };
+// question: 👍/👎 を送るとき評価対象を復元するため、bot回答に元の質問を持たせる。
+//           これが入っている bot メッセージだけがフィードバック対象（エラーは対象外）。
+// rating:   送信済みの評価。二重送信を防ぎ、選んだ側をハイライトする。
+type Message = {
+  role: "user" | "bot";
+  text: string;
+  sources?: string[];
+  question?: string;
+  rating?: 1 | -1;
+};
 
 /** レスポンスがエラーならUI表示用の文字列を返す。正常なら null。 */
 async function errorMessage(res: Response): Promise<string | null> {
@@ -194,14 +203,43 @@ export default function Home() {
         return;
       }
       const data: ChatResponse = await res.json();
+      // question を持たせておくと、この回答に 👍/👎 を付けられる（送信時に復元する）
       setMessages((m) => [
         ...m,
-        { role: "bot", text: data.answer, sources: data.sources },
+        { role: "bot", text: data.answer, sources: data.sources, question: q },
       ]);
     } catch (e) {
       setMessages((m) => [...m, { role: "bot", text: `エラー: ${String(e)}` }]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  /** 回答に 👍/👎 を送る。楽観的に印を付け、失敗したら戻す。 */
+  async function sendFeedback(index: number, rating: 1 | -1) {
+    const msg = messages[index];
+    if (!msg || msg.role !== "bot" || !msg.question || msg.rating) return;
+    // 先に印を付ける（二重送信を防ぐ）
+    setMessages((m) =>
+      m.map((x, i) => (i === index ? { ...x, rating } : x)),
+    );
+    try {
+      const res = await fetch("/api/backend/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: msg.question,
+          answer: msg.text,
+          sources: msg.sources ?? [],
+          rating,
+        }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+    } catch {
+      // 失敗したら印を戻して再送できるようにする
+      setMessages((m) =>
+        m.map((x, i) => (i === index ? { ...x, rating: undefined } : x)),
+      );
     }
   }
 
@@ -494,6 +532,30 @@ export default function Home() {
               {m.text}
               {m.sources && m.sources.length > 0 && (
                 <div className="sources">根拠: {m.sources.join(" / ")}</div>
+              )}
+              {/* question を持つ bot回答だけ 👍/👎 を出す（エラー回答は対象外） */}
+              {m.role === "bot" && m.question && (
+                <div className="feedback">
+                  <button
+                    className={`fb ${m.rating === 1 ? "fb-on" : ""}`}
+                    onClick={() => sendFeedback(i, 1)}
+                    disabled={!!m.rating}
+                    title="役に立った"
+                    aria-label="役に立った"
+                  >
+                    👍
+                  </button>
+                  <button
+                    className={`fb ${m.rating === -1 ? "fb-on" : ""}`}
+                    onClick={() => sendFeedback(i, -1)}
+                    disabled={!!m.rating}
+                    title="的外れ"
+                    aria-label="的外れ"
+                  >
+                    👎
+                  </button>
+                  {m.rating && <span className="fb-thanks">記録しました</span>}
+                </div>
               )}
             </div>
           ))}
