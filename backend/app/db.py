@@ -35,12 +35,20 @@ def init_db() -> None:
             f"""
             CREATE TABLE IF NOT EXISTS chunks (
                 id          BIGSERIAL PRIMARY KEY,
-                document_id BIGINT REFERENCES documents(id) ON DELETE CASCADE,
+                -- チャンクは必ず文書に属する。NULLだと検索のJOINから黙って外れて
+                -- 孤児化するため NOT NULL。embedding は「必須にしない」判断（複数モデル
+                -- 併存・遅延埋め込み・画像チャンクの自由度を残すため。将来は別テーブル化）。
+                document_id BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
                 chunk_index INT NOT NULL,
                 content     TEXT NOT NULL,
                 embedding   VECTOR({EMBED_DIM})
             );
             """
+        )
+        # 既存DB（NOT NULL 追加より前に作られたもの）向けの冪等マイグレーション。
+        # 現状 document_id が NULL の行は無いので安全に効く（既に NOT NULL なら no-op）。
+        conn.execute(
+            "ALTER TABLE chunks ALTER COLUMN document_id SET NOT NULL;"
         )
         # 字面検索用：本文から名詞だけを抜き出した文字列（keywords.noun_text）
         # 既存DBにも後から足せるよう ALTER で追加する

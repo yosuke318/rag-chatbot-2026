@@ -188,6 +188,16 @@ async def health():
 
 @app.post("/ingest", response_model=IngestResponse, responses=_ERRORS)
 def ingest(req: IngestRequest):
+    # 文書名と本文は必須。Pydanticは空文字を通すので明示検査する
+    # （空の source は空のS3キー・空文書を生む）。/eval-questions と同じ方針。
+    if not req.source.strip() or not req.text.strip():
+        return _error(
+            400,
+            "invalid_ingest",
+            "文書名と本文は必須です。",
+            "source と text の両方を入力してください。",
+            "",
+        )
     result = ingest_text(req.source, req.text, req.category)
     # replaced > 0 = 同名の既存文書を置き換えた（重複登録を防いでいる）
     return {"source": req.source, **result}
@@ -295,6 +305,15 @@ def backfill_files():
 
 @app.post("/chat", response_model=ChatResponse, responses=_ERRORS)
 def chat(req: ChatRequest):
+    # 質問は必須。空だと無意味な検索とLLM呼び出しになるので手前で弾く。
+    if not req.question.strip():
+        return _error(
+            400,
+            "invalid_question",
+            "質問は必須です。",
+            "question を入力してください。",
+            "",
+        )
     hits = hybrid_search(req.question)
     answer = generate_answer(req.question, [h["content"] for h in hits])
     # 根拠として使ったチャンクの出典も返す（重複排除）
