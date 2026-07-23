@@ -251,7 +251,7 @@ def search(
     )
 
 
-@app.get("/files/{source}", responses=_ERRORS)
+@app.get("/files/{source:path}", responses=_ERRORS)
 def download_file(source: str):
     """出典名(source)の原本を S3(MinIO) から取り出してダウンロードさせる。
 
@@ -259,6 +259,9 @@ def download_file(source: str):
     署名URLで開けない。ここで backend が取得して中継することで、環境差なく
     ダウンロードできる（本番の実S3では署名URL方式に切り替えてもよい）。
     無ければ404。
+
+    source は `:path` で受ける。将来 S3キーに `/`（サブディレクトリ/プレフィックス）を
+    使えるようにしても、1セグメント制限でダウンロードできなくならないようにするため。
     """
     obj = storage.get_object(source)
     if obj is None:
@@ -321,15 +324,28 @@ def chat(req: ChatRequest):
     return {"answer": answer, "sources": sources}
 
 
-@app.post("/feedback", response_model=FeedbackResponse)
+@app.post(
+    "/feedback",
+    response_model=FeedbackResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
 def feedback(req: FeedbackRequest):
     """回答への 👍/👎 を記録する。
 
     貯めたフィードバック（特に👎）は eval のQA候補に回す運用を想定。
     外部APIを呼ばないので ANTHROPIC/VOYAGE キーは不要。
-    rating は +1 / -1 のどちらかに正規化する（0や他の値は符号で丸める）。
+    rating は +1(👍) / -1(👎) のみ。0 や欠損は「どちらでもない」を意味してしまい
+    👎として誤記録されるため、符号で丸めず 400 で弾く。
     """
-    rating = 1 if req.rating > 0 else -1
+    if req.rating not in (1, -1):
+        return _error(
+            400,
+            "invalid_rating",
+            "rating は +1（👍）か -1（👎）のいずれかにしてください。",
+            f"受け取った値: {req.rating}",
+            "",
+        )
+    rating = req.rating
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO feedback (question, answer, sources, rating, comment) "
@@ -446,20 +462,24 @@ def run_eval(
     names = (
         [n.strip() for n in retrievers.split(",") if n.strip()] if retrievers else None
     )
-    # None のものは落として、その手法の既定値が使われるようにする（/search と同じ組み立て）
+    # None の値は落とす。さらに中身が空になった手法も落とし、全体が空なら None。
+    # こうしないと report.params が {"trgm": {}, "bm25": {}} になり、「既定で評価」なのか
+    # 「指定して評価」なのか区別がつかなくなる（スキーマ上 null=既定 の意味付け）。
     raw = {
         "trgm": {"min_similarity": trgm_min_similarity},
         "bm25": {"k1": bm25_k1, "b": bm25_b},
     }
-    params = {
-        r: {k: v for k, v in vals.items() if v is not None} for r, vals in raw.items()
-    }
+    params: dict[str, dict] = {}
+    for r, vals in raw.items():
+        cleaned = {k: v for k, v in vals.items() if v is not None}
+        if cleaned:
+            params[r] = cleaned
     gold = load_questions(company=company, department=department)
     return evaluate(
         top_k=top_k,
         retrievers=names,
         rerank=rerank,
         gold=gold,
-        params=params,
+        params=params or None,  # 空dictは「指定なし＝既定」として None に倒す
         rrf_k=rrf_k,
     )

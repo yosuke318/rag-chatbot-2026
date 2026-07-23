@@ -12,10 +12,13 @@
 """
 from __future__ import annotations
 
+import logging
 import mimetypes
 from functools import lru_cache
 
 from app.config import S3_BUCKET, S3_ENDPOINT_URL
+
+logger = logging.getLogger(__name__)
 
 
 def is_enabled() -> bool:
@@ -37,19 +40,37 @@ def _content_type(source: str) -> str:
     return guessed or "text/plain; charset=utf-8"
 
 
-def save_text(source: str, text: str) -> None:
-    """登録した原本テキストを S3 に保存する（best-effort）。
+def save_text(source: str, text: str) -> bool:
+    """登録した原本テキストを S3 に保存する（best-effort）。保存できたら True。
 
-    S3未設定なら何もしない。将来PDF等のバイナリを扱うときは save_bytes を足す。
+    S3未設定なら何もせず False。S3が落ちている・認証不備などで失敗しても、
+    取り込み(ingest)自体は成立させたいので例外は握って警告ログにとどめる
+    （＝原本ダウンロードだけが使えなくなる）。将来PDF等は save_bytes を足す。
     """
     if not is_enabled():
-        return
-    _client().put_object(
-        Bucket=S3_BUCKET,
-        Key=source,
-        Body=text.encode("utf-8"),
-        ContentType=_content_type(source),
-    )
+        return False
+    try:
+        _client().put_object(
+            Bucket=S3_BUCKET,
+            Key=source,
+            Body=text.encode("utf-8"),
+            ContentType=_content_type(source),
+        )
+        return True
+    except Exception:
+        logger.warning("原本のS3保存に失敗しました（取り込みは継続）: %s", source)
+        return False
+
+
+def exists(source: str) -> bool:
+    """原本がS3に存在するか。本文をダウンロードせず head_object で確認する。"""
+    if not is_enabled():
+        return False
+    try:
+        _client().head_object(Bucket=S3_BUCKET, Key=source)
+        return True
+    except Exception:
+        return False
 
 
 def get_object(source: str) -> tuple[bytes, str] | None:
@@ -77,7 +98,8 @@ def backfill_from_texts(items: list[tuple[str, str]]) -> int:
         return 0
     saved = 0
     for source, text in items:
-        if get_object(source) is None:
-            save_text(source, text)
+        # 存在確認は head_object（本文を落とさない）。無いものだけ保存し、
+        # 実際に保存できたものだけ数える。
+        if not exists(source) and save_text(source, text):
             saved += 1
     return saved
