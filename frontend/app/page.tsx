@@ -87,6 +87,20 @@ async function errorMessage(res: Response): Promise<string | null> {
   }
 }
 
+// 出典名を、S3(ローカルはMinIO)にある原本のダウンロードリンクにする。
+// この変更より前に登録した文書は原本が無く404になる（/admin/backfill-files で後埋め可）。
+function SourceLink({ source }: { source: string }) {
+  return (
+    <a
+      className="source-link"
+      href={`/api/backend/files/${encodeURIComponent(source)}`}
+      download={source}
+    >
+      {source}
+    </a>
+  );
+}
+
 // 見出しにカーソルを当てると説明が出る。tabIndexでキーボード操作でも開く。
 function Tip({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
@@ -601,7 +615,9 @@ export default function Home() {
                           </td>
                         </Fragment>
                       ))}
-                      <td>{f.source}</td>
+                      <td>
+                        <SourceLink source={f.source} />
+                      </td>
                       <td className="preview">{f.preview}</td>
                     </tr>
                   ))}
@@ -626,7 +642,15 @@ export default function Home() {
             <div key={i} className={`msg ${m.role}`}>
               {m.text}
               {m.sources && m.sources.length > 0 && (
-                <div className="sources">根拠: {m.sources.join(" / ")}</div>
+                <div className="sources">
+                  根拠:{" "}
+                  {m.sources.map((s, si) => (
+                    <Fragment key={s}>
+                      {si > 0 && " / "}
+                      <SourceLink source={s} />
+                    </Fragment>
+                  ))}
+                </div>
               )}
               {/* question を持つ bot回答だけ 👍/👎 を出す（エラー回答は対象外） */}
               {m.role === "bot" && m.question && (
@@ -888,8 +912,19 @@ export default function Home() {
                         <td>{r.hit ? "○" : "×"}</td>
                         <td>{r.rank === null ? "圏外" : `${r.rank + 1}位`}</td>
                         <td className="preview">{r.question}</td>
-                        <td>{r.expected_source}</td>
-                        <td className="preview">{r.retrieved.join(" / ") || "(なし)"}</td>
+                        <td>
+                          <SourceLink source={r.expected_source} />
+                        </td>
+                        <td className="preview">
+                          {r.retrieved.length === 0
+                            ? "(なし)"
+                            : r.retrieved.map((s, si) => (
+                                <Fragment key={si}>
+                                  {si > 0 && " / "}
+                                  <SourceLink source={s} />
+                                </Fragment>
+                              ))}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

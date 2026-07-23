@@ -5,13 +5,16 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import urllib.parse
+
 import anthropic
 import voyageai.error
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
 from app.ingest import ingest_text
+from app import storage
 from app.llm import MissingAPIKey, generate_answer
 from app.config import RETRIEVERS_DEFAULT
 from app.retrieval import (
@@ -236,6 +239,58 @@ def search(
     return search_stages(
         q, top_n=top_n, retrievers=names, params=params, rrf_k=rrf_k
     )
+
+
+@app.get("/files/{source}", responses=_ERRORS)
+def download_file(source: str):
+    """出典名(source)の原本を S3(MinIO) から取り出してダウンロードさせる。
+
+    ローカルの MinIO は docker 内ホスト名(minio:9000)なのでブラウザから直接は
+    署名URLで開けない。ここで backend が取得して中継することで、環境差なく
+    ダウンロードできる（本番の実S3では署名URL方式に切り替えてもよい）。
+    無ければ404。
+    """
+    obj = storage.get_object(source)
+    if obj is None:
+        return _error(
+            404,
+            "file_not_found",
+            f"原本が見つかりません: {source}",
+            "この変更より前に登録した文書は原本が未保存です。"
+            "再登録するか /admin/backfill-files を実行してください。",
+            "",
+        )
+    body, content_type = obj
+    # 日本語ファイル名も壊れないよう RFC 5987 の filename* でエンコード
+    quoted = urllib.parse.quote(source)
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+    )
+
+
+@app.post("/admin/backfill-files")
+def backfill_files():
+    """この変更より前に登録済みの文書を、原本ダウンロードに対応させる後埋め。
+
+    各文書の本文を chunks から復元して S3 に保存する（まだ無いものだけ）。
+    ※短い文書は1チャンク＝原本そのものだが、長い文書はオーバーラップ分割のため
+      復元が厳密でない。以降の登録は取り込み時に原本を保存するので、これは一度きり
+      の移行用。
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT d.source, c.content "
+            "FROM chunks c JOIN documents d ON d.id = c.document_id "
+            "ORDER BY d.source, c.chunk_index"
+        ).fetchall()
+    # 出典ごとにチャンク本文を順に連結して原本テキストを復元
+    texts: dict[str, str] = {}
+    for source, content in rows:
+        texts[source] = texts.get(source, "") + content
+    saved = storage.backfill_from_texts(list(texts.items()))
+    return {"backfilled": saved, "documents": len(texts)}
 
 
 @app.post("/chat", response_model=ChatResponse, responses=_ERRORS)

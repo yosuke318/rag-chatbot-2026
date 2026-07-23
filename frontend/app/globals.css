@@ -120,6 +120,17 @@ button:disabled {
   margin-top: 6px;
 }
 
+/* 出典名＝原本ダウンロードリンク */
+.source-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.source-link:hover {
+  text-decoration: none;
+}
+
 /* 回答への 👍/👎（フィードバック記録） */
 .feedback {
   display: flex;

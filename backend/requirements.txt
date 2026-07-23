@@ -5,4 +5,5 @@ pgvector               # pgvector の Python バインディング
 anthropic              # 回答生成 (Claude)。LangChainは使わずSDK直叩き
 voyageai               # 埋め込み (Anthropic推奨の埋め込みプロバイダ)
 janome                 # 形態素解析（字面検索を名詞だけに絞る）。pure Python・辞書同梱
+boto3                  # S3(ローカルはMinIO)への原本保存・取得
 python-dotenv

@@ -9,6 +9,7 @@ from app.config import CHUNK_OVERLAP, CHUNK_SIZE
 from app.db import get_conn
 from app.keywords import noun_text
 from app.llm import embed_texts
+from app import storage
 
 
 def chunk_text(text: str) -> list[str]:
@@ -64,5 +65,9 @@ def ingest_text(source: str, text: str, category: str | None = None) -> dict:
                         for i, chunk in enumerate(chunks)
                     ],
                 )
+
+    # 原本を S3(MinIO) にも保存し、出典名からダウンロードできるようにする。
+    # DBコミットの後に行う（S3が落ちていても取り込み自体は成立させる。best-effort）。
+    storage.save_text(source, text)
 
     return {"chunks_created": len(chunks), "replaced": replaced}

@@ -9,6 +9,12 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://rag:rag@localhost:5432/ra
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 
+# 原本保存（S3互換。ローカルは docker compose の MinIO）。
+# 未設定なら原本保存はスキップする（S3なしでもアプリは動く）。
+# 認証情報(AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)は boto3 が環境変数から自動で読む。
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL")  # 例: http://minio:9000。実S3なら未設定
+S3_BUCKET = os.getenv("S3_BUCKET")  # 例: rag-docs
+
 CHAT_MODEL = os.getenv("CHAT_MODEL", "claude-opus-4-8")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "voyage-3.5")
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))  # voyage-3.5 は 1024次元
