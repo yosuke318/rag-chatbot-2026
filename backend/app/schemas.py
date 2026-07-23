@@ -34,6 +34,16 @@ class FeedbackRequest(BaseModel):
     comment: Optional[str] = Field(default=None, description="自由記述（任意）")
 
 
+class EvalQuestionRequest(BaseModel):
+    """評価用の質問1件（正解ラベル付き）。会社・部署ごとに分けて登録できる。"""
+
+    question: str = Field(description="評価する質問")
+    expected_source: str = Field(description="正解の文書名（この文書が上位に来れば正解）")
+    company: Optional[str] = Field(default=None, description="会社（未指定は共通）")
+    department: Optional[str] = Field(default=None, description="部署（未指定は共通）")
+    note: Optional[str] = Field(default=None, description="何を確かめる質問かのメモ（任意）")
+
+
 # --- レスポンス ---------------------------------------------------------------
 
 
@@ -160,6 +170,23 @@ class ChatResponse(BaseModel):
 class FeedbackResponse(BaseModel):
     id: int = Field(description="保存したフィードバックのID")
     rating: int = Field(description="記録した評価（+1 / -1）")
+
+
+class EvalQuestion(BaseModel):
+    """登録済みの評価用質問1件。"""
+
+    id: int
+    question: str
+    expected_source: str
+    company: Optional[str] = None
+    department: Optional[str] = None
+    note: Optional[str] = None
+
+
+class EvalQuestionsResponse(BaseModel):
+    """評価用質問の一覧（会社・部署で絞り込める）。"""
+
+    questions: List[EvalQuestion]
 
 
 class ErrorResponse(BaseModel):

@@ -70,6 +70,44 @@ test.txt            0.01562  ← ベクトルにしか出ない（1票のみ）
 
 > スクリーンショットは `cd frontend && npm run screenshot` で再生成できる（要: backend/frontend 起動）。
 
+## 検索精度を測る（eval）
+
+「チューニングで良くなった気がする」を数字に変えるための評価ハーネス。
+検索が**正解の文書を上位に拾えているか**を、固定の質問集に対して測る。
+
+```bash
+cd backend
+python -m app.eval --seed                     # サンプル質問をDBへ初期投入（初回だけ）
+python -m app.eval                            # DBの質問で評価
+python -m app.eval --company 経理 --department 財務  # 会社・部署で絞って評価
+python -m app.eval --retrievers vector,bm25   # 手法を変えて比較
+python -m app.eval --rerank                   # LLMリランク有りで比較（要 Anthropic）
+python -m app.eval --gen                      # 回答生成まで走らせて目視（要 Anthropic）
+```
+
+出力する指標は2つ:
+
+| 指標 | 意味 |
+|---|---|
+| **Hit@k** | 上位k件に正解文書が入った質問の割合（拾えたか） |
+| **MRR** | 正解が何位に来たかの逆数の平均。1位=1.0 / 2位=0.5 / 圏外=0（どれだけ上位に置けたか） |
+
+ポイント:
+
+- **検索評価だけなら Anthropic キーは不要**（質問のベクトル化に Voyage は要る）。
+  `--gen` / `--rerank` を付けたときだけ Claude を呼ぶ。
+- `--retrievers` や `--rerank` を切り替えると数字が動くので、
+  「BM25を足すと上がるか」「リランクは効くか」を**同じ質問集で公平に比較**できる。
+- 改良（チャンク分割の変更・リランク導入など）の**前後で回して差分を見る**のが本来の使い方。
+
+質問と正解ラベルは **DB の `eval_questions` テーブル**に置く。会社・部署（`company` /
+`department`）ごとに分けられるので、文書を部署別に分ける方針（→ アーキテクチャ）と
+評価の粒度が揃う。「その部署の文書 × その部署の質問」で評価できる。
+
+- 初期サンプルは `backend/app/eval.py` の `GOLD` にあり、`--seed` でDBへ投入する
+- 質問の追加はコード編集ではなく **`POST /eval-questions`** で行える（非エンジニアでも足せる）
+- 一覧は `GET /eval-questions?company=...&department=...`
+
 ## アーキテクチャ
 
 **モジュラーモノリス + マネージドサービス**（東京リージョン / ログインなし・Tailscaleで閉域 / Terraform 100%）
@@ -124,6 +162,6 @@ cd frontend
 - [ ] backend/ingest: S3取り込み → PDF構造化 → チャンク分割(contextual) → 埋め込み → UPSERT
 - [ ] backend/retrieval: ハイブリッド検索（ベクトル + BM25 + RRF）→ LLMリランク
 - [ ] backend/chat: ストリーミング回答 + 根拠S3署名URL添付
-- [ ] backend/eval: Ragas / promptfoo による評価
+- [x] backend/eval: Hit@k / MRR による検索評価（`python -m app.eval`）※ Ragas等での回答忠実性評価は次段
 - [ ] frontend: Next.js + Vercel AI SDK チャットUI
 - [ ] ポートフォリオ: README仕上げ + 操作GIF

@@ -24,6 +24,9 @@ from app.schemas import (
     ChatRequest,
     ChatResponse,
     ErrorResponse,
+    EvalQuestion,
+    EvalQuestionRequest,
+    EvalQuestionsResponse,
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
@@ -258,3 +261,67 @@ def feedback(req: FeedbackRequest):
             (req.question, req.answer, req.sources, rating, req.comment),
         ).fetchone()[0]
     return {"id": new_id, "rating": rating}
+
+
+@app.post("/eval-questions", response_model=EvalQuestion)
+def add_eval_question(req: EvalQuestionRequest):
+    """評価用の質問を1件登録する（会社・部署ごとに分けられる）。
+
+    正解ラベル(expected_source)付きでDBに貯め、`python -m app.eval` がここから
+    読んで Hit@k / MRR を測る。コードの定数を編集せずに質問を足せるようにするため
+    のエンドポイント。外部APIは呼ばないのでキーは不要。
+    """
+    with get_conn() as conn:
+        new_id = conn.execute(
+            "INSERT INTO eval_questions "
+            "(company, department, question, expected_source, note) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (req.company, req.department, req.question, req.expected_source, req.note),
+        ).fetchone()[0]
+    return {
+        "id": new_id,
+        "question": req.question,
+        "expected_source": req.expected_source,
+        "company": req.company,
+        "department": req.department,
+        "note": req.note,
+    }
+
+
+@app.get("/eval-questions", response_model=EvalQuestionsResponse)
+def list_eval_questions(
+    company: Optional[str] = None, department: Optional[str] = None
+):
+    """登録済みの評価用質問を返す。company/department で絞り込める。
+
+    指定しなかった軸は絞り込まない（company だけ指定なら部署は問わず全部返す）。
+    """
+    clauses = []
+    params: list = []
+    if company is not None:
+        clauses.append("company = %s")
+        params.append(company)
+    if department is not None:
+        clauses.append("department = %s")
+        params.append(department)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT id, question, expected_source, company, department, note "
+            f"FROM eval_questions {where} ORDER BY id",
+            params,
+        ).fetchall()
+    return {
+        "questions": [
+            {
+                "id": r[0],
+                "question": r[1],
+                "expected_source": r[2],
+                "company": r[3],
+                "department": r[4],
+                "note": r[5],
+            }
+            for r in rows
+        ]
+    }

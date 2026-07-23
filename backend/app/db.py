@@ -73,3 +73,21 @@ def init_db() -> None:
             );
             """
         )
+        # 評価用の質問集（Hit@k / MRR を測る正解ラベル）。
+        # コードの定数に置くと、文書を会社・部署ごとに分けたときに評価だけ全社共通
+        # という歪みが出るうえ、質問追加のたびにコード改修が要る。DBに置くことで
+        # 文書(documents)と同じ粒度(company/department)で区切り、非エンジニアでも
+        # 追加できるようにする。expected_source が正解ラベル（正しく引けるべき文書名）。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS eval_questions (
+                id              BIGSERIAL PRIMARY KEY,
+                company         TEXT,   -- NULL = 会社をまたぐ共通の質問
+                department      TEXT,   -- NULL = 部署をまたぐ共通の質問
+                question        TEXT NOT NULL,
+                expected_source TEXT NOT NULL,  -- 正解の文書名（documents.source）
+                note            TEXT,
+                created_at      TIMESTAMPTZ DEFAULT now()
+            );
+            """
+        )
