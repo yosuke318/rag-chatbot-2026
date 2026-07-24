@@ -9,10 +9,22 @@ function backendUrl(path: string[], search: string) {
 
 async function proxy(req: NextRequest, path: string[]) {
   const url = backendUrl(path, req.nextUrl.search);
+  const hasBody = req.method !== "GET" && req.method !== "HEAD";
+  // content-type は元リクエストのものをそのまま中継する。
+  // 以前は "application/json" を固定していたため、ファイルアップロード
+  // （multipart/form-data）の boundary が失われ、FastAPI がファイルとして
+  // 受け取れなかった。テキスト登録(JSON)も自分の content-type を持っているので
+  // 素通しで問題ない。
+  const reqHeaders = new Headers();
+  const reqCt = req.headers.get("content-type");
+  if (reqCt) reqHeaders.set("content-type", reqCt);
   const res = await fetch(url, {
     method: req.method,
-    headers: { "content-type": "application/json" },
-    body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.text(),
+    headers: reqHeaders,
+    // 本文は arrayBuffer で「バイト列のまま」渡す。以前は req.text() で
+    // UTF-8 文字列にデコードしていたため、PDF/XLSX/PPTX などのバイナリが
+    // 壊れていた。JSON はバイト列で渡してもそのまま通る。
+    body: hasBody ? await req.arrayBuffer() : undefined,
   });
   // ボディはストリームのまま素通しする。以前は res.text() で読んでいたため、
   // ファイルダウンロード（バイナリ）が壊れていた。JSONもストリームで問題なく通る。
