@@ -5,11 +5,44 @@ PDF/docx 解析・contextual retrieval・差分検知は設計書の次段（TOD
 """
 from __future__ import annotations
 
+import os
+
 from app.config import CHUNK_OVERLAP, CHUNK_SIZE
 from app.db import get_conn
 from app.keywords import noun_text
 from app.llm import embed_texts
 from app import storage
+
+
+class UnsupportedFileType(Exception):
+    """まだテキスト抽出に対応していない拡張子。呼び出し側は415で返す。"""
+
+    def __init__(self, ext: str):
+        self.ext = ext
+        super().__init__(ext)
+
+
+# 今はテキスト系のみ対応。PDF/XLSX/PPTX のパーサは次段(#3)で足す。
+# 拡張子なしは「プレーンテキスト」とみなす。
+TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".tsv", ".json", ".log", ""}
+
+
+def extract_text(filename: str, data: bytes) -> str:
+    """アップロードされたファイルのバイト列から本文テキストを取り出す。
+
+    現状はテキスト系ファイルのデコードのみ。UTF-8 を第一に、日本語のレガシー
+    ファイル向けに cp932 を代替として試す。どちらでも読めなければ ValueError。
+    PDF/XLSX/PPTX などは UnsupportedFileType を投げ、次段のパーサ層(#3)で対応する。
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in TEXT_EXTENSIONS:
+        raise UnsupportedFileType(ext)
+    for encoding in ("utf-8", "cp932"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("テキストとして読み取れませんでした（文字コード不明）")
 
 
 def chunk_text(text: str) -> list[str]:
@@ -26,12 +59,22 @@ def chunk_text(text: str) -> list[str]:
     return chunks
 
 
-def ingest_text(source: str, text: str, category: str | None = None) -> dict:
+def ingest_text(
+    source: str,
+    text: str,
+    category: str | None = None,
+    store_original: bool = True,
+) -> dict:
     """1つの文書を取り込む（upsert）。{"chunks_created", "replaced"} を返す。
 
     同じ source の文書が既にあれば削除してから入れ直す。
     （紐づく chunks は ON DELETE CASCADE で一緒に消える）
     再取り込みで同名文書が二重に積み上がり、検索結果が重複するのを防ぐ。
+
+    store_original: 原本テキストを S3 に保存するか。テキスト貼り付け登録では
+      本文＝原本なので True。ファイルアップロード(/ingest-file)では原本は
+      元のバイナリ（PDF等）であって抽出テキストではないため False を渡し、
+      原本バイナリの保存は呼び出し側(#4 の save_bytes)に任せる。
 
     ※本来は設計書どおり content_hash で差分検知し、内容が変わっていなければ
       埋め込みAPIの呼び出し自体を省くべき。ここでは常に入れ直す簡易版。
@@ -68,6 +111,7 @@ def ingest_text(source: str, text: str, category: str | None = None) -> dict:
 
     # 原本を S3(MinIO) にも保存し、出典名からダウンロードできるようにする。
     # DBコミットの後に行う（S3が落ちていても取り込み自体は成立させる。best-effort）。
-    storage.save_text(source, text)
+    if store_original:
+        storage.save_text(source, text)
 
     return {"chunks_created": len(chunks), "replaced": replaced}

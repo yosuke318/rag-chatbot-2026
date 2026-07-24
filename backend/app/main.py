@@ -9,14 +9,14 @@ import urllib.parse
 
 import anthropic
 import voyageai.error
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
-from app.ingest import ingest_text
+from app.ingest import UnsupportedFileType, extract_text, ingest_text
 from app import storage
 from app.llm import MissingAPIKey, generate_answer
-from app.config import RETRIEVERS_DEFAULT
+from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
 from app.retrieval import (
     UnknownRetriever,
     hybrid_search,
@@ -88,6 +88,19 @@ async def unknown_retriever(request: Request, exc: Exception):
         "unknown_retriever",
         "指定された検索手法が不正です。",
         str(exc),
+        "",
+    )
+
+
+@app.exception_handler(UnsupportedFileType)
+async def unsupported_file_type(request: Request, exc: UnsupportedFileType):
+    ext = exc.ext or "(拡張子なし)"
+    return _error(
+        415,
+        "unsupported_file_type",
+        f"未対応のファイル形式です: {ext}",
+        "現在はテキスト系（.txt / .md / .csv など）のみ対応しています。"
+        "PDF / XLSX / PPTX は対応予定です。",
         "",
     )
 
@@ -201,6 +214,83 @@ def ingest(req: IngestRequest):
     result = ingest_text(req.source, req.text, req.category)
     # replaced > 0 = 同名の既存文書を置き換えた（重複登録を防いでいる）
     return {"source": req.source, **result}
+
+
+@app.post(
+    "/ingest-file",
+    response_model=IngestResponse,
+    responses={
+        **_ERRORS,
+        400: {"model": ErrorResponse, "description": "入力不正"},
+        413: {"model": ErrorResponse, "description": "ファイルが大きすぎる"},
+        415: {"model": ErrorResponse, "description": "未対応のファイル形式"},
+    },
+)
+async def ingest_file(
+    file: UploadFile = File(..., description="登録する文書ファイル"),
+    category: Optional[str] = Form(default=None, description="分類（任意）"),
+):
+    """ファイルをアップロードして取り込む（ドラッグ&ドロップ登録の受け口）。
+
+    /ingest がテキスト貼り付け用なのに対し、こちらは multipart/form-data で
+    ファイルそのものを受け取り、テキストを抽出してから同じ取り込み処理に流す。
+    出典名(source)はアップロードされたファイル名をそのまま使う。
+
+    ※原本バイナリ（PDF等）の S3 保存はまだ行わない（store_original=False）。
+      抽出テキストを原本として保存すると原本ダウンロードが壊れるため、
+      原本バイナリの保存は次段(#4 の storage.save_bytes)で足す。
+    """
+    source = (file.filename or "").strip()
+    if not source:
+        return _error(
+            400,
+            "invalid_ingest",
+            "ファイル名が空です。",
+            "ファイル名を持つファイルをアップロードしてください。",
+            "",
+        )
+
+    data = await file.read()
+    if len(data) > UPLOAD_MAX_BYTES:
+        return _error(
+            413,
+            "file_too_large",
+            "ファイルが大きすぎます。",
+            f"上限は {UPLOAD_MAX_BYTES // (1024 * 1024)}MB です。",
+            "",
+        )
+    if not data:
+        return _error(
+            400,
+            "invalid_ingest",
+            "ファイルの中身が空です。",
+            "空でないファイルをアップロードしてください。",
+            "",
+        )
+
+    # 拡張子ごとにテキストを抽出（未対応形式は UnsupportedFileType→415、
+    # 文字コード不明は ValueError→ここで400にまとめる）。
+    try:
+        text = extract_text(source, data)
+    except ValueError as exc:
+        return _error(
+            400,
+            "invalid_ingest",
+            "ファイルからテキストを取り出せませんでした。",
+            str(exc),
+            "",
+        )
+    if not text.strip():
+        return _error(
+            400,
+            "invalid_ingest",
+            "ファイルから本文が取り出せませんでした（中身が空です）。",
+            "",
+            "",
+        )
+
+    result = ingest_text(source, text, category, store_original=False)
+    return {"source": source, **result}
 
 
 @app.get("/retrievers", response_model=RetrieversResponse)

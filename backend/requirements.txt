@@ -1,4 +1,5 @@
 fastapi
+python-multipart       # multipart/form-data（ファイルアップロード）受信に必須
 uvicorn[standard]
 psycopg[binary]        # PostgreSQL ドライバ (v3)
 pgvector               # pgvector の Python バインディング
@@ -6,4 +7,7 @@ anthropic              # 回答生成 (Claude)。LangChainは使わずSDK直叩�
 voyageai               # 埋め込み (Anthropic推奨の埋め込みプロバイダ)
 janome                 # 形態素解析（字面検索を名詞だけに絞る）。pure Python・辞書同梱
 boto3                  # S3(ローカルはMinIO)への原本保存・取得
+pypdf                  # PDF からのテキスト抽出（pure Python）
+openpyxl               # XLSX（Excel）からのセル値抽出
+python-pptx            # PPTX（PowerPoint）からのテキスト抽出
 python-dotenv
