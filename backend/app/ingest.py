@@ -11,7 +11,7 @@ from app.config import CHUNK_OVERLAP, CHUNK_SIZE
 from app.db import get_conn
 from app.keywords import noun_text
 from app.llm import embed_texts
-from app import storage
+from app import parsers, storage
 
 
 class UnsupportedFileType(Exception):
@@ -22,27 +22,41 @@ class UnsupportedFileType(Exception):
         super().__init__(ext)
 
 
-# 今はテキスト系のみ対応。PDF/XLSX/PPTX のパーサは次段(#3)で足す。
+# テキスト系はここでデコード、バイナリ文書(PDF/XLSX/PPTX)は parsers 側で抽出。
 # 拡張子なしは「プレーンテキスト」とみなす。
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".tsv", ".json", ".log", ""}
 
 
-def extract_text(filename: str, data: bytes) -> str:
-    """アップロードされたファイルのバイト列から本文テキストを取り出す。
+def _decode_text(data: bytes) -> str:
+    """テキストファイルのバイト列を文字列にする。
 
-    現状はテキスト系ファイルのデコードのみ。UTF-8 を第一に、日本語のレガシー
-    ファイル向けに cp932 を代替として試す。どちらでも読めなければ ValueError。
-    PDF/XLSX/PPTX などは UnsupportedFileType を投げ、次段のパーサ層(#3)で対応する。
+    UTF-8 を第一に、日本語のレガシーファイル向けに cp932 を代替として試す。
     """
-    ext = os.path.splitext(filename)[1].lower()
-    if ext not in TEXT_EXTENSIONS:
-        raise UnsupportedFileType(ext)
     for encoding in ("utf-8", "cp932"):
         try:
             return data.decode(encoding)
         except UnicodeDecodeError:
             continue
     raise ValueError("テキストとして読み取れませんでした（文字コード不明）")
+
+
+def extract_text(filename: str, data: bytes) -> str:
+    """アップロードされたファイルのバイト列から本文テキストを取り出す。
+
+    - テキスト系(.txt/.md/.csv 等): デコードする
+    - PDF/XLSX/PPTX: parsers のパーサで抽出する
+    - それ以外: UnsupportedFileType（呼び出し側で415）
+
+    解析はできたが本文が空（例: スキャンPDF）の場合は空文字を返し、
+    「本文が取り出せなかった」判断は呼び出し側に委ねる。
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in TEXT_EXTENSIONS:
+        return _decode_text(data)
+    parser = parsers.PARSERS.get(ext)
+    if parser is None:
+        raise UnsupportedFileType(ext)
+    return parser(data)
 
 
 def chunk_text(text: str) -> list[str]:

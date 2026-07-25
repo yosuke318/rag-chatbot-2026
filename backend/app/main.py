@@ -99,8 +99,7 @@ async def unsupported_file_type(request: Request, exc: UnsupportedFileType):
         415,
         "unsupported_file_type",
         f"未対応のファイル形式です: {ext}",
-        "現在はテキスト系（.txt / .md / .csv など）のみ対応しています。"
-        "PDF / XLSX / PPTX は対応予定です。",
+        "対応形式は テキスト系（.txt / .md / .csv など）と PDF / XLSX / PPTX です。",
         "",
     )
 
