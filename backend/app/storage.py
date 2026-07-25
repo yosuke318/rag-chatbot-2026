@@ -62,7 +62,7 @@ def save_bytes(source: str, data: bytes, content_type: str | None = None) -> boo
         )
         return True
     except Exception:
-        logger.warning("原本のS3保存に失敗しました（取り込みは継続）: %s", source)
+        logger.warning("原本のS3保存に失敗しました（取り込みは継続）: %s", source, exc_info=True)
         return False
 
 
