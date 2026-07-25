@@ -33,4 +33,4 @@ def test_extract_text_pdf_delegates_to_parser():
     mock_parse = patch("app.parsers.PARSERS", {".pdf": lambda data: "PDF本文"})
     with mock_parse:
         result = extract_text("doc.pdf", b"%PDF-dummy")
-    assert result == "PDF本文"
+        assert result == "PDF本文"
