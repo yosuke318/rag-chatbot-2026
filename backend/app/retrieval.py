@@ -37,6 +37,9 @@ def vector_search(
 
     pgvector の `<=>` はコサイン**距離**（0=完全一致、大きいほど遠い）。
     直感的に読めるよう コサイン類似度 = 1 - 距離 も併せて返す。
+
+    embedding は NULL 許容（遅延埋め込み・画像チャンク等の余地）。NULL の行は
+    距離が NULL になり float(None) で落ちるため、SQL 段階で除外する。
     """
     query_vec = embed_query(question)
     with get_conn() as conn:
@@ -46,6 +49,7 @@ def vector_search(
                    c.embedding <=> %s::vector AS cosine_distance
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
+            WHERE c.embedding IS NOT NULL
             ORDER BY c.embedding <=> %s::vector
             LIMIT %s
             """,
