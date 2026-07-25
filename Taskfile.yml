@@ -14,6 +14,21 @@ tasks:
     cmds:
       - docker compose up -d --build
 
+  test:
+    desc: バックエンドの単体テストを実行（DB/外部API不要。稼働中スタックには触れない）
+    cmds:
+      # 現在のホストソースをマウントした使い捨てコンテナで pytest を回す。
+      # --no-deps で db 等を起こさない。pytest はイメージに無いので都度入れる。
+      - >
+        docker compose run --rm --no-deps
+        -e ANTHROPIC_API_KEY=dummy -e VOYAGE_API_KEY=dummy
+        -v "$PWD/backend/app:/app/app"
+        -v "$PWD/backend/tests:/app/tests"
+        -v "$PWD/backend/pytest.ini:/app/pytest.ini"
+        -v "$PWD/backend/requirements.txt:/app/requirements.txt"
+        -v "$PWD/backend/requirements-dev.txt:/app/requirements-dev.txt"
+        backend sh -c "pip install -q -r requirements-dev.txt && python -m pytest"
+
   down:
     desc: 停止（ベクトルDBのデータは残す）
     cmds:

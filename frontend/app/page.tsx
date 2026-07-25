@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 // ★型はバックエンドの OpenAPI スキーマから自動生成したものを使う★
 //   再生成: npm run gen:types （backend が :8000 で起動している状態で）
@@ -117,6 +117,13 @@ export default function Home() {
   const [source, setSource] = useState("");
   const [docText, setDocText] = useState("");
   const [ingestStatus, setIngestStatus] = useState("");
+  // ファイルのドラッグ&ドロップ登録（/ingest-file）
+  const [dragging, setDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  // D&D/選択したファイルは即アップロードせず、一旦ここに溜めて（＝ステージ）
+  // 「登録する」で確定、「キャンセル」で取り消せるようにする（誤ドロップ対策）。
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // --- 検索パネル（/search = 検索の内訳。Claudeを呼ばない）---
   const [searchQ, setSearchQ] = useState("");
@@ -293,6 +300,67 @@ export default function Home() {
     }
   }
 
+  /** D&D/選択したファイルをステージに追加する（即アップロードはしない）。
+   * 同じファイル（名前・サイズ・更新日時が一致）は重複追加しない。 */
+  function addPendingFiles(files: File[]) {
+    if (files.length === 0) return;
+    setPendingFiles((prev) => {
+      const key = (f: File) => `${f.name}:${f.size}:${f.lastModified}`;
+      const seen = new Set(prev.map(key));
+      const added = files.filter((f) => !seen.has(key(f)));
+      return [...prev, ...added];
+    });
+  }
+
+  function removePendingFile(index: number) {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  /** ステージ中のファイルを順に取り込む（「登録する」で呼ぶ）。
+   *
+   * FormData で送るので content-type は指定しない（ブラウザが multipart の
+   * boundary 付きで自動設定する。プロキシはそれを素通しする）。
+   * Voyageの埋め込みAPIを各ファイルで呼ぶため、レート制限を避けて逐次実行する。
+   * 成功したファイルはステージから外し、失敗したものだけ残して再試行できるようにする。
+   */
+  async function uploadPending() {
+    if (uploading || pendingFiles.length === 0) return;
+    setUploading(true);
+    const results: string[] = [];
+    const failed: File[] = [];
+    for (const file of pendingFiles) {
+      setIngestStatus(
+        [...results, `「${file.name}」を取り込み中…`].join("\n"),
+      );
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch("/api/backend/ingest-file", {
+          method: "POST",
+          body: fd,
+        });
+        const err = await errorMessage(res);
+        if (err) {
+          // 改行はまとめて1行にして一覧を読みやすく保つ
+          results.push(`✗ ${file.name}: ${err.replace(/\n/g, " / ")}`);
+          failed.push(file);
+          continue;
+        }
+        const data = await res.json();
+        const note = data.replaced ? "（同名を置き換え）" : "";
+        results.push(
+          `✓ ${file.name}: ${data.chunks_created}チャンクで登録${note}`,
+        );
+      } catch (e) {
+        results.push(`✗ ${file.name}: ${String(e)}`);
+        failed.push(file);
+      }
+      setIngestStatus(results.join("\n"));
+    }
+    setPendingFiles(failed); // 成功分は消し、失敗分だけ残す
+    setUploading(false);
+  }
+
   async function runSearch() {
     const q = searchQ.trim();
     if (!q || searching) return;
@@ -420,7 +488,96 @@ export default function Home() {
         <button onClick={ingest} disabled={!source.trim() || !docText.trim()}>
           登録する
         </button>
-        {ingestStatus && <p className="hint">{ingestStatus}</p>}
+
+        {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
+            D&D/クリックでファイルをステージに追加し、「登録する」で確定する。
+            誤ってドロップしても「キャンセル」や個別×で取り消せる。複数可。 */}
+        <div className="dz-divider">またはファイルを登録</div>
+        <div
+          className={`dropzone${dragging ? " dragover" : ""}${uploading ? " busy" : ""}`}
+          onClick={() => !uploading && fileInputRef.current?.click()}
+          onKeyDown={(e) => {
+            // role="button" 相当のキー操作。Enter/Space でファイル選択を開く。
+            // Space は既定のスクロールを止める。
+            if ((e.key === "Enter" || e.key === " ") && !uploading) {
+              e.preventDefault();
+              fileInputRef.current?.click();
+            }
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            if (!uploading) setDragging(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            setDragging(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            if (!uploading) addPendingFiles(Array.from(e.dataTransfer.files));
+          }}
+          role="button"
+          tabIndex={0}
+          aria-disabled={uploading}
+        >
+          ここにファイルをドラッグ&ドロップ
+          <br />
+          <span className="dz-sub">
+            またはクリックして選択（PDF / XLSX / PPTX / テキスト・複数可）
+          </span>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".txt,.md,.csv,.tsv,.json,.log,.pdf,.xlsx,.pptx"
+          hidden
+          onChange={(e) => {
+            if (e.target.files) addPendingFiles(Array.from(e.target.files));
+            e.target.value = ""; // 同じファイルを連続で選べるようにリセット
+          }}
+        />
+
+        {/* ステージ中のファイル一覧。登録前に個別に外せる。 */}
+        {pendingFiles.length > 0 && (
+          <div className="dz-pending">
+            <ul className="dz-file-list">
+              {pendingFiles.map((f, i) => (
+                <li key={`${f.name}:${f.size}:${f.lastModified}`}>
+                  <span className="dz-file-name">{f.name}</span>
+                  <span className="dz-file-size">
+                    {(f.size / 1024).toFixed(0)} KB
+                  </span>
+                  <button
+                    className="dz-file-remove"
+                    onClick={() => removePendingFile(i)}
+                    disabled={uploading}
+                    title="この1件を外す"
+                    aria-label={`${f.name} を外す`}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="dz-actions">
+              <button onClick={uploadPending} disabled={uploading}>
+                {uploading
+                  ? "取り込み中…"
+                  : `登録する（${pendingFiles.length}件）`}
+              </button>
+              <button
+                className="dz-cancel"
+                onClick={() => setPendingFiles([])}
+                disabled={uploading}
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        )}
+        {ingestStatus && <p className="hint ingest-status">{ingestStatus}</p>}
       </section>
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}

@@ -40,12 +40,16 @@ def _content_type(source: str) -> str:
     return guessed or "text/plain; charset=utf-8"
 
 
-def save_text(source: str, text: str) -> bool:
-    """登録した原本テキストを S3 に保存する（best-effort）。保存できたら True。
+def save_bytes(source: str, data: bytes, content_type: str | None = None) -> bool:
+    """原本のバイト列を S3 に保存する（best-effort）。保存できたら True。
 
-    S3未設定なら何もせず False。S3が落ちている・認証不備などで失敗しても、
-    取り込み(ingest)自体は成立させたいので例外は握って警告ログにとどめる
-    （＝原本ダウンロードだけが使えなくなる）。将来PDF等は save_bytes を足す。
+    ファイルアップロード(/ingest-file)用。PDF/XLSX/PPTX などの原本を「そのまま」
+    保存し、出典名からダウンロードしたとき元のファイルとして開けるようにする。
+    content_type はアップロード時の MIME（file.content_type）を優先し、無ければ
+    拡張子から推定する（ダウンロード時に正しく開けるようにするため）。
+
+    S3未設定なら何もせず False。S3が落ちている等で失敗しても取り込み自体は
+    成立させたいので、例外は握って警告ログにとどめる（save_text と同じ方針）。
     """
     if not is_enabled():
         return False
@@ -53,13 +57,22 @@ def save_text(source: str, text: str) -> bool:
         _client().put_object(
             Bucket=S3_BUCKET,
             Key=source,
-            Body=text.encode("utf-8"),
-            ContentType=_content_type(source),
+            Body=data,
+            ContentType=content_type or _content_type(source),
         )
         return True
     except Exception:
-        logger.warning("原本のS3保存に失敗しました（取り込みは継続）: %s", source)
+        logger.warning("原本のS3保存に失敗しました（取り込みは継続）: %s", source, exc_info=True)
         return False
+
+
+def save_text(source: str, text: str) -> bool:
+    """登録した原本テキストを S3 に保存する（best-effort）。保存できたら True。
+
+    テキスト貼り付け登録(/ingest)用。原本＝本文テキストなので UTF-8 で保存する。
+    バイナリ原本（PDF等）は save_bytes を使う。
+    """
+    return save_bytes(source, text.encode("utf-8"), _content_type(source))
 
 
 def exists(source: str) -> bool:

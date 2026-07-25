@@ -1,0 +1,46 @@
+# PRごとにバックエンドの単体テストを回す。
+#   ローカルの `task test` と同じ pytest を、コンテナではなく素のPythonで実行する。
+#   テストは DB / 外部API を一切叩かない（tests/conftest.py がダミーキーを入れるだけ）ので、
+#   AWSにもAnthropic/Voyageにも課金は発生しない。publicリポジトリなのでActions実行時間も無料。
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop] # マージ後のmainが壊れていないかも見る
+  workflow_dispatch:
+
+# 同じPRに連続pushしたとき、古い実行を打ち切って無駄な実行を減らす
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # backend/Dockerfile と揃える
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      # requirements-dev.txt は requirements.txt を -r で取り込むので、これ1本で足りる。
+      # 本体依存も入れるのは、tests が app パッケージを import するため
+      # （anthropic/voyageai/psycopg はクライアント構築のみで通信はしない）。
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # pytest.ini の pythonpath=. / testpaths=tests がそのまま効く
+      - name: Run pytest
+        run: pytest

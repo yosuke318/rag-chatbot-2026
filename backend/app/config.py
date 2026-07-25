@@ -23,6 +23,11 @@ EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))  # voyage-3.5 は 1024次元
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
+# ファイルアップロード（/ingest-file）の1ファイル上限。
+# 受け取ったバイト列は一度メモリに載せるため、無制限だと巨大ファイルで
+# メモリを食い潰す。既定20MB。社内文書想定なら十分で、必要なら環境変数で調整。
+UPLOAD_MAX_BYTES = int(os.getenv("UPLOAD_MAX_MB", "20")) * 1024 * 1024
+
 # 検索・生成
 TOP_K = 4  # 回答生成に使うチャンク数
 

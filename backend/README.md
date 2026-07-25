@@ -13,7 +13,26 @@ app/
 ├── ingest.py     # テキスト→チャンク→埋め込み→保存
 ├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）
 └── main.py       # FastAPI: /health /ingest /chat
+
+tests/            # 単体テスト（DB・外部APIを使わない純ロジック）
+├── test_keywords.py    # 名詞抽出
+├── test_parsers.py     # PDF/XLSX/PPTX 抽出
+└── test_retrieval.py   # RRF融合・手法解決・整形
 ```
+
+## テスト
+
+DB も外部API も使わない純ロジックだけを対象にした単体テスト。
+リポジトリ直下から一発で回せる（稼働中スタックには触れない）:
+
+```bash
+task test
+```
+
+中身は「現在のホストソースをマウントした使い捨てコンテナで pytest」。
+`app.retrieval` は import 時に psycopg 等のネイティブ依存を読むため、
+それが入らない環境（ローカル arm64 で psycopg が x86 ビルド 等）では
+`test_retrieval.py` は自動 skip される。コンテナ内では全件実行される。
 
 ## 動かす手順
 
@@ -41,26 +60,49 @@ python -m app.seed               # 文書投入
 `/search` は Claude を呼ばないので **ANTHROPIC_API_KEY なしで動く**。
 ただし質問をベクトル化するため **VOYAGE_API_KEY は必要**（文書登録と同じ埋め込みモデルを使う）。
 `?retrievers=trgm,bm25` のようにベクトル検索を外せば、埋め込みAPIも呼ばずに動かせる。
-ベクトル/字面それぞれの順位と、RRF融合後のスコアが返るので、
-「両方の検索が上位に挙げたチャンクが融合で上に来る」挙動を実データで確認できる。
+各手法（vector / trgm / bm25）ごとの順位と生スコアが `stages` に、RRF融合後の順位と
+「どの手法が何位に置き、いくら寄与したか」の内訳が `fused[].contributions` に入る。
+これで「両方の検索が上位に挙げたチャンクが融合で上に来る」挙動を実データで確認できる。
 
 ```bash
 curl -s 'localhost:8000/search?q=有給は入社何ヶ月で何日？' | jq
+# 手法・定数を変えて比較: ?retrievers=vector,trgm,bm25&bm25_k1=2.0&rrf_k=10
 ```
 
 ```jsonc
 {
-  "vector_search": [ { "rank": 0, "id": 1, "preview": "年次有給休暇は…" } ],
-  "lexical_search": [ { "rank": 0, "id": 7, "preview": "経費精算は翌月10日…" } ],
-  "fused": [
-    { "rank": 0, "id": 1, "score": 0.03252,
-      "vector_rank": 0, "lexical_rank": 1,   // 両方に出た → 上位
-      "preview": "年次有給休暇は…" }
+  "question": "有給は入社何ヶ月で何日？",
+  "retrievers": ["vector", "trgm"],           // この検索で使った手法の並び
+  "applied_params": {                          // 実際に使われた定数（未指定は既定）
+    "rrf_k": 60,
+    "retrievers": { "vector": {}, "trgm": { "min_similarity": 0.005 } }
+  },
+  "stages": [                                  // 融合前：手法ごとのランキング
+    {
+      "name": "vector", "label": "ベクトル検索（意味）", "metric_label": "cos類似度",
+      "hits": [ { "rank": 0, "id": 1, "source": "有給休暇.txt",
+                  "metric_value": 0.6421, "preview": "年次有給休暇は…" } ]
+    },
+    {
+      "name": "trgm", "label": "字面検索（名詞トライグラム）", "metric_label": "字面類似度",
+      "hits": [ { "rank": 0, "id": 7, "source": "経費精算.txt",
+                  "metric_value": 0.0102, "preview": "経費精算は翌月10日…" } ]
+    }
+  ],
+  "fused": [                                   // 融合後：最終順位
+    {
+      "rank": 0, "id": 1, "source": "有給休暇.txt", "score": 0.03252,
+      "preview": "年次有給休暇は…",
+      "contributions": [                       // 手法ごとの寄与内訳
+        { "retriever": "vector", "rank": 0, "metric_value": 0.6421, "rrf_term": 0.01639 },
+        { "retriever": "trgm",   "rank": 1, "metric_value": 0.0087, "rrf_term": 0.01613 }
+      ]
+    }
   ]
 }
 ```
 
-`vector_rank` / `lexical_rank` が `null` = そのリストには出なかった（片方の検索だけがヒット）。
+`contributions[].rank` が `null` = その手法のリストには出なかった（片方の検索だけがヒット）。
 
 ## 試す
 
