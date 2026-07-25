@@ -235,9 +235,10 @@ async def ingest_file(
     ファイルそのものを受け取り、テキストを抽出してから同じ取り込み処理に流す。
     出典名(source)はアップロードされたファイル名をそのまま使う。
 
-    ※原本バイナリ（PDF等）の S3 保存はまだ行わない（store_original=False）。
-      抽出テキストを原本として保存すると原本ダウンロードが壊れるため、
-      原本バイナリの保存は次段(#4 の storage.save_bytes)で足す。
+    検索・埋め込みには抽出テキストを使い（ingest_text）、原本バイナリ（PDF等）は
+    そのまま S3 に保存する（storage.save_bytes）。抽出テキストを原本として
+    保存すると原本ダウンロードが壊れるため、取り込みは store_original=False にし、
+    原本の保存はここで明示的に行う。
     """
     source = (file.filename or "").strip()
     if not source:
@@ -289,6 +290,10 @@ async def ingest_file(
         )
 
     result = ingest_text(source, text, category, store_original=False)
+    # 原本バイナリを S3(MinIO) に保存し、出典名からダウンロードできるようにする。
+    # 取り込み(DB登録)成立後に行う best-effort（S3が落ちていても登録は残す）。
+    # content_type はアップロード時の MIME を優先（無ければ拡張子から推定）。
+    storage.save_bytes(source, data, file.content_type)
     return {"source": source, **result}
 
 
