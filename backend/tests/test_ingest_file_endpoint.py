@@ -30,7 +30,7 @@ def client():
 # ヘルパー
 # ---------------------------------------------------------------------------
 
-_INGEST_RESULT = {"chunks_created": 3, "replaced": 0}
+_MOCK_INGEST_RESULT = {"chunks_created": 3, "replaced": 0}
 
 
 def _post_txt(client: TestClient, content: bytes = b"Hello world", filename: str = "doc.txt"):
@@ -50,7 +50,7 @@ def test_200_returns_ingest_response_shape(client: TestClient):
     """正常アップロードで IngestResponse（source / chunks_created / replaced）が返る。"""
     with (
         patch("app.main.extract_text", return_value="取り込み本文テキスト"),
-        patch("app.main.ingest_text", return_value=_INGEST_RESULT),
+        patch("app.main.ingest_text", return_value=_MOCK_INGEST_RESULT),
         patch("app.main.storage"),
     ):
         resp = _post_txt(client)
@@ -93,7 +93,7 @@ def test_400_extract_raises_value_error(client: TestClient):
     """extract_text が ValueError を上げたら 400 + ErrorResponse。"""
     with (
         patch("app.main.extract_text", side_effect=ValueError("文字コード不明")),
-        patch("app.main.ingest_text", return_value=_INGEST_RESULT),
+        patch("app.main.ingest_text", return_value=_MOCK_INGEST_RESULT),
         patch("app.main.storage"),
     ):
         resp = _post_txt(client)
@@ -107,7 +107,7 @@ def test_400_empty_extracted_text(client: TestClient):
     """抽出結果が空白のみのときは 400 + ErrorResponse。"""
     with (
         patch("app.main.extract_text", return_value="   \n  "),
-        patch("app.main.ingest_text", return_value=_INGEST_RESULT),
+        patch("app.main.ingest_text", return_value=_MOCK_INGEST_RESULT),
         patch("app.main.storage"),
     ):
         resp = _post_txt(client)
@@ -141,7 +141,7 @@ def test_415_unsupported_file_type(client: TestClient):
     """未対応拡張子は 415 + ErrorResponse。"""
     with (
         patch("app.main.extract_text", side_effect=UnsupportedFileType(".xyz")),
-        patch("app.main.ingest_text", return_value=_INGEST_RESULT),
+        patch("app.main.ingest_text", return_value=_MOCK_INGEST_RESULT),
         patch("app.main.storage"),
     ):
         resp = client.post(
