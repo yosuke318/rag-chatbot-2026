@@ -140,6 +140,66 @@ button:disabled {
   font-size: 11px;
 }
 
+/* ステージ中ファイルの一覧 */
+.dz-pending {
+  margin-top: 10px;
+}
+.dz-file-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dz-file-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 13px;
+}
+.dz-file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dz-file-size {
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+/* 個別に外す × ボタン（アクセント色ボタンとは別の控えめな見た目に） */
+.dz-file-remove {
+  background: transparent;
+  color: var(--muted);
+  padding: 0 6px;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 6px;
+}
+.dz-file-remove:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg);
+}
+.dz-actions {
+  display: flex;
+  gap: 8px;
+}
+/* キャンセルは目立たせない副次アクション */
+.dz-cancel {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.dz-cancel:hover:not(:disabled) {
+  color: var(--text);
+}
+
 .messages {
   display: flex;
   flex-direction: column;

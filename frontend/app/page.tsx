@@ -120,6 +120,9 @@ export default function Home() {
   // ファイルのドラッグ&ドロップ登録（/ingest-file）
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // D&D/選択したファイルは即アップロードせず、一旦ここに溜めて（＝ステージ）
+  // 「登録する」で確定、「キャンセル」で取り消せるようにする（誤ドロップ対策）。
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // --- 検索パネル（/search = 検索の内訳。Claudeを呼ばない）---
@@ -297,17 +300,35 @@ export default function Home() {
     }
   }
 
-  /** ドラッグ&ドロップ or ファイル選択で受け取ったファイルを順に取り込む。
+  /** D&D/選択したファイルをステージに追加する（即アップロードはしない）。
+   * 同じファイル（名前・サイズ・更新日時が一致）は重複追加しない。 */
+  function addPendingFiles(files: File[]) {
+    if (files.length === 0) return;
+    setPendingFiles((prev) => {
+      const key = (f: File) => `${f.name}:${f.size}:${f.lastModified}`;
+      const seen = new Set(prev.map(key));
+      const added = files.filter((f) => !seen.has(key(f)));
+      return [...prev, ...added];
+    });
+  }
+
+  function removePendingFile(index: number) {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  /** ステージ中のファイルを順に取り込む（「登録する」で呼ぶ）。
    *
    * FormData で送るので content-type は指定しない（ブラウザが multipart の
    * boundary 付きで自動設定する。プロキシはそれを素通しする）。
    * Voyageの埋め込みAPIを各ファイルで呼ぶため、レート制限を避けて逐次実行する。
+   * 成功したファイルはステージから外し、失敗したものだけ残して再試行できるようにする。
    */
-  async function uploadFiles(files: File[]) {
-    if (uploading || files.length === 0) return;
+  async function uploadPending() {
+    if (uploading || pendingFiles.length === 0) return;
     setUploading(true);
     const results: string[] = [];
-    for (const file of files) {
+    const failed: File[] = [];
+    for (const file of pendingFiles) {
       setIngestStatus(
         [...results, `「${file.name}」を取り込み中…`].join("\n"),
       );
@@ -322,6 +343,7 @@ export default function Home() {
         if (err) {
           // 改行はまとめて1行にして一覧を読みやすく保つ
           results.push(`✗ ${file.name}: ${err.replace(/\n/g, " / ")}`);
+          failed.push(file);
           continue;
         }
         const data = await res.json();
@@ -331,9 +353,11 @@ export default function Home() {
         );
       } catch (e) {
         results.push(`✗ ${file.name}: ${String(e)}`);
+        failed.push(file);
       }
       setIngestStatus(results.join("\n"));
     }
+    setPendingFiles(failed); // 成功分は消し、失敗分だけ残す
     setUploading(false);
   }
 
@@ -466,7 +490,8 @@ export default function Home() {
         </button>
 
         {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
-            クリックでファイル選択、ドロップで直接取り込み。複数可。 */}
+            D&D/クリックでファイルをステージに追加し、「登録する」で確定する。
+            誤ってドロップしても「キャンセル」や個別×で取り消せる。複数可。 */}
         <div className="dz-divider">またはファイルを登録</div>
         <div
           className={`dropzone${dragging ? " dragover" : ""}${uploading ? " busy" : ""}`}
@@ -481,7 +506,7 @@ export default function Home() {
           }}
           onDragOver={(e) => {
             e.preventDefault();
-            setDragging(true);
+            if (!uploading) setDragging(true);
           }}
           onDragLeave={(e) => {
             e.preventDefault();
@@ -490,23 +515,17 @@ export default function Home() {
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            uploadFiles(Array.from(e.dataTransfer.files));
+            if (!uploading) addPendingFiles(Array.from(e.dataTransfer.files));
           }}
           role="button"
           tabIndex={0}
           aria-disabled={uploading}
         >
-          {uploading ? (
-            "取り込み中…"
-          ) : (
-            <>
-              ここにファイルをドラッグ&ドロップ
-              <br />
-              <span className="dz-sub">
-                またはクリックして選択（PDF / XLSX / PPTX / テキスト・複数可）
-              </span>
-            </>
-          )}
+          ここにファイルをドラッグ&ドロップ
+          <br />
+          <span className="dz-sub">
+            またはクリックして選択（PDF / XLSX / PPTX / テキスト・複数可）
+          </span>
         </div>
         <input
           ref={fileInputRef}
@@ -515,10 +534,49 @@ export default function Home() {
           accept=".txt,.md,.csv,.tsv,.json,.log,.pdf,.xlsx,.pptx"
           hidden
           onChange={(e) => {
-            if (e.target.files) uploadFiles(Array.from(e.target.files));
+            if (e.target.files) addPendingFiles(Array.from(e.target.files));
             e.target.value = ""; // 同じファイルを連続で選べるようにリセット
           }}
         />
+
+        {/* ステージ中のファイル一覧。登録前に個別に外せる。 */}
+        {pendingFiles.length > 0 && (
+          <div className="dz-pending">
+            <ul className="dz-file-list">
+              {pendingFiles.map((f, i) => (
+                <li key={`${f.name}:${f.size}:${f.lastModified}`}>
+                  <span className="dz-file-name">{f.name}</span>
+                  <span className="dz-file-size">
+                    {(f.size / 1024).toFixed(0)} KB
+                  </span>
+                  <button
+                    className="dz-file-remove"
+                    onClick={() => removePendingFile(i)}
+                    disabled={uploading}
+                    title="この1件を外す"
+                    aria-label={`${f.name} を外す`}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="dz-actions">
+              <button onClick={uploadPending} disabled={uploading}>
+                {uploading
+                  ? "取り込み中…"
+                  : `登録する（${pendingFiles.length}件）`}
+              </button>
+              <button
+                className="dz-cancel"
+                onClick={() => setPendingFiles([])}
+                disabled={uploading}
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        )}
         {ingestStatus && <p className="hint ingest-status">{ingestStatus}</p>}
       </section>
 
