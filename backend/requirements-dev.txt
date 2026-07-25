@@ -1,0 +1,5 @@
+# テスト用の追加依存（本番イメージには入れない）。
+#   docker compose exec backend pip install -r requirements-dev.txt
+# もしくは Taskfile の `task test` から使う。
+-r requirements.txt
+pytest

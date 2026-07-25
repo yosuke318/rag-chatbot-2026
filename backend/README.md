@@ -13,7 +13,26 @@ app/
 ├── ingest.py     # テキスト→チャンク→埋め込み→保存
 ├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）
 └── main.py       # FastAPI: /health /ingest /chat
+
+tests/            # 単体テスト（DB・外部APIを使わない純ロジック）
+├── test_keywords.py    # 名詞抽出
+├── test_parsers.py     # PDF/XLSX/PPTX 抽出
+└── test_retrieval.py   # RRF融合・手法解決・整形
 ```
+
+## テスト
+
+DB も外部API も使わない純ロジックだけを対象にした単体テスト。
+リポジトリ直下から一発で回せる（稼働中スタックには触れない）:
+
+```bash
+task test
+```
+
+中身は「現在のホストソースをマウントした使い捨てコンテナで pytest」。
+`app.retrieval` は import 時に psycopg 等のネイティブ依存を読むため、
+それが入らない環境（ローカル arm64 で psycopg が x86 ビルド 等）では
+`test_retrieval.py` は自動 skip される。コンテナ内では全件実行される。
 
 ## 動かす手順
 
