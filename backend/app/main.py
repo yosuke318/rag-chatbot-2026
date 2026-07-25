@@ -252,6 +252,7 @@ async def ingest_file(
 
     data = await file.read(UPLOAD_MAX_BYTES + 1)
     if len(data) > UPLOAD_MAX_BYTES:
+        return _error(
             413,
             "file_too_large",
             "ファイルが大きすぎます。",
