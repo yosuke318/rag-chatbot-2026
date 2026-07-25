@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 // ★型はバックエンドの OpenAPI スキーマから自動生成したものを使う★
 //   再生成: npm run gen:types （backend が :8000 で起動している状態で）
@@ -117,6 +117,10 @@ export default function Home() {
   const [source, setSource] = useState("");
   const [docText, setDocText] = useState("");
   const [ingestStatus, setIngestStatus] = useState("");
+  // ファイルのドラッグ&ドロップ登録（/ingest-file）
+  const [dragging, setDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // --- 検索パネル（/search = 検索の内訳。Claudeを呼ばない）---
   const [searchQ, setSearchQ] = useState("");
@@ -293,6 +297,46 @@ export default function Home() {
     }
   }
 
+  /** ドラッグ&ドロップ or ファイル選択で受け取ったファイルを順に取り込む。
+   *
+   * FormData で送るので content-type は指定しない（ブラウザが multipart の
+   * boundary 付きで自動設定する。プロキシはそれを素通しする）。
+   * Voyageの埋め込みAPIを各ファイルで呼ぶため、レート制限を避けて逐次実行する。
+   */
+  async function uploadFiles(files: File[]) {
+    if (uploading || files.length === 0) return;
+    setUploading(true);
+    const results: string[] = [];
+    for (const file of files) {
+      setIngestStatus(
+        [...results, `「${file.name}」を取り込み中…`].join("\n"),
+      );
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch("/api/backend/ingest-file", {
+          method: "POST",
+          body: fd,
+        });
+        const err = await errorMessage(res);
+        if (err) {
+          // 改行はまとめて1行にして一覧を読みやすく保つ
+          results.push(`✗ ${file.name}: ${err.replace(/\n/g, " / ")}`);
+          continue;
+        }
+        const data = await res.json();
+        const note = data.replaced ? "（同名を置き換え）" : "";
+        results.push(
+          `✓ ${file.name}: ${data.chunks_created}チャンクで登録${note}`,
+        );
+      } catch (e) {
+        results.push(`✗ ${file.name}: ${String(e)}`);
+      }
+      setIngestStatus(results.join("\n"));
+    }
+    setUploading(false);
+  }
+
   async function runSearch() {
     const q = searchQ.trim();
     if (!q || searching) return;
@@ -420,7 +464,54 @@ export default function Home() {
         <button onClick={ingest} disabled={!source.trim() || !docText.trim()}>
           登録する
         </button>
-        {ingestStatus && <p className="hint">{ingestStatus}</p>}
+
+        {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
+            クリックでファイル選択、ドロップで直接取り込み。複数可。 */}
+        <div className="dz-divider">またはファイルを登録</div>
+        <div
+          className={`dropzone${dragging ? " dragover" : ""}${uploading ? " busy" : ""}`}
+          onClick={() => !uploading && fileInputRef.current?.click()}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            setDragging(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            uploadFiles(Array.from(e.dataTransfer.files));
+          }}
+          role="button"
+          tabIndex={0}
+          aria-disabled={uploading}
+        >
+          {uploading ? (
+            "取り込み中…"
+          ) : (
+            <>
+              ここにファイルをドラッグ&ドロップ
+              <br />
+              <span className="dz-sub">
+                またはクリックして選択（PDF / XLSX / PPTX / テキスト・複数可）
+              </span>
+            </>
+          )}
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".txt,.md,.csv,.tsv,.json,.log,.pdf,.xlsx,.pptx"
+          hidden
+          onChange={(e) => {
+            if (e.target.files) uploadFiles(Array.from(e.target.files));
+            e.target.value = ""; // 同じファイルを連続で選べるようにリセット
+          }}
+        />
+        {ingestStatus && <p className="hint ingest-status">{ingestStatus}</p>}
       </section>
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}

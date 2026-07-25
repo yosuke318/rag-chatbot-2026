@@ -90,6 +90,56 @@ button:disabled {
   margin: 4px 0 0;
 }
 
+/* 取り込み結果は複数ファイルぶんを改行で並べるので改行を活かす */
+.ingest-status {
+  white-space: pre-line;
+}
+
+/* ドラッグ&ドロップ登録 */
+.dz-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.dz-divider::before,
+.dz-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--bg);
+  transition: border-color 0.15s, background 0.15s;
+}
+.dropzone:hover {
+  border-color: var(--accent);
+}
+/* ドラッグ中はハイライトして「ここに落とせる」ことを示す */
+.dropzone.dragover {
+  border-color: var(--accent);
+  background: #eff4ff;
+  color: var(--accent);
+}
+.dropzone.busy {
+  cursor: default;
+  opacity: 0.7;
+}
+.dz-sub {
+  font-size: 11px;
+}
+
 .messages {
   display: flex;
   flex-direction: column;
