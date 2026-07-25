@@ -471,6 +471,14 @@ export default function Home() {
         <div
           className={`dropzone${dragging ? " dragover" : ""}${uploading ? " busy" : ""}`}
           onClick={() => !uploading && fileInputRef.current?.click()}
+          onKeyDown={(e) => {
+            // role="button" 相当のキー操作。Enter/Space でファイル選択を開く。
+            // Space は既定のスクロールを止める。
+            if ((e.key === "Enter" || e.key === " ") && !uploading) {
+              e.preventDefault();
+              fileInputRef.current?.click();
+            }
+          }}
           onDragOver={(e) => {
             e.preventDefault();
             setDragging(true);
