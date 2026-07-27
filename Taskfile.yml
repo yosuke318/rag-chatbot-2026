@@ -19,9 +19,13 @@ tasks:
     cmds:
       # 現在のホストソースをマウントした使い捨てコンテナで pytest を回す。
       # --no-deps で db 等を起こさない。pytest はイメージに無いので都度入れる。
+      # DATABASE_URL は到達不能な値で上書きする: compose の既定は db:5432 を指し、
+      # `task up` 済みだと実DBに繋がってしまい「DB非依存」が崩れても気づけない。
+      # ここが繋がらない前提なら、DBに触れたテストは即座に失敗して露見する。
       - >
         docker compose run --rm --no-deps
         -e ANTHROPIC_API_KEY=dummy -e VOYAGE_API_KEY=dummy
+        -e DATABASE_URL=postgresql://unused:unused@127.0.0.1:1/unused
         -v "$PWD/backend/app:/app/app"
         -v "$PWD/backend/tests:/app/tests"
         -v "$PWD/backend/seed_data:/app/seed_data"

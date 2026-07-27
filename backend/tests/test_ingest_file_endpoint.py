@@ -18,11 +18,17 @@ from app.ingest import UnsupportedFileType  # noqa: E402
 
 @pytest.fixture(scope="module")
 def client():
-    """DB・LLM・S3 をモックした TestClient。lifespan の init_db も差し替える。"""
-    with patch("app.db.init_db"):
-        from app.main import app
+    """DB・LLM・S3 をモックした TestClient。lifespan の init_db も差し替える。
 
-        with TestClient(app) as c:
+    main.py は `from app.db import init_db` で名前を束縛しているため、
+    `patch("app.db.init_db")` では差し替わらない（「patchの中で初めて
+    app.main を import する」形なら効くが、他のテストが先に app.main を
+    import すると崩れる）。実際に呼ばれる名前を patch.object で差し替える。
+    """
+    from app import main as main_module
+
+    with patch.object(main_module, "init_db"):
+        with TestClient(main_module.app) as c:
             yield c
 
 

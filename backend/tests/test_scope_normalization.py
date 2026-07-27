@@ -15,15 +15,22 @@ pytest.importorskip("psycopg")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.main import _blank_to_none  # noqa: E402
+from app import main as main_module  # noqa: E402
+
+_blank_to_none = main_module._blank_to_none
 
 
 @pytest.fixture(scope="module")
 def client():
-    with patch("app.db.init_db"):
-        from app.main import app
+    """DBに触らない TestClient。
 
-        with TestClient(app) as c:
+    main.py は `from app.db import init_db` で名前を束縛しているので、
+    `patch("app.db.init_db")` では差し替わらない（app.main 側の参照は元のまま）。
+    実際に呼ばれる `app.main.init_db` を patch.object で差し替える。
+    こうしておけば import 順に依存しない。
+    """
+    with patch.object(main_module, "init_db"):
+        with TestClient(main_module.app) as c:
             yield c
 
 
