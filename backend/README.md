@@ -12,6 +12,8 @@ app/
 ├── llm.py        # 埋め込み(Voyage) + 文脈生成/回答生成(Claude)
 ├── chunking.py   # ★チャンク分割（見出し・条文の構造で切る）
 ├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存
+├── eval.py       # 検索評価（Hit@k / MRR）
+├── compare.py    # contextual有無のA/B測定
 ├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）
 └── main.py       # FastAPI: /health /ingest /chat
 
@@ -20,6 +22,7 @@ tests/            # 単体テスト（DB・外部APIを使わない純ロジッ�
 ├── test_parsers.py     # PDF/XLSX/PPTX 抽出
 ├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
 ├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
+├── test_compare.py     # contextual有無のA/B測定（比較の公平性）
 └── test_retrieval.py   # RRF融合・手法解決・整形
 ```
 
@@ -76,8 +79,27 @@ python -m app.seed               # 文書投入
   文書部分にプロンプトキャッシュを効かせているので、2チャンク目以降は入力が安い。
 
 `USE_CONTEXTUAL_CHUNKING=false` にすると Claude を呼ばず、見出しの階層
-（`第2章 休暇 > 第5条 年次有給休暇`）を前置する。有り/無しで
-`python -m app.eval` の Hit@k・MRR を比較して効果を確認する。
+（`第2章 休暇 > 第5条 年次有給休暇`）を前置する。
+
+### 効果を測る（A/B測定）
+
+有り/無しを手で切り替えて測ると条件がずれるので、専用のCLIを用意してある:
+
+```bash
+task compare-contextual          # = docker compose exec backend python -m app.compare
+python -m app.compare --project 社内規程 --top-k 4
+```
+
+seed_docs を **contextual なし → あり** の2通りで取り込み直し、同じ質問集で
+Hit@k・MRR と「順位が動いた質問」を並べて出す。公平に測るための決めごとは3つ:
+
+1. **質問のベクトルは最初に1回だけ作り、両方の評価で使い回す**
+   → 差が「文書側の作り方」だけに由来すると言い切れる（埋め込みAPIも1回で済む）
+2. 検索手法・パラメータは両構成で同一（引数をそのまま両方へ渡す）
+3. 取り込み直すのは `seed_docs/*.txt` のみ。APIで別途入れた文書は両方で同じ状態のまま残り、共通の妨害文書として働く
+
+**DBを書き換える点に注意**（同名文書は置き換わる）。設定 `USE_CONTEXTUAL_CHUNKING` と
+同じ構成を最後に回すので、実行後のDBは設定どおりの状態で残る。
 
 ## 検索の中身を見る（Anthropicキー不要・Voyageキーは必要）
 

@@ -149,6 +149,7 @@ def evaluate(
     gold: list[dict] | None = None,
     params: dict[str, dict] | None = None,
     rrf_k: int | None = None,
+    query_vecs: list[list[float]] | None = None,
 ) -> dict:
     """質問を1問ずつ検索にかけ、Hit@k と MRR を集計して返す。
 
@@ -160,6 +161,11 @@ def evaluate(
     params / rrf_k を渡すと、検索の数値パラメータ（字面の閾値・BM25のk1/b・RRFのk）を
     変えて評価できる。「k1を上げるとHit@kは上がるか」を数値で測るための引数。
     未指定なら設定の既定値で評価する。
+
+    query_vecs: 質問のベクトルを外から渡す（gold と同じ並び・同じ長さ）。
+      取り込み方を変えて2回評価する A/B 測定（app.compare）で、両方の評価に
+      ★同一のベクトル★を使うための引数。こうすると差が文書側の変更だけに
+      由来すると言い切れるうえ、埋め込みAPIの呼び出しも1回で済む。
     """
     # None のときだけ既定を使う。空リスト [] は「0問で評価」の明示指定として尊重する
     gold = load_seed_questions() if gold is None else gold
@@ -172,11 +178,16 @@ def evaluate(
     #   リクエスト上限（Voyage 無料枠は 3 RPM）に4問目で当たって評価が完走しない。
     #   評価は質問が最初から全部分かっているので、まとめて1リクエストで済む。
     #   ベクトル検索を使わない構成（trgm/bm25 のみ）では埋め込み自体を呼ばない。
-    query_vecs: list[list[float] | None] = [None] * len(gold)
-    if gold and "vector" in resolve_retrievers(retrievers):
-        query_vecs = embed_texts([g["question"] for g in gold], input_type="query")
+    if query_vecs is not None:
+        if len(query_vecs) != len(gold):
+            raise ValueError("query_vecs は gold と同じ長さで渡してください")
+        vecs: list[list[float] | None] = list(query_vecs)
+    elif gold and "vector" in resolve_retrievers(retrievers):
+        vecs = list(embed_texts([g["question"] for g in gold], input_type="query"))
+    else:
+        vecs = [None] * len(gold)
 
-    for item, query_vec in zip(gold, query_vecs):
+    for item, query_vec in zip(gold, vecs):
         hits = hybrid_search(
             item["question"],
             top_n=top_k,

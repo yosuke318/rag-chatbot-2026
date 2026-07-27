@@ -5,6 +5,7 @@
 再試行は埋め込み呼び出しだけを包む（文脈生成をやり直して Claude を無駄に
 呼ばない）ので、テストも llm.embed_texts に対して書く。
 """
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -81,7 +82,7 @@ def test_seed_passes_retry_waits_to_ingest(monkeypatch, tmp_path):
 
     captured = {}
 
-    def fake_ingest(source, text, embed_retry_waits=None):
+    def fake_ingest(source, text, project=None, topic=None, embed_retry_waits=None):
         captured["source"] = source
         captured["waits"] = embed_retry_waits
         return {"chunks_created": 1, "replaced": 0}
@@ -90,3 +91,51 @@ def test_seed_passes_retry_waits_to_ingest(monkeypatch, tmp_path):
     seed.main()
 
     assert captured == {"source": "a.txt", "waits": [5, 10]}
+
+
+def test_load_scopes_maps_source_to_project_and_topic(tmp_path):
+    manifest = tmp_path / "documents.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {"source": "a.txt", "project": "社内規程", "topic": "労務"},
+                {"source": "b.txt", "project": "社内規程"},  # topic 省略可
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    scopes = seed.load_scopes(manifest)
+
+    assert scopes["a.txt"] == {"project": "社内規程", "topic": "労務"}
+    assert scopes["b.txt"] == {"project": "社内規程", "topic": None}
+
+
+def test_load_scopes_without_manifest_is_empty(tmp_path):
+    """マニフェストが無くても取り込みは動く（全文書が区分なしになるだけ）。"""
+    assert seed.load_scopes(tmp_path / "nope.json") == {}
+
+
+def test_seed_passes_scope_from_manifest(monkeypatch, tmp_path):
+    (tmp_path / "a.txt").write_text("本文", encoding="utf-8")
+    (tmp_path / "z.txt").write_text("本文", encoding="utf-8")  # マニフェスト未掲載
+    monkeypatch.setattr(seed, "SEED_DIR", tmp_path)
+    monkeypatch.setattr(seed, "init_db", lambda: None)
+    monkeypatch.setattr(seed.sys, "argv", ["app.seed"])
+    monkeypatch.setattr(
+        seed,
+        "load_scopes",
+        lambda: {"a.txt": {"project": "社内規程", "topic": "労務"}},
+    )
+
+    captured = {}
+
+    def fake_ingest(source, text, project=None, topic=None, embed_retry_waits=None):
+        captured[source] = (project, topic)
+        return {"chunks_created": 1, "replaced": 0}
+
+    monkeypatch.setattr(seed, "ingest_text", fake_ingest)
+    seed.main()
+
+    assert captured["a.txt"] == ("社内規程", "労務")
+    assert captured["z.txt"] == (None, None)  # 未掲載は区分なし

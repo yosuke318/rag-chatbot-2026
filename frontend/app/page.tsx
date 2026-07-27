@@ -116,6 +116,10 @@ export default function Home() {
   // --- 取り込みパネル（/ingest = 書き込みフロー）---
   const [source, setSource] = useState("");
   const [docText, setDocText] = useState("");
+  // 文書の区分。テキスト貼り付け・ファイルD&Dの両方に効かせる（同じパネルなので
+  // 入力欄は1組だけ持つ）。空欄は送らない＝区分なし(NULL)の共通文書として登録。
+  const [docProject, setDocProject] = useState("");
+  const [docTopic, setDocTopic] = useState("");
   const [ingestStatus, setIngestStatus] = useState("");
   // ファイルのドラッグ&ドロップ登録（/ingest-file）
   const [dragging, setDragging] = useState(false);
@@ -281,7 +285,12 @@ export default function Home() {
       const res = await fetch("/api/backend/ingest", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ source, text: docText }),
+        body: JSON.stringify({
+          source,
+          text: docText,
+          project: docProject.trim() || null,
+          topic: docTopic.trim() || null,
+        }),
       });
       const err = await errorMessage(res);
       if (err) {
@@ -335,6 +344,9 @@ export default function Home() {
       try {
         const fd = new FormData();
         fd.append("file", file);
+        // 空欄は送らない（FormDataは空文字も送ってしまうため明示的に分岐する）
+        if (docProject.trim()) fd.append("project", docProject.trim());
+        if (docTopic.trim()) fd.append("topic", docTopic.trim());
         const res = await fetch("/api/backend/ingest-file", {
           method: "POST",
           body: fd,
@@ -480,6 +492,18 @@ export default function Home() {
           value={source}
           onChange={(e) => setSource(e.target.value)}
         />
+        <div className="scope-row">
+          <input
+            placeholder="プロジェクト（任意）"
+            value={docProject}
+            onChange={(e) => setDocProject(e.target.value)}
+          />
+          <input
+            placeholder="トピック（任意）"
+            value={docTopic}
+            onChange={(e) => setDocTopic(e.target.value)}
+          />
+        </div>
         <textarea
           placeholder="本文を貼り付け…"
           value={docText}
@@ -880,7 +904,7 @@ export default function Home() {
             value={newExpected}
             onChange={(e) => setNewExpected(e.target.value)}
           />
-          <div className="eval-add-row">
+          <div className="scope-row">
             <input
               placeholder="プロジェクト（任意）"
               value={newQProject}

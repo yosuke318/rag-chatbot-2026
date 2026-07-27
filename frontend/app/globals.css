@@ -301,12 +301,13 @@ button:disabled {
   border-radius: 12px;
 }
 
-.eval-add-row {
+/* プロジェクト／トピックの2列入力。①登録パネルと④評価パネルの両方で使う */
+.scope-row {
   display: flex;
   gap: 8px;
 }
 
-.eval-add-row input {
+.scope-row input {
   flex: 1;
 }
 

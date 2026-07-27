@@ -54,6 +54,11 @@ tasks:
       # `python -m app.eval` が「質問が見つかりません」で止まるため、セットで流す。
       - docker compose exec -T backend python -m app.eval --seed
 
+  compare-contextual:
+    desc: contextual retrieval の有無で検索精度を比較する（seed_docs を2回取り込み直す）
+    cmds:
+      - docker compose exec -T backend python -m app.compare
+
   # 例: 単一ファイルだけ入れたいときのテンプレ（拡張の見本）
   # ingest-file:
   #   desc: 指定ファイルを1つ登録する（task ingest-file FILE=path/to/x.txt）
