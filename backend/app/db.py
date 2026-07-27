@@ -52,6 +52,10 @@ def init_db() -> None:
         )
         conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS project TEXT;")
         conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS topic TEXT;")
+        # 差分検知用（app.ingest.content_hash）。再取り込み時にこれが一致すれば
+        # 埋め込みAPIを呼ばずにスキップする。既存行は NULL＝「不明」なので
+        # 一度だけ必ず取り込み直され、そこで値が入る。
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash TEXT;")
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS chunks (

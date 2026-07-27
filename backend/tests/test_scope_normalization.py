@@ -51,7 +51,7 @@ def test_blank_to_none(value, expected):
 
 def test_ingest_stores_blank_scope_as_null(client):
     """空欄で登録したら空文字ではなく NULL が渡る。"""
-    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0}) as m:
+    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0, "skipped": False}) as m:
         res = client.post(
             "/ingest",
             json={"source": "a.txt", "text": "本文", "project": "  ", "topic": ""},
@@ -62,7 +62,7 @@ def test_ingest_stores_blank_scope_as_null(client):
 
 
 def test_ingest_trims_scope(client):
-    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0}) as m:
+    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0, "skipped": False}) as m:
         client.post(
             "/ingest",
             json={"source": "a.txt", "text": "本文", "project": " 社内規程 ", "topic": " 労務 "},
@@ -72,7 +72,7 @@ def test_ingest_trims_scope(client):
 
 
 def test_ingest_file_stores_blank_scope_as_null(client):
-    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0}) as m, \
+    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0, "skipped": False}) as m, \
          patch("app.storage.save_bytes"):
         res = client.post(
             "/ingest-file",

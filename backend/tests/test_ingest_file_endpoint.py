@@ -36,7 +36,7 @@ def client():
 # ヘルパー
 # ---------------------------------------------------------------------------
 
-_MOCK_INGEST_RESULT = {"chunks_created": 3, "replaced": 0}
+_MOCK_INGEST_RESULT = {"chunks_created": 3, "replaced": 0, "skipped": False}
 
 
 def _post_txt(client: TestClient, content: bytes = b"Hello world", filename: str = "doc.txt"):

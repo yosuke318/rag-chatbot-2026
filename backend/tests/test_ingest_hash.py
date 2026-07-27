@@ -1,0 +1,265 @@
+"""差分検知（content_hash で無変更なら埋め込みをスキップ）のテスト。
+
+狙いは「埋め込みAPIが呼ばれないこと」なので、DBは触らず（このリポジトリの
+テストはDB非依存）、ingest_text が発行するSQLを記録する偽コネクションと、
+呼ばれたら記録するだけの偽 embed_texts で確かめる。
+"""
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("psycopg")
+
+from app import ingest as ingest_module  # noqa: E402
+from app.config import EMBED_DIM  # noqa: E402
+from app.ingest import content_hash, ingest_text  # noqa: E402
+
+TEXT = "第1条 目的\nこの規程は、従業員の労働条件について定める。\n第2条 適用範囲\n本規程は全従業員に適用する。\n"
+
+
+class _Result:
+    """psycopg の execute() が返すカーソルの、テストで使う部分だけ。"""
+
+    def __init__(self, row=None, rowcount=0):
+        self._row = row
+        self.rowcount = rowcount
+
+    def fetchone(self):
+        return self._row
+
+
+class _Transaction:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _Cursor:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def executemany(self, sql, params_seq):
+        self.conn.chunk_rows.extend(params_seq)
+
+
+class FakeConn:
+    """ingest_text が発行するSQLだけを解釈する偽コネクション。
+
+    existing: documents の既存行として SELECT が返すタプル
+      (id, content_hash, project, topic, チャンク数)。None なら未登録。
+    """
+
+    def __init__(self, existing=None):
+        self.existing = existing
+        self.sql = []  # (sql, params) の記録
+        self.chunk_rows = []
+
+    def __call__(self):  # get_conn() の差し替え先
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.sql.append((sql, params))
+        head = sql.strip().split()[0].upper()
+        if head == "SELECT":
+            return _Result(row=self.existing)
+        if head == "DELETE":
+            return _Result(rowcount=1 if self.existing else 0)
+        if head == "INSERT":
+            return _Result(row=(42,))
+        return _Result()
+
+    def transaction(self):
+        return _Transaction()
+
+    def cursor(self):
+        return _Cursor(self)
+
+    def statements(self, head):
+        return [(s, p) for s, p in self.sql if s.strip().upper().startswith(head)]
+
+
+@pytest.fixture
+def calls(monkeypatch):
+    """埋め込み・文脈生成・S3保存の呼び出し回数を数える。"""
+    counts = {"embed": 0, "context": 0, "save_text": 0}
+
+    def fake_embed(texts, **kwargs):
+        counts["embed"] += 1
+        return [[0.0] * EMBED_DIM for _ in texts]
+
+    def fake_contexts(text, chunk_texts):
+        counts["context"] += 1
+        return ["" for _ in chunk_texts]
+
+    class FakeStorage:
+        @staticmethod
+        def save_text(source, text):
+            counts["save_text"] += 1
+
+    monkeypatch.setattr(ingest_module, "embed_texts", fake_embed)
+    monkeypatch.setattr(ingest_module, "generate_chunk_contexts", fake_contexts)
+    monkeypatch.setattr(ingest_module, "storage", FakeStorage)
+    return counts
+
+
+def _existing(hash_value, project=None, topic=None, chunk_count=2):
+    return (42, hash_value, project, topic, chunk_count)
+
+
+# --- content_hash 単体 -------------------------------------------------
+
+
+def test_hash_is_stable_for_same_input():
+    assert content_hash(TEXT, False) == content_hash(TEXT, False)
+
+
+def test_hash_changes_with_text():
+    assert content_hash(TEXT, False) != content_hash(TEXT + "第3条 改正", False)
+
+
+def test_hash_changes_with_contextual():
+    """app.compare は同じ文書を False/True で入れ直して比較する。
+
+    ここが同じハッシュになると2回目がスキップされ、比較が成立しなくなる。
+    """
+    assert content_hash(TEXT, False) != content_hash(TEXT, True)
+
+
+def test_hash_changes_with_embed_model(monkeypatch):
+    before = content_hash(TEXT, False)
+    monkeypatch.setattr(ingest_module, "EMBED_MODEL", "voyage-9-imaginary")
+    assert content_hash(TEXT, False) != before
+
+
+def test_hash_changes_with_chunking_version(monkeypatch):
+    before = content_hash(TEXT, False)
+    monkeypatch.setattr(ingest_module, "CHUNKING_VERSION", "99")
+    assert content_hash(TEXT, False) != before
+
+
+# --- ingest_text の分岐 ------------------------------------------------
+
+
+def test_first_ingest_embeds_and_stores_hash(monkeypatch, calls):
+    """新規登録では埋め込みを呼び、documents に content_hash を入れる。"""
+    conn = FakeConn(existing=None)
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    result = ingest_text("a.txt", TEXT, contextual=False)
+
+    assert calls["embed"] == 1
+    assert result["skipped"] is False
+    assert result["chunks_created"] == len(conn.chunk_rows)
+    insert_sql, insert_params = conn.statements("INSERT")[0]
+    assert "content_hash" in insert_sql
+    assert insert_params[3] == content_hash(TEXT, False)
+
+
+def test_reingest_same_content_skips_embedding(monkeypatch, calls):
+    """受け入れ条件: 同一内容の再取り込みで埋め込みAPIが呼ばれない。"""
+    conn = FakeConn(existing=_existing(content_hash(TEXT, False), chunk_count=2))
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    result = ingest_text("a.txt", TEXT, contextual=False)
+
+    assert calls["embed"] == 0
+    assert calls["context"] == 0  # Claude（文脈生成）も呼ばない
+    assert result == {"chunks_created": 2, "replaced": 0, "skipped": True}
+    assert conn.statements("DELETE") == []  # 既存文書は消さない（id が保たれる）
+    assert conn.statements("INSERT") == []
+
+
+def test_changed_content_reembeds(monkeypatch, calls):
+    """受け入れ条件: 内容変更時のみ再埋め込みされる。"""
+    conn = FakeConn(existing=_existing(content_hash(TEXT, False)))
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    changed = TEXT + "第3条 この規程は令和8年4月1日から施行する。\n"
+    result = ingest_text("a.txt", changed, contextual=False)
+
+    assert calls["embed"] == 1
+    assert result["skipped"] is False
+    assert result["replaced"] == 1
+    assert conn.statements("INSERT")[0][1][3] == content_hash(changed, False)
+
+
+def test_contextual_switch_reembeds(monkeypatch, calls):
+    """本文が同じでも contextual を切り替えたら埋め込み直す（app.compare 用）。"""
+    conn = FakeConn(existing=_existing(content_hash(TEXT, False)))
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    ingest_text("a.txt", TEXT, contextual=True)
+
+    assert calls["embed"] == 1
+    assert calls["context"] == 1
+
+
+def test_legacy_row_without_hash_is_reingested(monkeypatch, calls):
+    """この機能より前に入った文書（content_hash が NULL）は一度だけ入れ直す。"""
+    conn = FakeConn(existing=_existing(None))
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    result = ingest_text("a.txt", TEXT, contextual=False)
+
+    assert calls["embed"] == 1
+    assert result["skipped"] is False
+
+
+def test_scope_only_change_updates_row_without_embedding(monkeypatch, calls):
+    """本文は同じで区分だけ変えた場合、埋め込みは使い回して documents だけ更新。"""
+    conn = FakeConn(
+        existing=_existing(content_hash(TEXT, False), project=None, topic=None)
+    )
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    result = ingest_text("a.txt", TEXT, project="社内規程", topic="労務", contextual=False)
+
+    assert calls["embed"] == 0
+    assert result["skipped"] is True
+    update_sql, update_params = conn.statements("UPDATE")[0]
+    assert "documents" in update_sql
+    assert update_params == ("社内規程", "労務", 42)
+
+
+def test_same_scope_does_not_update(monkeypatch, calls):
+    """区分も同じなら UPDATE も出さない（完全な no-op）。"""
+    conn = FakeConn(
+        existing=_existing(content_hash(TEXT, False), project="社内規程", topic="労務")
+    )
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    ingest_text("a.txt", TEXT, project="社内規程", topic="労務", contextual=False)
+
+    assert conn.statements("UPDATE") == []
+
+
+def test_skip_still_saves_original(monkeypatch, calls):
+    """スキップ時も原本保存は続ける（S3側だけ欠けている状態を直せるように）。"""
+    conn = FakeConn(existing=_existing(content_hash(TEXT, False)))
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    ingest_text("a.txt", TEXT, contextual=False)
+    assert calls["save_text"] == 1
+
+
+def test_skip_respects_store_original_false(monkeypatch, calls):
+    """/ingest-file 経由（原本はバイナリ側で保存）ではテキストを保存しない。"""
+    conn = FakeConn(existing=_existing(content_hash(TEXT, False)))
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+
+    ingest_text("a.txt", TEXT, store_original=False, contextual=False)
+    assert calls["save_text"] == 0

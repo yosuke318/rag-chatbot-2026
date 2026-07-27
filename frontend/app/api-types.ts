@@ -625,7 +625,7 @@ export interface components {
             source: string;
             /**
              * Chunks Created
-             * @description 作成したチャンク数
+             * @description 作成したチャンク数（skipped=true のときは既存のチャンク数）
              */
             chunks_created: number;
             /**
@@ -633,6 +633,11 @@ export interface components {
              * @description 置き換えた既存文書の件数（0なら新規）
              */
             replaced: number;
+            /**
+             * Skipped
+             * @description 内容が既存と同じで、埋め込みをやり直さずに済ませたか
+             */
+            skipped: boolean;
         };
         /**
          * ParamSpec

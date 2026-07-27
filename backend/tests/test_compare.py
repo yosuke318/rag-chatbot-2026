@@ -129,7 +129,7 @@ def test_reingest_passes_contextual_and_retry_waits(monkeypatch, tmp_path):
         source, text, project=None, topic=None, contextual=None, embed_retry_waits=None
     ):
         captured.append((source, contextual, embed_retry_waits))
-        return {"chunks_created": 3, "replaced": 1}
+        return {"chunks_created": 3, "replaced": 1, "skipped": False}
 
     monkeypatch.setattr(compare_module, "ingest_text", fake_ingest)
     monkeypatch.setattr(compare_module, "load_scopes", dict)
@@ -150,7 +150,7 @@ def test_reingest_keeps_document_scope(monkeypatch, tmp_path):
         source, text, project=None, topic=None, contextual=None, embed_retry_waits=None
     ):
         captured[source] = (project, topic)
-        return {"chunks_created": 1, "replaced": 1}
+        return {"chunks_created": 1, "replaced": 1, "skipped": False}
 
     monkeypatch.setattr(compare_module, "ingest_text", fake_ingest)
     monkeypatch.setattr(

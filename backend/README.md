@@ -81,6 +81,23 @@ python -m app.seed               # 文書投入
 `USE_CONTEXTUAL_CHUNKING=false` にすると Claude を呼ばず、見出しの階層
 （`第2章 休暇 > 第5条 年次有給休暇`）を前置する。
 
+### 差分検知（再取り込みで埋め込みを省く）
+
+同じ文書を入れ直すたびに埋め込みAPIを呼ぶのは無駄で、Voyage の無料枠（3 RPM）
+にもすぐ当たる。取り込み時に `documents.content_hash` を突き合わせ、一致したら
+分割も文脈生成も埋め込みもせずに戻る（レスポンスの `skipped: true`）。
+
+ハッシュには本文だけでなく **埋め込み結果を左右する入力すべて** を混ぜる
+（`ingest.content_hash`）: contextual の有無・`EMBED_MODEL`・チャンクのサイズ設定・
+`CHUNKING_VERSION`。本文だけで判定すると、設定を変えて入れ直したのに古い
+埋め込みが残ったり、`app.compare` の A/B が2回目でスキップされて成立しなくなる。
+
+- `app.chunking` の**分割ロジックを変えたら `config.CHUNKING_VERSION` を上げる**
+  （上げないと本文が同じ既存文書は作り直されない）
+- 本文が同じで区分(project/topic)だけ変えた再登録は、埋め込みを使い回して
+  `documents` の行だけ更新する
+- この機能より前に入った文書は `content_hash` が NULL なので、一度だけ入れ直される
+
 ### 効果を測る（A/B測定）
 
 有り/無しを手で切り替えて測ると条件がずれるので、専用のCLIを用意してある:
@@ -174,6 +191,5 @@ curl -X POST localhost:8000/chat -H 'content-type: application/json' -d '{
 - ハイブリッド検索の字面側は pg_trgm（トライグラム）で、厳密なBM25ではない。
   日本語BM25が欲しくなったら PGroonga 等の日本語対応エンジンに差し替える
 - PDF/docx/xlsx 取り込み・図表のマルチモーダル文章化（今はプレーンテキストのみ）
-- 差分再取り込み（content_hash で内容が変わっていなければ埋め込みAPIを省く）
 - 回答のストリーミング（今は生成完了後に一括返却）
 - 会話履歴の保持、評価（Ragas/promptfoo）

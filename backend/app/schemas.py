@@ -54,8 +54,13 @@ class HealthResponse(BaseModel):
 
 class IngestResponse(BaseModel):
     source: str
-    chunks_created: int = Field(description="作成したチャンク数")
+    chunks_created: int = Field(
+        description="作成したチャンク数（skipped=true のときは既存のチャンク数）"
+    )
     replaced: int = Field(description="置き換えた既存文書の件数（0なら新規）")
+    skipped: bool = Field(
+        description="内容が既存と同じで、埋め込みをやり直さずに済ませたか"
+    )
 
 
 class StageHit(BaseModel):
