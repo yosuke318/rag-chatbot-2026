@@ -9,14 +9,17 @@
 app/
 ├── config.py     # 環境変数
 ├── db.py         # pgvector 接続 + スキーマ初期化
-├── llm.py        # 埋め込み(Voyage) + 回答生成(Claude)
-├── ingest.py     # テキスト→チャンク→埋め込み→保存
+├── llm.py        # 埋め込み(Voyage) + 文脈生成/回答生成(Claude)
+├── chunking.py   # ★チャンク分割（見出し・条文の構造で切る）
+├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存
 ├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）
 └── main.py       # FastAPI: /health /ingest /chat
 
 tests/            # 単体テスト（DB・外部APIを使わない純ロジック）
 ├── test_keywords.py    # 名詞抽出
 ├── test_parsers.py     # PDF/XLSX/PPTX 抽出
+├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
+├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
 └── test_retrieval.py   # RRF融合・手法解決・整形
 ```
 
@@ -54,6 +57,27 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload    # 起動時にスキーマ自動作成
 python -m app.seed               # 文書投入
 ```
+
+## チャンク分割と文脈付与（`chunking.py` / `ingest.py`）
+
+検索精度の上限はここで決まる。文字数で機械的に切ると「第5条」の途中で切れ、
+条件と例外が別チャンクに割れてどちらを引いても答えられなくなる。
+
+- **構造で切る**（`chunking.split_chunks`）… 見出し（`# `）・章節（`第N章`/`第N節`）・
+  条番号（`第N条`）・箇条書き（`1.`）の行を境界にして節へ分ける。
+  `CHUNK_MIN_CHARS` 未満の節は次とくっつけ（断片化防止）、`CHUNK_MAX_CHARS` を
+  超えた節だけ文の切れ目で二次分割する（オーバーラップはここだけ）。
+- **文脈を付ける**（contextual retrieval, `llm.generate_chunk_contexts`）…
+  「これを超える場合は所属長の承認を要する」のような断片は、単体では主語も
+  金額も分からず検索に当たらない。文書全体を Claude に読ませて
+  「文書内での位置づけ」を1〜2文で書かせ、**埋め込む直前に前置する**。
+  回答生成に渡す本文（`chunks.content`）は原文のまま残し、生成文は
+  `chunks.context` に別で持つ（生成した文脈が回答の根拠に混ざらないように）。
+  文書部分にプロンプトキャッシュを効かせているので、2チャンク目以降は入力が安い。
+
+`USE_CONTEXTUAL_CHUNKING=false` にすると Claude を呼ばず、見出しの階層
+（`第2章 休暇 > 第5条 年次有給休暇`）を前置する。有り/無しで
+`python -m app.eval` の Hit@k・MRR を比較して効果を確認する。
 
 ## 検索の中身を見る（Anthropicキー不要・Voyageキーは必要）
 
@@ -128,6 +152,6 @@ curl -X POST localhost:8000/chat -H 'content-type: application/json' -d '{
 - ハイブリッド検索の字面側は pg_trgm（トライグラム）で、厳密なBM25ではない。
   日本語BM25が欲しくなったら PGroonga 等の日本語対応エンジンに差し替える
 - PDF/docx/xlsx 取り込み・図表のマルチモーダル文章化（今はプレーンテキストのみ）
-- contextual retrieval（チャンクに文書要約を前置き）／差分再取り込み
+- 差分再取り込み（content_hash で内容が変わっていなければ埋め込みAPIを省く）
 - 回答のストリーミング（今は生成完了後に一括返却）
 - 会話履歴の保持、評価（Ragas/promptfoo）

@@ -55,6 +55,10 @@ def init_db() -> None:
         conn.execute(
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS content_nouns TEXT;"
         )
+        # contextual retrieval で生成した「文書内での位置づけ」（app.llm 参照）。
+        # 埋め込み・字面検索には content と繋げたものを使うが、回答生成に渡すのは
+        # あくまで content なので、別カラムに分けて保持する。
+        conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS context TEXT;")
         # コサイン距離での近傍探索用インデックス（件数が少ないうちは無くても動く）
         conn.execute(
             "CREATE INDEX IF NOT EXISTS chunks_embedding_idx "

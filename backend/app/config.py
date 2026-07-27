@@ -19,9 +19,31 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", "claude-opus-4-8")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "voyage-3.5")
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))  # voyage-3.5 は 1024次元
 
-# チャンク分割（最小版は文字数ベース。設計書のcontextual化は次段）
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
+# チャンクへの文脈付与（contextual retrieval）に使うモデル。
+# 「文書全体を読んで、このチャンクが何の話かを1〜2文で書く」だけの軽い仕事なので
+# 回答生成より安いモデルに落としてもよい（未指定なら CHAT_MODEL と同じ）。
+CONTEXT_MODEL = os.getenv("CONTEXT_MODEL", CHAT_MODEL)
+
+# チャンク分割（app.chunking）。
+# 文字数で機械的に切るのをやめ、見出し・条文の構造で切るようにしたため、
+# 「サイズ」は"目標値"ではなく"上限と下限"の意味に変わった。
+#   CHUNK_MAX_CHARS: これを超えた節だけ、文の切れ目で二次分割する
+#   CHUNK_MIN_CHARS: これに満たない節は次の節とくっつける（断片化防止）
+#   CHUNK_OVERLAP  : 二次分割したときだけ末尾を重ねる幅。構造で切れた
+#                    チャンク同士は重ねない（重複が検索結果を汚すため）
+CHUNK_MAX_CHARS = int(os.getenv("CHUNK_MAX_CHARS", "1200"))
+CHUNK_MIN_CHARS = int(os.getenv("CHUNK_MIN_CHARS", "200"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
+
+# contextual retrieval: 各チャンクに「文書内での位置づけ」を前置してから埋め込む。
+# 断片だけでは意味が取れないチャンク（「これを超える場合は所属長の承認を要する」等）の
+# ヒット率を上げる狙い。false にすると見出しの階層だけを前置する（Claude を呼ばない）。
+# 効果は eval（python -m app.eval）で Hit@k / MRR を比較して確認すること。
+USE_CONTEXTUAL_CHUNKING = os.getenv("USE_CONTEXTUAL_CHUNKING", "true").lower() == "true"
+
+# 文脈生成の並列数。1件目は直列で投げてプロンプトキャッシュを作り、
+# 残りをこの数だけ並列で投げる（詳細は app.llm.generate_chunk_contexts）。
+CONTEXT_CONCURRENCY = int(os.getenv("CONTEXT_CONCURRENCY", "4"))
 
 # ファイルアップロード（/ingest-file）の1ファイル上限。
 # 受け取ったバイト列は一度メモリに載せるため、無制限だと巨大ファイルで

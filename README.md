@@ -104,7 +104,8 @@ python -m app.eval --gen                      # 回答生成まで走らせて�
 `department`）ごとに分けられるので、文書を部署別に分ける方針（→ アーキテクチャ）と
 評価の粒度が揃う。「その部署の文書 × その部署の質問」で評価できる。
 
-- 初期サンプルは `backend/app/eval.py` の `GOLD` にあり、`--seed` でDBへ投入する
+- 初期データは `backend/seed_data/eval_questions.json`（fixture）にあり、
+  `task seed` が `seed_docs/*.txt` の投入とセットでDBへ流し込む（冪等）
 - 質問の追加はコード編集ではなく **`POST /eval-questions`** で行える（非エンジニアでも足せる）
 - 一覧は `GET /eval-questions?company=...&department=...`
 

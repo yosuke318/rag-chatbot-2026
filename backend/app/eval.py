@@ -20,10 +20,15 @@
 評価用の質問集はどこにあるか:
   正解ラベル付きの質問は DB の eval_questions テーブルに置く（会社・部署ごとに
   分けられる）。文書(documents)を company/department で分ける方針に評価も合わせる
-  ため。下の GOLD 定数は「初期投入用のサンプル」で、--seed でDBへ流し込む。
+  ため。★DBが正★で、コード内に質問を持たない。
+
+  初期データは seed_docs/*.txt とセットの fixture として
+  backend/seed_data/eval_questions.json に置き、--seed でDBへ流し込む
+  （Django の fixture と同じ位置づけ。冪等なので何度流してもよい）。
+  設問を足すときはこの JSON に追記するか、POST /eval-questions でDBへ直接入れる。
 
 使い方:
-  python -m app.eval --seed                       # GOLD をDBへ初期投入（冪等）
+  python -m app.eval --seed                       # fixture をDBへ初期投入（冪等）
   python -m app.eval                              # DBの全質問で検索を評価
   python -m app.eval --company 経理 --department 財務   # 会社・部署で絞って評価
   python -m app.eval --retrievers vector,bm25     # 手法を変えて比較
@@ -33,6 +38,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 from app.config import TOP_K
 from app.db import get_conn
@@ -40,50 +47,34 @@ from app.llm import generate_answer
 from app.retrieval import hybrid_search
 
 
-# --- 初期投入用のサンプル質問（--seed でDBへ流し込む） -------------------------
-# expected_source: この質問に答えられる根拠が入っている文書（正解ラベル）。
-# note           : 何を確かめる質問かのメモ（人間向け。採点には使わない）。
-# seed_docs/有給休暇.txt・経費精算.txt の記述だけで答えられる問いにしてある。
-# company/department は付けていない（＝共通のサンプル）。実運用の質問は
-# API(POST /eval-questions) か --seed 後の直接編集で会社・部署付きで足していく。
-GOLD: list[dict] = [
-    {
-        "question": "有給休暇は入社してからどれくらいで何日もらえる？",
-        "expected_source": "有給休暇.txt",
-        "note": "付与条件（6か月・8割出勤で10日）を含む文書を引けるか",
-    },
-    {
-        "question": "使いきれなかった有給は翌年に繰り越せる？上限は？",
-        "expected_source": "有給休暇.txt",
-        "note": "繰り越し上限20日。『繰り越し』という語の一致が効くか",
-    },
-    {
-        "question": "経費はいつまでに申請すればいい？",
-        "expected_source": "経費精算.txt",
-        "note": "締切（発生月の翌月10日）を含む文書を引けるか",
-    },
-    {
-        "question": "領収書が必要になるのはいくらから？",
-        "expected_source": "経費精算.txt",
-        "note": "5,000円以上という金額条件。数字と単位の字面一致",
-    },
-    {
-        "question": "接待でお金を使うとき事前に何が必要？",
-        "expected_source": "経費精算.txt",
-        "note": "事前承認。言い換え（接待交際費↔接待）に意味検索が効くか",
-    },
-]
+# --- 初期投入用の質問セット（fixture） ----------------------------------------
+# 質問の正はDB(eval_questions)。ここはあくまで「seed_docs とセットの初期データ」で、
+# --seed でDBへ流し込む（Django の fixture と同じ位置づけ）。
+#   expected_source: この質問に答えられる根拠が入っている文書（正解ラベル）
+#   note           : 何を確かめる質問かのメモ（人間向け。採点には使わない）
+#   company/department: 省略可（＝会社・部署をまたぐ共通の質問）
+SEED_QUESTIONS_PATH = (
+    Path(__file__).resolve().parent.parent / "seed_data" / "eval_questions.json"
+)
 
 
-def seed_questions(gold: list[dict] | None = None) -> int:
-    """サンプル質問(GOLD)をDBへ投入する。既にある質問(同じ本文)は入れない（冪等）。
+def load_seed_questions(path: Path | None = None) -> list[dict]:
+    """fixture(JSON)から初期投入用の質問を読む。ファイルが無ければ空リスト。"""
+    path = SEED_QUESTIONS_PATH if path is None else path
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def seed_questions(questions: list[dict] | None = None) -> int:
+    """fixture の質問をDBへ投入する。既にある質問(同じ本文)は入れない（冪等）。
 
     追加した件数を返す。ローカルや初期セットアップで一度流すことを想定。
     """
-    gold = GOLD if gold is None else gold
+    questions = load_seed_questions() if questions is None else questions
     added = 0
     with get_conn() as conn:
-        for item in gold:
+        for item in questions:
             exists = conn.execute(
                 "SELECT 1 FROM eval_questions WHERE question = %s LIMIT 1",
                 (item["question"],),
@@ -159,7 +150,7 @@ def evaluate(
     params: dict[str, dict] | None = None,
     rrf_k: int | None = None,
 ) -> dict:
-    """GOLD を1問ずつ検索にかけ、Hit@k と MRR を集計して返す。
+    """質問を1問ずつ検索にかけ、Hit@k と MRR を集計して返す。
 
     各問について hybrid_search を実行し、正解文書が上位 top_k に入ったか・
     何位だったかを記録する。ここでは回答生成はしないが、--gen で回答を目視する
@@ -171,7 +162,7 @@ def evaluate(
     未指定なら設定の既定値で評価する。
     """
     # None のときだけ既定を使う。空リスト [] は「0問で評価」の明示指定として尊重する
-    gold = GOLD if gold is None else gold
+    gold = load_seed_questions() if gold is None else gold
     results = []
     hit_count = 0
     reciprocal_sum = 0.0
@@ -269,7 +260,7 @@ def main() -> None:
     parser.add_argument(
         "--seed",
         action="store_true",
-        help="サンプル質問(GOLD)をDBへ投入して終了する（冪等）",
+        help="fixture(seed_data/eval_questions.json)をDBへ投入して終了する（冪等）",
     )
     parser.add_argument(
         "--company", type=str, default=None, help="この会社の質問だけで評価する"

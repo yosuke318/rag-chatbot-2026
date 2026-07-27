@@ -73,6 +73,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend/seed_docs:/app/seed_docs # seed用の文書（ホストで足せる）
+      - ./backend/seed_data:/app/seed_data # seed用の初期データ（評価質問の fixture）
 
   frontend:
     build: ./frontend

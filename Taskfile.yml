@@ -24,6 +24,8 @@ tasks:
         -e ANTHROPIC_API_KEY=dummy -e VOYAGE_API_KEY=dummy
         -v "$PWD/backend/app:/app/app"
         -v "$PWD/backend/tests:/app/tests"
+        -v "$PWD/backend/seed_data:/app/seed_data"
+        -v "$PWD/backend/seed_docs:/app/seed_docs"
         -v "$PWD/backend/pytest.ini:/app/pytest.ini"
         -v "$PWD/backend/requirements.txt:/app/requirements.txt"
         -v "$PWD/backend/requirements-dev.txt:/app/requirements-dev.txt"
@@ -45,9 +47,12 @@ tasks:
       - docker compose logs -f
 
   seed:
-    desc: backend/seed_docs/*.txt を登録する（デフォルト文書の投入）
+    desc: 初期データの投入（seed_docs/*.txt の文書 + 評価質問の fixture）。冪等
     cmds:
       - docker compose exec -T backend python -m app.seed
+      # 評価質問(eval_questions)も同じ seed で入れる。文書だけ入って質問が空だと
+      # `python -m app.eval` が「質問が見つかりません」で止まるため、セットで流す。
+      - docker compose exec -T backend python -m app.eval --seed
 
   # 例: 単一ファイルだけ入れたいときのテンプレ（拡張の見本）
   # ingest-file:
