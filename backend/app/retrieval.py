@@ -4,7 +4,7 @@
   1. ベクトル検索   (意味の近さ) … 上位 CANDIDATES 件 -> vector_search
   2. 字面検索       (文字の一致) … 上位 CANDIDATES 件 -> lexical_search
   3. RRF で 2つのランキングを融合 → 上位 TOP_K 件 -> reciprocal_rank_fusion と _rrf_scores
-  4. (TODO) LLMリランク で最終並べ替え -> llm_rerank
+  4. リランク で最終並べ替え -> rerank_candidates（USE_RERANK 有効時のみ）
 
 なぜ2種類混ぜるか:
   - ベクトル検索は「意味」に強いが、型番・固有名詞など"字面そのもの"の一致に弱い。
@@ -18,13 +18,15 @@ from app.config import (
     BM25_K1,
     LEXICAL_MIN_SIMILARITY,
     RERANK_CANDIDATES,
+    RERANK_METHOD,
+    RERANK_MODEL,
     RETRIEVERS_DEFAULT,
     TOP_K,
     USE_RERANK,
 )
 from app.db import get_conn
 from app.keywords import extract_nouns, noun_text
-from app.llm import embed_query, rank_by_relevance
+from app.llm import embed_query, rank_by_relevance, voyage_rerank
 
 CANDIDATES = 20  # 各検索が融合前に返す候補数
 RRF_K = 60       # RRFの平滑化定数（順位差をなだらかにする）
@@ -261,16 +263,58 @@ def reciprocal_rank_fusion(ranked_lists: list[list[dict]], k: int = RRF_K) -> li
     return [item for item, _score, _ranks in _rrf_scores(ranked_lists, k)]
 
 
-def llm_rerank(question: str, candidates: list[dict], top_n: int = TOP_K) -> list[dict]:
-    """候補をLLMに渡して関連度で並べ替え、上位top_nを返す。
+# --- リランクの方式レジストリ -------------------------------------------------
+# どちらも (question, passages) -> 関連順の番号リスト という同じ形。
+# 方式を足すときはここに1行増やす（呼び出し側は変更不要）。
+RERANKERS = {
+    "voyage": voyage_rerank,      # Voyage 専用リランクAPI(rerank-2)。既定
+    "llm": rank_by_relevance,     # Claudeに番号を並べ替えさせるプロンプト式。比較用
+}
+
+RERANKER_META = {
+    "voyage": {"label": f"Voyage 専用リランク（{RERANK_MODEL}）"},
+    "llm": {"label": "プロンプト式リランク（Claude）"},
+}
+
+
+class UnknownReranker(ValueError):
+    """未知のリランク方式が指定された（RERANK_METHOD のtypo等）。"""
+
+
+def resolve_rerank_method(name: str | None = None) -> str:
+    """使用するリランク方式を確定し、妥当性を検証する。
+
+    name=None（未指定）なら設定の既定（RERANK_METHOD）を使う。
+    resolve_retrievers と同じ考え方で、APIを呼ぶ前に名前を弾く。
+    """
+    resolved = (name or RERANK_METHOD).strip().lower()
+    if resolved not in RERANKERS:
+        raise UnknownReranker(
+            f"未知のリランク方式: {resolved} / 利用可能: {', '.join(RERANKERS)}"
+        )
+    return resolved
+
+
+def rerank_candidates(
+    question: str,
+    candidates: list[dict],
+    top_n: int = TOP_K,
+    method: str | None = None,
+) -> list[dict]:
+    """候補をリランクにかけて関連度で並べ替え、上位top_nを返す。
 
     RRFは「複数の検索が上位に挙げたか」で決まるが、実際に質問に答えているかは
-    見ていない。そこをLLMに読ませて最終順位を付け直すのがリランク。
-    LLMが番号を漏らした候補は末尾に補う（安全網：件数が減らないように）。
+    見ていない。そこを読み直して最終順位を付け直すのがリランク。
+    方式（voyage / llm）は method で切り替える。未指定なら設定の既定。
+
+    番号を漏らした候補は末尾に補う（安全網：件数が減らないように）。
+    voyage は全候補にスコアを付けるので漏れないが、プロンプト式(llm)は
+    Claudeが番号を書き落とすことが実際にあるため、方式によらず補っておく。
     """
     if not candidates:
         return []
-    order = rank_by_relevance(question, [c["content"] for c in candidates])
+    reranker = RERANKERS[resolve_rerank_method(method)]
+    order = reranker(question, [c["content"] for c in candidates])
     seen = set(order)
     order += [i for i in range(len(candidates)) if i not in seen]
     return [candidates[i] for i in order[:top_n]]
