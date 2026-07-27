@@ -31,7 +31,10 @@ RRF_K = 60       # RRFの平滑化定数（順位差をなだらかにする）
 
 
 def vector_search(
-    question: str, k: int = CANDIDATES, params: dict | None = None
+    question: str,
+    k: int = CANDIDATES,
+    params: dict | None = None,
+    query_vec: list[float] | None = None,
 ) -> list[dict]:
     """意味の近さ（コサイン距離）で上位k件。
 
@@ -40,8 +43,14 @@ def vector_search(
 
     embedding は NULL 許容（遅延埋め込み・画像チャンク等の余地）。NULL の行は
     距離が NULL になり float(None) で落ちるため、SQL 段階で除外する。
+
+    query_vec: 質問のベクトルを外から渡す（未指定なら埋め込みAPIを呼ぶ）。
+      評価(eval)のように質問が何件も分かっているときは、呼び出し側で全件を
+      1回の embed にまとめてからここへ渡す。1問1リクエストだと埋め込みAPIの
+      分間リクエスト上限（Voyage 無料枠は 3 RPM）に4問目で当たるため。
     """
-    query_vec = embed_query(question)
+    if query_vec is None:
+        query_vec = embed_query(question)
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -68,7 +77,10 @@ def vector_search(
 
 
 def lexical_search(
-    question: str, k: int = CANDIDATES, params: dict | None = None
+    question: str,
+    k: int = CANDIDATES,
+    params: dict | None = None,
+    query_vec: list[float] | None = None,  # 使わない（レジストリの引数を揃えるため）
 ) -> list[dict]:
     """字面の一致（トライグラム類似度）で上位k件。閾値未満は返さない。
 
@@ -116,7 +128,10 @@ def lexical_search(
 
 
 def bm25_search(
-    question: str, k: int = CANDIDATES, params: dict | None = None
+    question: str,
+    k: int = CANDIDATES,
+    params: dict | None = None,
+    query_vec: list[float] | None = None,  # 使わない（レジストリの引数を揃えるため）
 ) -> list[dict]:
     """BM25 で上位k件。名詞列(content_nouns)を単語列とみなして計算する。
 
@@ -386,6 +401,7 @@ def hybrid_search(
     retrievers: list[str] | None = None,
     params: dict[str, dict] | None = None,
     rrf_k: int | None = None,
+    query_vec: list[float] | None = None,
 ) -> list[dict]:
     """指定した検索手法を RRF で融合。rerank=True ならLLMで再並べ替え。
 
@@ -399,7 +415,10 @@ def hybrid_search(
     names = resolve_retrievers(retrievers)
     p = params or {}
     fused = reciprocal_rank_fusion(
-        [RETRIEVERS[n](question, params=p.get(n)) for n in names],
+        [
+            RETRIEVERS[n](question, params=p.get(n), query_vec=query_vec)
+            for n in names
+        ],
         k=rrf_k if rrf_k is not None else RRF_K,
     )
 
@@ -421,6 +440,7 @@ def search_stages(
     params: dict[str, dict] | None = None,
     rrf_k: int | None = None,
     show: int = 5,
+    query_vec: list[float] | None = None,
 ) -> dict:
     """検索の各段階を返す（学習・デバッグ用）。
 
@@ -437,7 +457,10 @@ def search_stages(
     effective = {n: {**default_params(n), **(given.get(n) or {})} for n in names}
     effective_rrf_k = int(rrf_k if rrf_k is not None else RRF_K)
 
-    lists = [RETRIEVERS[n](question, params=effective[n]) for n in names]
+    lists = [
+        RETRIEVERS[n](question, params=effective[n], query_vec=query_vec)
+        for n in names
+    ]
     scored = _rrf_scores(lists, k=effective_rrf_k)
 
     # 融合後の行から各手法の生スコアを引くための索引

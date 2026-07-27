@@ -43,8 +43,8 @@ from pathlib import Path
 
 from app.config import TOP_K
 from app.db import get_conn
-from app.llm import generate_answer
-from app.retrieval import hybrid_search
+from app.llm import embed_texts, generate_answer
+from app.retrieval import hybrid_search, resolve_retrievers
 
 
 # --- 初期投入用の質問セット（fixture） ----------------------------------------
@@ -167,7 +167,16 @@ def evaluate(
     hit_count = 0
     reciprocal_sum = 0.0
 
-    for item in gold:
+    # ★質問のベクトル化は1回にまとめる★
+    #   1問ずつ埋め込むと「質問数 = APIリクエスト数」になり、埋め込みAPIの分間
+    #   リクエスト上限（Voyage 無料枠は 3 RPM）に4問目で当たって評価が完走しない。
+    #   評価は質問が最初から全部分かっているので、まとめて1リクエストで済む。
+    #   ベクトル検索を使わない構成（trgm/bm25 のみ）では埋め込み自体を呼ばない。
+    query_vecs: list[list[float] | None] = [None] * len(gold)
+    if gold and "vector" in resolve_retrievers(retrievers):
+        query_vecs = embed_texts([g["question"] for g in gold], input_type="query")
+
+    for item, query_vec in zip(gold, query_vecs):
         hits = hybrid_search(
             item["question"],
             top_n=top_k,
@@ -175,6 +184,7 @@ def evaluate(
             retrievers=retrievers,
             params=params,
             rrf_k=rrf_k,
+            query_vec=query_vec,
         )
         rank = _rank_of(hits, item["expected_source"])
         hit = rank is not None and rank < top_k
