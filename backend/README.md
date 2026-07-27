@@ -134,7 +134,7 @@ curl -s 'localhost:8000/search?q=有給は入社何ヶ月で何日？' | jq
 # 文書を投入
 curl -X POST localhost:8000/ingest -H 'content-type: application/json' -d '{
   "source": "有給休暇.txt",
-  "category": "就業規則",
+  "project": "社内規程", "topic": "労務",
   "text": "年次有給休暇は入社6か月後に10日付与される。取得は前日までに申請すること。"
 }'
 

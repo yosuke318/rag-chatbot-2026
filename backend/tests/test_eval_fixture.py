@@ -66,4 +66,4 @@ def test_seed_questions_defaults_to_fixture(monkeypatch, tmp_path):
 
     monkeypatch.setattr(eval_module, "get_conn", FakeConn)
     assert eval_module.seed_questions() == 1
-    assert inserted[0][2] == "Q1"  # (company, department, question, ...)
+    assert inserted[0][2] == "Q1"  # (project, topic, question, ...)

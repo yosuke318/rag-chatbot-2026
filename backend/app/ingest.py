@@ -89,7 +89,8 @@ def _embed_source(context: str, content: str) -> str:
 def ingest_text(
     source: str,
     text: str,
-    category: str | None = None,
+    project: str | None = None,
+    topic: str | None = None,
     store_original: bool = True,
     contextual: bool | None = None,
     embed_retry_waits: list[int] | None = None,
@@ -136,8 +137,9 @@ def ingest_text(
             ).rowcount
 
             document_id = conn.execute(
-                "INSERT INTO documents (source, category) VALUES (%s, %s) RETURNING id",
-                (source, category),
+                "INSERT INTO documents (source, project, topic) "
+                "VALUES (%s, %s, %s) RETURNING id",
+                (source, project, topic),
             ).fetchone()[0]
 
             with conn.cursor() as cur:

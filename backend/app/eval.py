@@ -18,9 +18,9 @@
   こちらは ANTHROPIC_API_KEY が要る。忠実性の自動採点(LLM-judge/Ragas)は次段。
 
 評価用の質問集はどこにあるか:
-  正解ラベル付きの質問は DB の eval_questions テーブルに置く（会社・部署ごとに
-  分けられる）。文書(documents)を company/department で分ける方針に評価も合わせる
-  ため。★DBが正★で、コード内に質問を持たない。
+  正解ラベル付きの質問は DB の eval_questions テーブルに置く（プロジェクト・
+  トピックごとに分けられる）。文書(documents)を project/topic で分ける方針に
+  評価も合わせるため。★DBが正★で、コード内に質問を持たない。
 
   初期データは seed_docs/*.txt とセットの fixture として
   backend/seed_data/eval_questions.json に置き、--seed でDBへ流し込む
@@ -30,7 +30,7 @@
 使い方:
   python -m app.eval --seed                       # fixture をDBへ初期投入（冪等）
   python -m app.eval                              # DBの全質問で検索を評価
-  python -m app.eval --company 経理 --department 財務   # 会社・部署で絞って評価
+  python -m app.eval --project 社内規程 --topic 労務    # プロジェクト・トピックで絞って評価
   python -m app.eval --retrievers vector,bm25     # 手法を変えて比較
   python -m app.eval --top-k 4 --rerank           # 上位件数やリランクの有無を変える
   python -m app.eval --gen                        # 回答生成まで走らせて目視（要Anthropic）
@@ -52,7 +52,7 @@ from app.retrieval import hybrid_search, resolve_retrievers
 # --seed でDBへ流し込む（Django の fixture と同じ位置づけ）。
 #   expected_source: この質問に答えられる根拠が入っている文書（正解ラベル）
 #   note           : 何を確かめる質問かのメモ（人間向け。採点には使わない）
-#   company/department: 省略可（＝会社・部署をまたぐ共通の質問）
+#   project/topic: 省略可（＝プロジェクト・トピックをまたぐ共通の質問）
 SEED_QUESTIONS_PATH = (
     Path(__file__).resolve().parent.parent / "seed_data" / "eval_questions.json"
 )
@@ -83,11 +83,11 @@ def seed_questions(questions: list[dict] | None = None) -> int:
                 continue
             conn.execute(
                 "INSERT INTO eval_questions "
-                "(company, department, question, expected_source, note) "
+                "(project, topic, question, expected_source, note) "
                 "VALUES (%s, %s, %s, %s, %s)",
                 (
-                    item.get("company"),
-                    item.get("department"),
+                    item.get("project"),
+                    item.get("topic"),
                     item["question"],
                     item["expected_source"],
                     item.get("note"),
@@ -98,27 +98,27 @@ def seed_questions(questions: list[dict] | None = None) -> int:
 
 
 def load_questions(
-    company: str | None = None, department: str | None = None
+    project: str | None = None, topic: str | None = None
 ) -> list[dict]:
-    """評価用の質問をDBから読む。company/department を指定するとその分だけに絞る。
+    """評価用の質問をDBから読む。project/topic を指定するとその分だけに絞る。
 
-    指定しなかった軸は絞り込まない（例: company だけ指定なら部署は問わず全部）。
-    文書(documents)を同じキーで分ける方針に合わせ、「その部署の文書 × その部署の
-    質問」で評価できるようにするための絞り込み。
+    指定しなかった軸は絞り込まない（例: project だけ指定ならトピックは問わず全部）。
+    文書(documents)を同じ軸で分ける方針に合わせ、「そのプロジェクトの文書 ×
+    その質問」で評価できるようにするための絞り込み。
     """
     clauses = []
     params: list[str] = []
-    if company is not None:
-        clauses.append("company = %s")
-        params.append(company)
-    if department is not None:
-        clauses.append("department = %s")
-        params.append(department)
+    if project is not None:
+        clauses.append("project = %s")
+        params.append(project)
+    if topic is not None:
+        clauses.append("topic = %s")
+        params.append(topic)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT question, expected_source, note, company, department "
+            f"SELECT question, expected_source, note, project, topic "
             f"FROM eval_questions {where} ORDER BY id",
             params,
         ).fetchall()
@@ -127,8 +127,8 @@ def load_questions(
             "question": r[0],
             "expected_source": r[1],
             "note": r[2],
-            "company": r[3],
-            "department": r[4],
+            "project": r[3],
+            "topic": r[4],
         }
         for r in rows
     ]
@@ -273,10 +273,10 @@ def main() -> None:
         help="fixture(seed_data/eval_questions.json)をDBへ投入して終了する（冪等）",
     )
     parser.add_argument(
-        "--company", type=str, default=None, help="この会社の質問だけで評価する"
+        "--project", type=str, default=None, help="このプロジェクトの質問だけで評価する"
     )
     parser.add_argument(
-        "--department", type=str, default=None, help="この部署の質問だけで評価する"
+        "--topic", type=str, default=None, help="このトピックの質問だけで評価する"
     )
     args = parser.parse_args()
 
@@ -292,10 +292,10 @@ def main() -> None:
         )
         return
 
-    gold = load_questions(company=args.company, department=args.department)
+    gold = load_questions(project=args.project, topic=args.topic)
     if not gold:
         scope = " / ".join(
-            filter(None, [args.company, args.department])
+            filter(None, [args.project, args.topic])
         ) or "指定なし"
         print(
             f"評価用の質問が見つかりません（絞り込み: {scope}）。\n"

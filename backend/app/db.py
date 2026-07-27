@@ -26,11 +26,32 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS documents (
                 id         BIGSERIAL PRIMARY KEY,
                 source     TEXT NOT NULL,
-                category   TEXT,
+                -- 文書の所属。project(プロジェクト) > topic(トピック) の2階層で、
+                -- NULL = どこにも属さない共通文書。評価(eval_questions)も同じ軸で
+                -- 区切り、「そのプロジェクトの文書 × その質問」で測れるようにする。
+                project    TEXT,
+                topic      TEXT,
                 created_at TIMESTAMPTZ DEFAULT now()
             );
             """
         )
+        # 既存DB向けの冪等マイグレーション:
+        #   旧 category カラムは topic に改名して中身を引き継ぐ（旧名は「分類」の
+        #   つもりだったが、実体はトピックだったため名前を実体に合わせた）。
+        #   RENAME には IF EXISTS が無いので information_schema で在否を見る。
+        conn.execute(
+            """
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'documents' AND column_name = 'category')
+                THEN
+                    ALTER TABLE documents RENAME COLUMN category TO topic;
+                END IF;
+            END $$;
+            """
+        )
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS project TEXT;")
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS topic TEXT;")
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS chunks (
@@ -86,20 +107,40 @@ def init_db() -> None:
             """
         )
         # 評価用の質問集（Hit@k / MRR を測る正解ラベル）。
-        # コードの定数に置くと、文書を会社・部署ごとに分けたときに評価だけ全社共通
-        # という歪みが出るうえ、質問追加のたびにコード改修が要る。DBに置くことで
-        # 文書(documents)と同じ粒度(company/department)で区切り、非エンジニアでも
-        # 追加できるようにする。expected_source が正解ラベル（正しく引けるべき文書名）。
+        # コードの定数に置くと、文書をプロジェクト・トピックごとに分けたときに評価
+        # だけ全体共通という歪みが出るうえ、質問追加のたびにコード改修が要る。
+        # DBに置くことで文書(documents)と同じ軸(project/topic)で区切り、非エンジニア
+        # でも追加できるようにする。expected_source が正解ラベル（正しく引けるべき文書名）。
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS eval_questions (
                 id              BIGSERIAL PRIMARY KEY,
-                company         TEXT,   -- NULL = 会社をまたぐ共通の質問
-                department      TEXT,   -- NULL = 部署をまたぐ共通の質問
+                project         TEXT,   -- NULL = プロジェクトをまたぐ共通の質問
+                topic           TEXT,   -- NULL = トピックをまたぐ共通の質問
                 question        TEXT NOT NULL,
                 expected_source TEXT NOT NULL,  -- 正解の文書名（documents.source）
                 note            TEXT,
                 created_at      TIMESTAMPTZ DEFAULT now()
             );
+            """
+        )
+        # 既存DB向けの冪等マイグレーション: 会社・部署の2軸は当初の実装で、
+        # 本来の設計軸は project/topic。データを保ったまま改名する。
+        conn.execute(
+            """
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'eval_questions'
+                             AND column_name = 'company')
+                THEN
+                    ALTER TABLE eval_questions RENAME COLUMN company TO project;
+                END IF;
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'eval_questions'
+                             AND column_name = 'department')
+                THEN
+                    ALTER TABLE eval_questions RENAME COLUMN department TO topic;
+                END IF;
+            END $$;
             """
         )

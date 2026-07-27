@@ -38,6 +38,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ingest-file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest File
+         * @description ファイルをアップロードして取り込む（ドラッグ&ドロップ登録の受け口）。
+         *
+         *     /ingest がテキスト貼り付け用なのに対し、こちらは multipart/form-data で
+         *     ファイルそのものを受け取り、テキストを抽出してから同じ取り込み処理に流す。
+         *     出典名(source)はアップロードされたファイル名をそのまま使う。
+         *
+         *     検索・埋め込みには抽出テキストを使い（ingest_text）、原本バイナリ（PDF等）は
+         *     そのまま S3 に保存する（storage.save_bytes）。抽出テキストを原本として
+         *     保存すると原本ダウンロードが壊れるため、取り込みは store_original=False にし、
+         *     原本の保存はここで明示的に行う。
+         */
+        post: operations["ingest_file_ingest_file_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/retrievers": {
         parameters: {
             query?: never;
@@ -67,7 +96,10 @@ export interface paths {
         };
         /**
          * Search
-         * @description 検索の各段階を返す（Claudeを呼ばない = Anthropicキー不要）。
+         * @description 検索の各段階を返す。
+         *
+         *     Claude(Anthropic)は呼ばないのでANTHROPIC_API_KEYは不要。
+         *     ただし質問のベクトル化に埋め込みAPIを使うためVOYAGE_API_KEYは必要。
          *
          *     - GET /search?q=... … 設定の既定の手法で検索
          *     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
@@ -79,6 +111,59 @@ export interface paths {
         get: operations["search_search_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/files/{source}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download File
+         * @description 出典名(source)の原本を S3(MinIO) から取り出してダウンロードさせる。
+         *
+         *     ローカルの MinIO は docker 内ホスト名(minio:9000)なのでブラウザから直接は
+         *     署名URLで開けない。ここで backend が取得して中継することで、環境差なく
+         *     ダウンロードできる（本番の実S3では署名URL方式に切り替えてもよい）。
+         *     無ければ404。
+         *
+         *     source は `:path` で受ける。将来 S3キーに `/`（サブディレクトリ/プレフィックス）を
+         *     使えるようにしても、1セグメント制限でダウンロードできなくならないようにするため。
+         */
+        get: operations["download_file_files__source__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/backfill-files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Backfill Files
+         * @description この変更より前に登録済みの文書を、原本ダウンロードに対応させる後埋め。
+         *
+         *     各文書の本文を chunks から復元して S3 に保存する（まだ無いものだけ）。
+         *     ※短い文書は1チャンク＝原本そのものだが、長い文書はオーバーラップ分割のため
+         *       復元が厳密でない。以降の登録は取り込み時に原本を保存するので、これは一度きり
+         *       の移行用。
+         */
+        post: operations["backfill_files_admin_backfill_files_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -102,6 +187,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Feedback
+         * @description 回答への 👍/👎 を記録する。
+         *
+         *     貯めたフィードバック（特に👎）は eval のQA候補に回す運用を想定。
+         *     外部APIを呼ばないので ANTHROPIC/VOYAGE キーは不要。
+         *     rating は +1(👍) / -1(👎) のみ。0 や欠損は「どちらでもない」を意味してしまい
+         *     👎として誤記録されるため、符号で丸めず 400 で弾く。
+         */
+        post: operations["feedback_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/eval-questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Eval Questions
+         * @description 登録済みの評価用質問を返す。project/topic で絞り込める。
+         *
+         *     指定しなかった軸は絞り込まない（project だけ指定ならトピックは問わず全部返す）。
+         */
+        get: operations["list_eval_questions_eval_questions_get"];
+        put?: never;
+        /**
+         * Add Eval Question
+         * @description 評価用の質問を1件登録する（プロジェクト・トピックごとに分けられる）。
+         *
+         *     正解ラベル(expected_source)付きでDBに貯め、`python -m app.eval` がここから
+         *     読んで Hit@k / MRR を測る。コードの定数を編集せずに質問を足せるようにするため
+         *     のエンドポイント。外部APIは呼ばないのでキーは不要。
+         *
+         *     質問と正解の文書名は評価の必須要素なので、空文字なら400で弾く（Pydanticは
+         *     空文字を str として通してしまうため、ここで明示的に検査する）。
+         */
+        post: operations["add_eval_question_eval_questions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/eval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Run Eval
+         * @description DBの評価用質問集で検索精度(Hit@k / MRR)を測って返す。
+         *
+         *     検索の内訳(/search)が「1問を深く見る」のに対し、こちらは「質問集全体で
+         *     どれだけ当たるか」を集計する。project/topic で評価対象を絞れる（未指定=全件）。
+         *
+         *     検索の数値パラメータ(rrf_k / trgm_min_similarity / bm25_k1 / bm25_b)は /search と
+         *     同じ意味で、指定するとその値で評価する（例: k1を上げてHit@kが上がるか測る）。
+         *     未指定なら設定の既定値。
+         *
+         *     Claudeは rerank=True のときだけ呼ぶ（検索評価そのものは Voyage のみ）。
+         *     質問が0件なら n=0 の空レポートを返す（UI側で「まず質問を登録」と促す）。
+         *     contexts など内部フィールドは response_model(EvalReport)で自動的に落ちる。
+         */
+        get: operations["run_eval_eval_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -119,6 +293,24 @@ export interface components {
                     [key: string]: number;
                 };
             };
+        };
+        /** Body_ingest_file_ingest_file_post */
+        Body_ingest_file_ingest_file_post: {
+            /**
+             * File
+             * @description 登録する文書ファイル
+             */
+            file: string;
+            /**
+             * Project
+             * @description プロジェクト（任意）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（任意）
+             */
+            topic?: string | null;
         };
         /** ChatRequest */
         ChatRequest: {
@@ -193,6 +385,184 @@ export interface components {
             detail: string;
         };
         /**
+         * EvalQuestion
+         * @description 登録済みの評価用質問1件。
+         */
+        EvalQuestion: {
+            /** Id */
+            id: number;
+            /** Question */
+            question: string;
+            /** Expected Source */
+            expected_source: string;
+            /** Project */
+            project?: string | null;
+            /** Topic */
+            topic?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /**
+         * EvalQuestionRequest
+         * @description 評価用の質問1件（正解ラベル付き）。プロジェクト・トピックごとに分けて登録できる。
+         */
+        EvalQuestionRequest: {
+            /**
+             * Question
+             * @description 評価する質問
+             */
+            question: string;
+            /**
+             * Expected Source
+             * @description 正解の文書名（この文書が上位に来れば正解）
+             */
+            expected_source: string;
+            /**
+             * Project
+             * @description プロジェクト（未指定は共通）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（未指定は共通）
+             */
+            topic?: string | null;
+            /**
+             * Note
+             * @description 何を確かめる質問かのメモ（任意）
+             */
+            note?: string | null;
+        };
+        /**
+         * EvalQuestionsResponse
+         * @description 評価用質問の一覧（会社・部署で絞り込める）。
+         */
+        EvalQuestionsResponse: {
+            /** Questions */
+            questions: components["schemas"]["EvalQuestion"][];
+        };
+        /**
+         * EvalReport
+         * @description 質問集全体の評価結果。UIの評価パネルはこれを描画する。
+         */
+        EvalReport: {
+            /**
+             * N
+             * @description 評価した質問数
+             */
+            n: number;
+            /** Top K */
+            top_k: number;
+            /**
+             * Retrievers
+             * @description 使った手法（null=設定の既定）
+             */
+            retrievers: string[] | null;
+            /**
+             * Rerank
+             * @description リランクの有無（null=設定の既定）
+             */
+            rerank: boolean | null;
+            /**
+             * Rrf K
+             * @description 使ったRRF k（null=既定）
+             */
+            rrf_k?: number | null;
+            /**
+             * Params
+             * @description 使った数値パラメータ（手法ごと。null/空=既定）
+             */
+            params?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            } | null;
+            /**
+             * Hit At K
+             * @description 上位k件に正解が入った質問の割合
+             */
+            hit_at_k: number;
+            /**
+             * Mrr
+             * @description 正解順位の逆数平均（1位=1.0 / 圏外=0）
+             */
+            mrr: number;
+            /** Results */
+            results: components["schemas"]["EvalResult"][];
+        };
+        /**
+         * EvalResult
+         * @description 評価1問分の結果。
+         */
+        EvalResult: {
+            /** Question */
+            question: string;
+            /**
+             * Expected Source
+             * @description 正解の文書名
+             */
+            expected_source: string;
+            /**
+             * Hit
+             * @description 上位k件に正解が入ったか
+             */
+            hit: boolean;
+            /**
+             * Rank
+             * @description 正解の順位（0始まり）。null=圏外
+             */
+            rank: number | null;
+            /**
+             * Retrieved
+             * @description 実際に上位で引いた文書名の並び
+             */
+            retrieved: string[];
+        };
+        /**
+         * FeedbackRequest
+         * @description 回答への 👍/👎。評価(eval)のQA候補として貯める。
+         */
+        FeedbackRequest: {
+            /**
+             * Question
+             * @description 評価対象の質問
+             */
+            question: string;
+            /**
+             * Answer
+             * @description 評価対象の回答
+             */
+            answer: string;
+            /**
+             * Rating
+             * @description +1 = 👍 / -1 = 👎
+             */
+            rating: number;
+            /**
+             * Sources
+             * @description 回答の根拠に使った出典
+             */
+            sources?: string[];
+            /**
+             * Comment
+             * @description 自由記述（任意）
+             */
+            comment?: string | null;
+        };
+        /** FeedbackResponse */
+        FeedbackResponse: {
+            /**
+             * Id
+             * @description 保存したフィードバックのID
+             */
+            id: number;
+            /**
+             * Rating
+             * @description 記録した評価（+1 / -1）
+             */
+            rating: number;
+        };
+        /**
          * FusedHit
          * @description RRFで融合した後の最終順位。
          */
@@ -239,10 +609,15 @@ export interface components {
              */
             text: string;
             /**
-             * Category
-             * @description 分類（任意）
+             * Project
+             * @description プロジェクト（任意）
              */
-            category?: string | null;
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（任意）
+             */
+            topic?: string | null;
         };
         /** IngestResponse */
         IngestResponse: {
@@ -492,6 +867,93 @@ export interface operations {
             };
         };
     };
+    ingest_file_ingest_file_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_ingest_file_ingest_file_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IngestResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description ファイルが大きすぎる */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未対応のファイル形式 */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     retrievers_list_retrievers_get: {
         parameters: {
             query?: never;
@@ -576,6 +1038,84 @@ export interface operations {
             };
         };
     };
+    download_file_files__source__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backfill_files_admin_backfill_files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     chat_chat_post: {
         parameters: {
             query?: never;
@@ -596,6 +1136,188 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatResponse"];
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    feedback_feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_eval_questions_eval_questions_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                topic?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalQuestionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_eval_question_eval_questions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalQuestionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalQuestion"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_eval_eval_get: {
+        parameters: {
+            query?: {
+                top_k?: number;
+                retrievers?: string | null;
+                rerank?: boolean | null;
+                project?: string | null;
+                topic?: string | null;
+                rrf_k?: number | null;
+                trgm_min_similarity?: number | null;
+                bm25_k1?: number | null;
+                bm25_b?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalReport"];
                 };
             };
             /** @description APIキー未設定・認証失敗 */

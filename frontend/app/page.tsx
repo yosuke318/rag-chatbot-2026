@@ -178,8 +178,8 @@ export default function Home() {
   // --- 評価パネル（/eval = 質問集で Hit@k / MRR を測る）---
   const [evalSelected, setEvalSelected] = useState<string[]>([]);
   const [evalRerank, setEvalRerank] = useState(false);
-  const [evalCompany, setEvalCompany] = useState("");
-  const [evalDepartment, setEvalDepartment] = useState("");
+  const [evalProject, setEvalProject] = useState("");
+  const [evalTopic, setEvalTopic] = useState("");
   const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
   const [evalError, setEvalError] = useState("");
@@ -189,8 +189,8 @@ export default function Home() {
   // 評価用の質問を登録するフォーム（POST /eval-questions）
   const [newQ, setNewQ] = useState("");
   const [newExpected, setNewExpected] = useState("");
-  const [newQCompany, setNewQCompany] = useState("");
-  const [newQDepartment, setNewQDepartment] = useState("");
+  const [newQProject, setNewQProject] = useState("");
+  const [newQTopic, setNewQTopic] = useState("");
   const [newQNote, setNewQNote] = useState("");
   const [addQStatus, setAddQStatus] = useState("");
   const [addingQ, setAddingQ] = useState(false);
@@ -207,8 +207,8 @@ export default function Home() {
           question: newQ,
           expected_source: newExpected,
           // 空欄は送らない（＝共通の質問として登録）
-          company: newQCompany.trim() || null,
-          department: newQDepartment.trim() || null,
+          project: newQProject.trim() || null,
+          topic: newQTopic.trim() || null,
           note: newQNote.trim() || null,
         }),
       });
@@ -246,8 +246,8 @@ export default function Home() {
       const params = new URLSearchParams({ top_k: "4" });
       if (evalSelected.length > 0) params.set("retrievers", evalSelected.join(","));
       if (evalRerank) params.set("rerank", "true");
-      if (evalCompany.trim()) params.set("company", evalCompany.trim());
-      if (evalDepartment.trim()) params.set("department", evalDepartment.trim());
+      if (evalProject.trim()) params.set("project", evalProject.trim());
+      if (evalTopic.trim()) params.set("topic", evalTopic.trim());
       // 数値パラメータ。空欄は送らず backend の既定値を使わせる（②と同じ）。
       // trgm/bm25 のパラメータは、その手法を選んでいるときだけ送る。
       for (const [key, value] of Object.entries(evalParamValues)) {
@@ -861,7 +861,7 @@ export default function Home() {
             手法やリランクを変えて<strong>数字が上がるか下がるか</strong>で改良の効果を判定できる。
             <br />
             <br />
-            質問は会社・部署ごとに分けて登録できる（<code>POST /eval-questions</code>）。
+            質問はプロジェクト・トピックごとに分けて登録できる（<code>POST /eval-questions</code>）。
             まだ無ければ <code>python -m app.eval --seed</code> でサンプルを投入。
           </Tip>
           （/eval・Voyageキー必要 / リランク時のみAnthropic）
@@ -882,14 +882,14 @@ export default function Home() {
           />
           <div className="eval-add-row">
             <input
-              placeholder="会社（任意）"
-              value={newQCompany}
-              onChange={(e) => setNewQCompany(e.target.value)}
+              placeholder="プロジェクト（任意）"
+              value={newQProject}
+              onChange={(e) => setNewQProject(e.target.value)}
             />
             <input
-              placeholder="部署（任意）"
-              value={newQDepartment}
-              onChange={(e) => setNewQDepartment(e.target.value)}
+              placeholder="トピック（任意）"
+              value={newQTopic}
+              onChange={(e) => setNewQTopic(e.target.value)}
             />
           </div>
           <input
@@ -906,14 +906,14 @@ export default function Home() {
         {/* 評価対象の絞り込みと手法選択 */}
         <div className="eval-controls">
           <input
-            placeholder="会社（任意）"
-            value={evalCompany}
-            onChange={(e) => setEvalCompany(e.target.value)}
+            placeholder="プロジェクト（任意）"
+            value={evalProject}
+            onChange={(e) => setEvalProject(e.target.value)}
           />
           <input
-            placeholder="部署（任意）"
-            value={evalDepartment}
-            onChange={(e) => setEvalDepartment(e.target.value)}
+            placeholder="トピック（任意）"
+            value={evalTopic}
+            onChange={(e) => setEvalTopic(e.target.value)}
           />
           <button onClick={runEval} disabled={evalRunning || evalSelected.length === 0}>
             {evalRunning ? "評価中…" : "検証する"}

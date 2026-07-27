@@ -37,8 +37,8 @@
 ### 役割2: 文書に基づく回答の API 提供基盤
 
 同じ検索・回答生成を **API として外部から呼べる**。社内規程・手順書などの文書を入れておき、
-問い合わせ対応やドキュメントQAに組み込む使い方を想定する。文書は将来 **会社・部署ごとに分離**でき、
-テナントごとに混ざらない形にする（評価用の質問集は既に `company` / `department` で分離済み）。
+問い合わせ対応やドキュメントQAに組み込む使い方を想定する。文書は**プロジェクト・トピックごとに分離**でき、
+混ざらない形にする（文書・評価用の質問集とも `project` / `topic` の2軸を持つ）。
 
 ### 商用化の狙い
 
@@ -47,7 +47,7 @@
 - **マルチモーダルへの発展**: PDF内の図表・チャートの読解支援（判断は人に残す）
 
 > **実装状況**: 役割1（評価・検証アプリ）は実装済み。役割2のうち、検索・回答・原本ダウンロードは
-> API として動作するが、**公開API（APIキー認証・レート制限・バージョニング）と文書の会社・部署分離は
+> API として動作するが、**公開API（APIキー認証・レート制限・バージョニング）と検索のプロジェクト・トピック分離は
 > 未実装（予定）**。下記「提供API」に現状と予定を分けて示す。
 
 ## 提供API
@@ -62,7 +62,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 | `GET /search` | 検索の内訳（ベクトル/字面/BM25/RRF） | Voyage |
 | `POST /chat` | 回答生成（根拠付き） | Voyage + Anthropic |
 | `GET /eval` | 質問集で Hit@k / MRR を測定 | Voyage（リランク時 Anthropic） |
-| `GET,POST /eval-questions` | 評価用質問の一覧・登録（会社・部署で分離可） | 不要 |
+| `GET,POST /eval-questions` | 評価用質問の一覧・登録（プロジェクト・トピックで分離可） | 不要 |
 | `POST /feedback` | 回答への 👍/👎 記録 | 不要 |
 | `GET /files/{source}` | 登録した原本のダウンロード（S3/MinIO） | 不要 |
 
@@ -71,7 +71,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 | API / 機能 | 内容 |
 |---|---|
 | 公開API（`/v1/...`） | APIキー認証・レート制限・利用ログ・バージョニング |
-| 文書の会社・部署分離 | `documents` を `company` / `department` で分け、検索・回答をテナント単位に |
+| 検索のプロジェクト・トピック分離 | `documents.project` / `topic` は登録済み。検索・回答をこの軸で絞る対応が未実装 |
 | ファイル取り込み | PDF / xlsx / pptx のテキスト・図表抽出、会話履歴、ストリーミング回答 |
 | マルチモーダル | 文書内画像の検索対象化、原本画像を根拠にした回答、チャート読解支援 |
 
@@ -143,7 +143,7 @@ test.txt            0.01562  ← ベクトルにしか出ない（1票のみ）
 cd backend
 python -m app.eval --seed                     # サンプル質問をDBへ初期投入（初回だけ）
 python -m app.eval                            # DBの質問で評価
-python -m app.eval --company 経理 --department 財務  # 会社・部署で絞って評価
+python -m app.eval --project 社内規程 --topic 労務   # プロジェクト・トピックで絞って評価
 python -m app.eval --retrievers vector,bm25   # 手法を変えて比較
 python -m app.eval --rerank                   # LLMリランク有りで比較（要 Anthropic）
 python -m app.eval --gen                      # 回答生成まで走らせて目視（要 Anthropic）
@@ -164,14 +164,14 @@ python -m app.eval --gen                      # 回答生成まで走らせて�
   「BM25を足すと上がるか」「リランクは効くか」を**同じ質問集で公平に比較**できる。
 - 改良（チャンク分割の変更・リランク導入など）の**前後で回して差分を見る**のが本来の使い方。
 
-質問と正解ラベルは **DB の `eval_questions` テーブル**に置く。会社・部署（`company` /
-`department`）ごとに分けられるので、文書を部署別に分ける方針（→ アーキテクチャ）と
-評価の粒度が揃う。「その部署の文書 × その部署の質問」で評価できる。
+質問と正解ラベルは **DB の `eval_questions` テーブル**に置く。プロジェクト・トピック
+（`project` / `topic`）ごとに分けられるので、文書を同じ2軸で分ける方針（→ アーキテクチャ）と
+評価の粒度が揃う。「そのプロジェクトの文書 × その質問」で評価できる。
 
 - 初期データは `backend/seed_data/eval_questions.json`（fixture）にあり、
   `task seed` が `seed_docs/*.txt` の投入とセットでDBへ流し込む（冪等）
 - 質問の追加はコード編集ではなく **`POST /eval-questions`** で行える（非エンジニアでも足せる）
-- 一覧は `GET /eval-questions?company=...&department=...`
+- 一覧は `GET /eval-questions?project=...&topic=...`
 
 ## アーキテクチャ
 
