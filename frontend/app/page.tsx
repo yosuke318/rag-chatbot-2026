@@ -298,11 +298,19 @@ export default function Home() {
         return;
       }
       const data = await res.json();
-      // replaced > 0 = 同名の既存文書を置き換えた
-      const note = data.replaced ? "（同名の既存文書を置き換えました）" : "";
-      setIngestStatus(
-        `「${source}」を ${data.chunks_created} チャンクで登録しました${note}`,
-      );
+      // skipped = 内容が同じなので埋め込みをやり直していない（差分検知）
+      if (data.skipped) {
+        setIngestStatus(
+          `「${source}」は前回と同じ内容のため、埋め込みをやり直しませんでした` +
+            `（${data.chunks_created} チャンクのまま）`,
+        );
+      } else {
+        // replaced > 0 = 同名の既存文書を置き換えた
+        const note = data.replaced ? "（同名の既存文書を置き換えました）" : "";
+        setIngestStatus(
+          `「${source}」を ${data.chunks_created} チャンクで登録しました${note}`,
+        );
+      }
       setDocText("");
     } catch (e) {
       setIngestStatus(`エラー: ${String(e)}`);
@@ -359,10 +367,17 @@ export default function Home() {
           continue;
         }
         const data = await res.json();
-        const note = data.replaced ? "（同名を置き換え）" : "";
-        results.push(
-          `✓ ${file.name}: ${data.chunks_created}チャンクで登録${note}`,
-        );
+        if (data.skipped) {
+          // 内容が同じ＝埋め込みをやり直していない（差分検知）
+          results.push(
+            `✓ ${file.name}: 内容に変更なし（${data.chunks_created}チャンクのまま）`,
+          );
+        } else {
+          const note = data.replaced ? "（同名を置き換え）" : "";
+          results.push(
+            `✓ ${file.name}: ${data.chunks_created}チャンクで登録${note}`,
+          );
+        }
       } catch (e) {
         results.push(`✗ ${file.name}: ${String(e)}`);
         failed.push(file);

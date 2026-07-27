@@ -85,12 +85,31 @@ def test_seed_passes_retry_waits_to_ingest(monkeypatch, tmp_path):
     def fake_ingest(source, text, project=None, topic=None, embed_retry_waits=None):
         captured["source"] = source
         captured["waits"] = embed_retry_waits
-        return {"chunks_created": 1, "replaced": 0}
+        return {"chunks_created": 1, "replaced": 0, "skipped": False}
 
     monkeypatch.setattr(seed, "ingest_text", fake_ingest)
     seed.main()
 
     assert captured == {"source": "a.txt", "waits": [5, 10]}
+
+
+def test_seed_reports_skipped_documents(monkeypatch, tmp_path, capsys):
+    """差分検知でスキップされた文書は「登録」と区別して出す（2回目以降の seed）。"""
+    (tmp_path / "a.txt").write_text("本文", encoding="utf-8")
+    monkeypatch.setattr(seed, "SEED_DIR", tmp_path)
+    monkeypatch.setattr(seed, "init_db", lambda: None)
+    monkeypatch.setattr(seed.sys, "argv", ["app.seed"])
+    monkeypatch.setattr(
+        seed,
+        "ingest_text",
+        lambda **kwargs: {"chunks_created": 3, "replaced": 0, "skipped": True},
+    )
+
+    seed.main()
+
+    out = capsys.readouterr().out
+    assert "変更なし" in out
+    assert "チャンク登録" not in out
 
 
 def test_load_scopes_maps_source_to_project_and_topic(tmp_path):
@@ -132,7 +151,7 @@ def test_seed_passes_scope_from_manifest(monkeypatch, tmp_path):
 
     def fake_ingest(source, text, project=None, topic=None, embed_retry_waits=None):
         captured[source] = (project, topic)
-        return {"chunks_created": 1, "replaced": 0}
+        return {"chunks_created": 1, "replaced": 0, "skipped": False}
 
     monkeypatch.setattr(seed, "ingest_text", fake_ingest)
     seed.main()

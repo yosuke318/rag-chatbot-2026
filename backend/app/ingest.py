@@ -3,14 +3,23 @@
 分割は app.chunking（見出し・条文の構造で切る）、
 文脈付与は app.llm.generate_chunk_contexts（contextual retrieval）に任せ、
 ここは「その2つを繋いでDBに入れる」役に徹する。
-差分検知（content_hash）は設計書の次段（TODO）。
+再取り込みは content_hash で差分検知し、内容が変わっていなければ
+埋め込み・文脈生成のAPI呼び出しごと省く（content_hash 関数を参照）。
 """
 from __future__ import annotations
 
+import hashlib
 import os
 
 from app.chunking import Chunk, split_chunks
-from app.config import USE_CONTEXTUAL_CHUNKING
+from app.config import (
+    CHUNK_MAX_CHARS,
+    CHUNK_MIN_CHARS,
+    CHUNK_OVERLAP,
+    CHUNKING_VERSION,
+    EMBED_MODEL,
+    USE_CONTEXTUAL_CHUNKING,
+)
 from app.db import get_conn
 from app.keywords import noun_text
 from app.llm import embed_texts, generate_chunk_contexts
@@ -86,6 +95,37 @@ def _embed_source(context: str, content: str) -> str:
     return f"{context}\n\n{content}" if context else content
 
 
+def content_hash(text: str, contextual: bool) -> str:
+    """再取り込みで作り直しが要るかを判定するキー（documents.content_hash）。
+
+    本文だけでなく「埋め込み結果を左右する入力」をすべて混ぜる。本文だけで
+    判定すると、設定を変えて取り込み直したのに古い埋め込みが残る:
+      - contextual: app.compare は同じ文書を False/True で入れ直して比較するので、
+        本文だけのハッシュだと2回目がスキップされ比較が成立しない
+      - EMBED_MODEL: モデルを差し替えたらベクトル空間ごと変わる
+      - チャンクのサイズ設定と CHUNKING_VERSION: 切り方が変われば中身も変わる
+
+    各要素は「長さ→中身」の順で流し込む。区切り文字で連結すると、本文にその
+    区切りが混ざったときに項目の境目が動き、別々の入力が同じ並びに化けうる
+    （今の項目は本文以外が固定値なので実際には作れないが、項目を足したときに
+    その前提が崩れるのを避ける）。本文を丸ごとコピーせずに済む利点もある。
+    """
+    digest = hashlib.sha256()
+    for part in (
+        text,
+        str(contextual),
+        EMBED_MODEL,
+        CHUNKING_VERSION,
+        str(CHUNK_MAX_CHARS),
+        str(CHUNK_MIN_CHARS),
+        str(CHUNK_OVERLAP),
+    ):
+        encoded = part.encode("utf-8")
+        digest.update(f"{len(encoded)}:".encode("ascii"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
 def ingest_text(
     source: str,
     text: str,
@@ -95,11 +135,20 @@ def ingest_text(
     contextual: bool | None = None,
     embed_retry_waits: list[int] | None = None,
 ) -> dict:
-    """1つの文書を取り込む（upsert）。{"chunks_created", "replaced"} を返す。
+    """1つの文書を取り込む（upsert）。
+
+    戻り値は {"chunks_created", "replaced", "skipped"}。
+    skipped=True なら内容が変わっていないので何も作り直しておらず、
+    chunks_created は「今DBにある既存チャンク数」を表す。
 
     同じ source の文書が既にあれば削除してから入れ直す。
     （紐づく chunks は ON DELETE CASCADE で一緒に消える）
     再取り込みで同名文書が二重に積み上がり、検索結果が重複するのを防ぐ。
+
+    ただし content_hash が既存と一致する場合は入れ直さない。埋め込みAPIも
+    Claude（文脈生成）も呼ばずに即戻る（コストとレート制限の節約）。
+    区分(project/topic)だけが変わっていた場合は、埋め込みは使い回して
+    documents の行だけ更新する。
 
     store_original: 原本テキストを S3 に保存するか。テキスト貼り付け登録では
       本文＝原本なので True。ファイルアップロード(/ingest-file)では原本は
@@ -112,15 +161,47 @@ def ingest_text(
     embed_retry_waits: 埋め込みAPIが 429 を返したときに待つ秒数の並び
       （None = 再試行しない）。文脈生成はこの前に済ませてあるので、
       待って再試行しても Claude を呼び直さない。
-
-    ※本来は設計書どおり content_hash で差分検知し、内容が変わっていなければ
-      埋め込みAPIの呼び出し自体を省くべき。ここでは常に入れ直す簡易版。
     """
+    use_contextual = USE_CONTEXTUAL_CHUNKING if contextual is None else contextual
+    new_hash = content_hash(text, use_contextual)
+
+    # 差分検知。分割より先に済ませ、変化が無ければ以降の処理ごと省く。
+    # 接続はここで一度閉じる（この後の埋め込みAPIは秒単位で待つことがあり、
+    # その間コネクションを掴んだままにしない）。
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id, content_hash, project, topic FROM documents WHERE source = %s",
+            (source,),
+        ).fetchone()
+        # content_hash が NULL の行＝この機能より前に入った文書。作り直して値を入れる。
+        unchanged = existing is not None and existing[1] == new_hash
+        if unchanged:
+            document_id, _, current_project, current_topic = existing
+            # 本文は同じで区分だけ変えた場合（登録し直しでの分類修正）。
+            # 埋め込みは使い回せるので documents の行だけ更新する。
+            if (current_project, current_topic) != (project, topic):
+                conn.execute(
+                    "UPDATE documents SET project = %s, topic = %s WHERE id = %s",
+                    (project, topic, document_id),
+                )
+            # チャンク数はスキップ時の戻り値にしか要らないので、ここでだけ数える
+            # （作り直す場合は数えても捨てるだけなので、上のSELECTには含めない）。
+            chunk_count = conn.execute(
+                "SELECT count(*) FROM chunks WHERE document_id = %s", (document_id,)
+            ).fetchone()[0]
+
+    if unchanged:
+        # 原本の保存だけは続ける。DBに文書があってもS3側だけ欠けている状態
+        # （S3障害中に取り込んだ等）を、再取り込みで直せるようにするため。
+        if store_original:
+            storage.save_text(source, text)
+        return {"chunks_created": chunk_count, "replaced": 0, "skipped": True}
+
     chunks = split_chunks(text)
     if not chunks:
-        return {"chunks_created": 0, "replaced": 0}
+        return {"chunks_created": 0, "replaced": 0, "skipped": False}
 
-    contexts = build_contexts(text, chunks, contextual)
+    contexts = build_contexts(text, chunks, use_contextual)
     # 埋め込むのは「文脈 + 本文」。本文だけを埋め込むと、断片のままの
     # チャンクが質問のベクトルに当たらない（それが contextual retrieval の狙い）。
     embeddings = embed_texts(
@@ -137,9 +218,9 @@ def ingest_text(
             ).rowcount
 
             document_id = conn.execute(
-                "INSERT INTO documents (source, project, topic) "
-                "VALUES (%s, %s, %s) RETURNING id",
-                (source, project, topic),
+                "INSERT INTO documents (source, project, topic, content_hash) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (source, project, topic, new_hash),
             ).fetchone()[0]
 
             with conn.cursor() as cur:
@@ -170,4 +251,4 @@ def ingest_text(
     if store_original:
         storage.save_text(source, text)
 
-    return {"chunks_created": len(chunks), "replaced": replaced}
+    return {"chunks_created": len(chunks), "replaced": replaced, "skipped": False}

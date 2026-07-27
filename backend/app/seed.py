@@ -79,13 +79,15 @@ def main() -> None:
             topic=scope.get("topic"),
             embed_retry_waits=RETRY_WAITS,
         )
-        note = "（既存を置き換え）" if r["replaced"] else ""
         where = " / ".join(filter(None, [scope.get("project"), scope.get("topic")]))
-        print(
-            f"{f.name}: {r['chunks_created']} チャンク登録{note}"
-            f"{f' [{where}]' if where else ''}",
-            flush=True,
-        )
+        # skipped = 内容が前回と同じで埋め込みをやり直していない（差分検知）。
+        # 2回目以降の seed はここに来るので、登録との区別が付くよう文言を分ける。
+        if r["skipped"]:
+            body = f"{f.name}: 変更なし（{r['chunks_created']} チャンクのまま）"
+        else:
+            note = "（既存を置き換え）" if r["replaced"] else ""
+            body = f"{f.name}: {r['chunks_created']} チャンク登録{note}"
+        print(f"{body}{f' [{where}]' if where else ''}", flush=True)
 
 
 if __name__ == "__main__":

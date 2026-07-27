@@ -35,6 +35,14 @@ CHUNK_MAX_CHARS = int(os.getenv("CHUNK_MAX_CHARS", "1200"))
 CHUNK_MIN_CHARS = int(os.getenv("CHUNK_MIN_CHARS", "200"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
 
+# 差分検知(app.ingest.content_hash)に混ぜる分割ロジックの版。
+# 取り込みは content_hash が一致したら埋め込みを丸ごと省くので、app.chunking の
+# 分割規則を変えても本文が同じ限り既存文書は作り直されない。分割を変えたら
+# ここを上げること（＝次の取り込みで全文書が入れ直される）。
+# 上のサイズ設定は値が変われば自動でハッシュに効くため、ここに含めるのは
+# 「コードを変えた」ことだけを伝える手動の目印。
+CHUNKING_VERSION = "1"
+
 # contextual retrieval: 各チャンクに「文書内での位置づけ」を前置してから埋め込む。
 # 断片だけでは意味が取れないチャンク（「これを超える場合は所属長の承認を要する」等）の
 # ヒット率を上げる狙い。false にすると見出しの階層だけを前置する（Claude を呼ばない）。
