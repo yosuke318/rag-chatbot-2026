@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field
 class IngestRequest(BaseModel):
     source: str = Field(description="文書名（例: 有給休暇.txt）")
     text: str = Field(description="本文")
-    category: Optional[str] = Field(default=None, description="分類（任意）")
+    project: Optional[str] = Field(default=None, description="プロジェクト（任意）")
+    topic: Optional[str] = Field(default=None, description="トピック（任意）")
 
 
 class ChatRequest(BaseModel):
@@ -35,12 +36,12 @@ class FeedbackRequest(BaseModel):
 
 
 class EvalQuestionRequest(BaseModel):
-    """評価用の質問1件（正解ラベル付き）。会社・部署ごとに分けて登録できる。"""
+    """評価用の質問1件（正解ラベル付き）。プロジェクト・トピックごとに分けて登録できる。"""
 
     question: str = Field(description="評価する質問")
     expected_source: str = Field(description="正解の文書名（この文書が上位に来れば正解）")
-    company: Optional[str] = Field(default=None, description="会社（未指定は共通）")
-    department: Optional[str] = Field(default=None, description="部署（未指定は共通）")
+    project: Optional[str] = Field(default=None, description="プロジェクト（未指定は共通）")
+    topic: Optional[str] = Field(default=None, description="トピック（未指定は共通）")
     note: Optional[str] = Field(default=None, description="何を確かめる質問かのメモ（任意）")
 
 
@@ -178,8 +179,8 @@ class EvalQuestion(BaseModel):
     id: int
     question: str
     expected_source: str
-    company: Optional[str] = None
-    department: Optional[str] = None
+    project: Optional[str] = None
+    topic: Optional[str] = None
     note: Optional[str] = None
 
 

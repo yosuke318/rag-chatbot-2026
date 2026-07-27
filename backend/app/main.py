@@ -53,6 +53,21 @@ app = FastAPI(title="RAG Inspector API", lifespan=lifespan)
 logger = logging.getLogger(__name__)
 
 
+def _blank_to_none(value: Optional[str]) -> Optional[str]:
+    """空文字・空白だけの入力を「未指定(NULL)」に正規化する。
+
+    project / topic は NULL を「どこにも属さない共通」の意味で使う。
+    ここで正規化しないと2つの困りごとが起きる:
+      - 登録側: 空欄が空文字として保存され、NULL と別物になって絞り込みから漏れる
+      - 検索側: `?project=` のような空クエリが「未指定」ではなく `project=''`
+        での絞り込みになり、常に0件になる
+    どちらもAPI境界で潰すのが一番安全なので、入口で揃える。
+    """
+    if value is None:
+        return None
+    return value.strip() or None
+
+
 def _error(status: int, code: str, message: str, hint: str = "", detail: str = ""):
     """UIがそのまま表示できる形のエラー応答。"""
     return JSONResponse(
@@ -210,7 +225,12 @@ def ingest(req: IngestRequest):
             "source と text の両方を入力してください。",
             "",
         )
-    result = ingest_text(req.source, req.text, req.category)
+    result = ingest_text(
+        req.source,
+        req.text,
+        _blank_to_none(req.project),
+        _blank_to_none(req.topic),
+    )
     # replaced > 0 = 同名の既存文書を置き換えた（重複登録を防いでいる）
     return {"source": req.source, **result}
 
@@ -227,7 +247,8 @@ def ingest(req: IngestRequest):
 )
 async def ingest_file(
     file: UploadFile = File(..., description="登録する文書ファイル"),
-    category: Optional[str] = Form(default=None, description="分類（任意）"),
+    project: Optional[str] = Form(default=None, description="プロジェクト（任意）"),
+    topic: Optional[str] = Form(default=None, description="トピック（任意）"),
 ):
     """ファイルをアップロードして取り込む（ドラッグ&ドロップ登録の受け口）。
 
@@ -289,7 +310,13 @@ async def ingest_file(
             "",
         )
 
-    result = ingest_text(source, text, category, store_original=False)
+    result = ingest_text(
+        source,
+        text,
+        _blank_to_none(project),
+        _blank_to_none(topic),
+        store_original=False,
+    )
     # 原本バイナリを S3(MinIO) に保存し、出典名からダウンロードできるようにする。
     # 取り込み(DB登録)成立後に行う best-effort（S3が落ちていても登録は残す）。
     # content_type はアップロード時の MIME を優先（無ければ拡張子から推定）。
@@ -455,7 +482,7 @@ def feedback(req: FeedbackRequest):
     responses={400: {"model": ErrorResponse, "description": "入力不正"}},
 )
 def add_eval_question(req: EvalQuestionRequest):
-    """評価用の質問を1件登録する（会社・部署ごとに分けられる）。
+    """評価用の質問を1件登録する（プロジェクト・トピックごとに分けられる）。
 
     正解ラベル(expected_source)付きでDBに貯め、`python -m app.eval` がここから
     読んで Hit@k / MRR を測る。コードの定数を編集せずに質問を足せるようにするため
@@ -472,44 +499,46 @@ def add_eval_question(req: EvalQuestionRequest):
             "question と expected_source の両方を入力してください。",
             "",
         )
+    project = _blank_to_none(req.project)
+    topic = _blank_to_none(req.topic)
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO eval_questions "
-            "(company, department, question, expected_source, note) "
+            "(project, topic, question, expected_source, note) "
             "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (req.company, req.department, req.question, req.expected_source, req.note),
+            (project, topic, req.question, req.expected_source, req.note),
         ).fetchone()[0]
     return {
         "id": new_id,
         "question": req.question,
         "expected_source": req.expected_source,
-        "company": req.company,
-        "department": req.department,
+        "project": project,
+        "topic": topic,
         "note": req.note,
     }
 
 
 @app.get("/eval-questions", response_model=EvalQuestionsResponse)
-def list_eval_questions(
-    company: Optional[str] = None, department: Optional[str] = None
-):
-    """登録済みの評価用質問を返す。company/department で絞り込める。
+def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = None):
+    """登録済みの評価用質問を返す。project/topic で絞り込める。
 
-    指定しなかった軸は絞り込まない（company だけ指定なら部署は問わず全部返す）。
+    指定しなかった軸は絞り込まない（project だけ指定ならトピックは問わず全部返す）。
     """
+    project = _blank_to_none(project)
+    topic = _blank_to_none(topic)
     clauses = []
     params: list = []
-    if company is not None:
-        clauses.append("company = %s")
-        params.append(company)
-    if department is not None:
-        clauses.append("department = %s")
-        params.append(department)
+    if project is not None:
+        clauses.append("project = %s")
+        params.append(project)
+    if topic is not None:
+        clauses.append("topic = %s")
+        params.append(topic)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT id, question, expected_source, company, department, note "
+            f"SELECT id, question, expected_source, project, topic, note "
             f"FROM eval_questions {where} ORDER BY id",
             params,
         ).fetchall()
@@ -519,8 +548,8 @@ def list_eval_questions(
                 "id": r[0],
                 "question": r[1],
                 "expected_source": r[2],
-                "company": r[3],
-                "department": r[4],
+                "project": r[3],
+                "topic": r[4],
                 "note": r[5],
             }
             for r in rows
@@ -533,8 +562,8 @@ def run_eval(
     top_k: int = 4,
     retrievers: Optional[str] = None,
     rerank: Optional[bool] = None,
-    company: Optional[str] = None,
-    department: Optional[str] = None,
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
     rrf_k: Optional[int] = None,
     trgm_min_similarity: Optional[float] = None,
     bm25_k1: Optional[float] = None,
@@ -543,7 +572,7 @@ def run_eval(
     """DBの評価用質問集で検索精度(Hit@k / MRR)を測って返す。
 
     検索の内訳(/search)が「1問を深く見る」のに対し、こちらは「質問集全体で
-    どれだけ当たるか」を集計する。company/department で評価対象を絞れる。
+    どれだけ当たるか」を集計する。project/topic で評価対象を絞れる（未指定=全件）。
 
     検索の数値パラメータ(rrf_k / trgm_min_similarity / bm25_k1 / bm25_b)は /search と
     同じ意味で、指定するとその値で評価する（例: k1を上げてHit@kが上がるか測る）。
@@ -568,7 +597,7 @@ def run_eval(
         cleaned = {k: v for k, v in vals.items() if v is not None}
         if cleaned:
             params[r] = cleaned
-    gold = load_questions(company=company, department=department)
+    gold = load_questions(project=_blank_to_none(project), topic=_blank_to_none(topic))
     return evaluate(
         top_k=top_k,
         retrievers=names,

@@ -18,14 +18,19 @@
   こちらは ANTHROPIC_API_KEY が要る。忠実性の自動採点(LLM-judge/Ragas)は次段。
 
 評価用の質問集はどこにあるか:
-  正解ラベル付きの質問は DB の eval_questions テーブルに置く（会社・部署ごとに
-  分けられる）。文書(documents)を company/department で分ける方針に評価も合わせる
-  ため。下の GOLD 定数は「初期投入用のサンプル」で、--seed でDBへ流し込む。
+  正解ラベル付きの質問は DB の eval_questions テーブルに置く（プロジェクト・
+  トピックごとに分けられる）。文書(documents)を project/topic で分ける方針に
+  評価も合わせるため。★DBが正★で、コード内に質問を持たない。
+
+  初期データは seed_docs/*.txt とセットの fixture として
+  backend/seed_data/eval_questions.json に置き、--seed でDBへ流し込む
+  （Django の fixture と同じ位置づけ。冪等なので何度流してもよい）。
+  設問を足すときはこの JSON に追記するか、POST /eval-questions でDBへ直接入れる。
 
 使い方:
-  python -m app.eval --seed                       # GOLD をDBへ初期投入（冪等）
+  python -m app.eval --seed                       # fixture をDBへ初期投入（冪等）
   python -m app.eval                              # DBの全質問で検索を評価
-  python -m app.eval --company 経理 --department 財務   # 会社・部署で絞って評価
+  python -m app.eval --project 社内規程 --topic 労務    # プロジェクト・トピックで絞って評価
   python -m app.eval --retrievers vector,bm25     # 手法を変えて比較
   python -m app.eval --top-k 4 --rerank           # 上位件数やリランクの有無を変える
   python -m app.eval --gen                        # 回答生成まで走らせて目視（要Anthropic）
@@ -33,57 +38,43 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 from app.config import TOP_K
 from app.db import get_conn
-from app.llm import generate_answer
-from app.retrieval import hybrid_search
+from app.llm import embed_texts, generate_answer
+from app.retrieval import hybrid_search, resolve_retrievers
 
 
-# --- 初期投入用のサンプル質問（--seed でDBへ流し込む） -------------------------
-# expected_source: この質問に答えられる根拠が入っている文書（正解ラベル）。
-# note           : 何を確かめる質問かのメモ（人間向け。採点には使わない）。
-# seed_docs/有給休暇.txt・経費精算.txt の記述だけで答えられる問いにしてある。
-# company/department は付けていない（＝共通のサンプル）。実運用の質問は
-# API(POST /eval-questions) か --seed 後の直接編集で会社・部署付きで足していく。
-GOLD: list[dict] = [
-    {
-        "question": "有給休暇は入社してからどれくらいで何日もらえる？",
-        "expected_source": "有給休暇.txt",
-        "note": "付与条件（6か月・8割出勤で10日）を含む文書を引けるか",
-    },
-    {
-        "question": "使いきれなかった有給は翌年に繰り越せる？上限は？",
-        "expected_source": "有給休暇.txt",
-        "note": "繰り越し上限20日。『繰り越し』という語の一致が効くか",
-    },
-    {
-        "question": "経費はいつまでに申請すればいい？",
-        "expected_source": "経費精算.txt",
-        "note": "締切（発生月の翌月10日）を含む文書を引けるか",
-    },
-    {
-        "question": "領収書が必要になるのはいくらから？",
-        "expected_source": "経費精算.txt",
-        "note": "5,000円以上という金額条件。数字と単位の字面一致",
-    },
-    {
-        "question": "接待でお金を使うとき事前に何が必要？",
-        "expected_source": "経費精算.txt",
-        "note": "事前承認。言い換え（接待交際費↔接待）に意味検索が効くか",
-    },
-]
+# --- 初期投入用の質問セット（fixture） ----------------------------------------
+# 質問の正はDB(eval_questions)。ここはあくまで「seed_docs とセットの初期データ」で、
+# --seed でDBへ流し込む（Django の fixture と同じ位置づけ）。
+#   expected_source: この質問に答えられる根拠が入っている文書（正解ラベル）
+#   note           : 何を確かめる質問かのメモ（人間向け。採点には使わない）
+#   project/topic: 省略可（＝プロジェクト・トピックをまたぐ共通の質問）
+SEED_QUESTIONS_PATH = (
+    Path(__file__).resolve().parent.parent / "seed_data" / "eval_questions.json"
+)
 
 
-def seed_questions(gold: list[dict] | None = None) -> int:
-    """サンプル質問(GOLD)をDBへ投入する。既にある質問(同じ本文)は入れない（冪等）。
+def load_seed_questions(path: Path | None = None) -> list[dict]:
+    """fixture(JSON)から初期投入用の質問を読む。ファイルが無ければ空リスト。"""
+    path = SEED_QUESTIONS_PATH if path is None else path
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def seed_questions(questions: list[dict] | None = None) -> int:
+    """fixture の質問をDBへ投入する。既にある質問(同じ本文)は入れない（冪等）。
 
     追加した件数を返す。ローカルや初期セットアップで一度流すことを想定。
     """
-    gold = GOLD if gold is None else gold
+    questions = load_seed_questions() if questions is None else questions
     added = 0
     with get_conn() as conn:
-        for item in gold:
+        for item in questions:
             exists = conn.execute(
                 "SELECT 1 FROM eval_questions WHERE question = %s LIMIT 1",
                 (item["question"],),
@@ -92,11 +83,11 @@ def seed_questions(gold: list[dict] | None = None) -> int:
                 continue
             conn.execute(
                 "INSERT INTO eval_questions "
-                "(company, department, question, expected_source, note) "
+                "(project, topic, question, expected_source, note) "
                 "VALUES (%s, %s, %s, %s, %s)",
                 (
-                    item.get("company"),
-                    item.get("department"),
+                    item.get("project"),
+                    item.get("topic"),
                     item["question"],
                     item["expected_source"],
                     item.get("note"),
@@ -107,27 +98,27 @@ def seed_questions(gold: list[dict] | None = None) -> int:
 
 
 def load_questions(
-    company: str | None = None, department: str | None = None
+    project: str | None = None, topic: str | None = None
 ) -> list[dict]:
-    """評価用の質問をDBから読む。company/department を指定するとその分だけに絞る。
+    """評価用の質問をDBから読む。project/topic を指定するとその分だけに絞る。
 
-    指定しなかった軸は絞り込まない（例: company だけ指定なら部署は問わず全部）。
-    文書(documents)を同じキーで分ける方針に合わせ、「その部署の文書 × その部署の
-    質問」で評価できるようにするための絞り込み。
+    指定しなかった軸は絞り込まない（例: project だけ指定ならトピックは問わず全部）。
+    文書(documents)を同じ軸で分ける方針に合わせ、「そのプロジェクトの文書 ×
+    その質問」で評価できるようにするための絞り込み。
     """
     clauses = []
     params: list[str] = []
-    if company is not None:
-        clauses.append("company = %s")
-        params.append(company)
-    if department is not None:
-        clauses.append("department = %s")
-        params.append(department)
+    if project is not None:
+        clauses.append("project = %s")
+        params.append(project)
+    if topic is not None:
+        clauses.append("topic = %s")
+        params.append(topic)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT question, expected_source, note, company, department "
+            f"SELECT question, expected_source, note, project, topic "
             f"FROM eval_questions {where} ORDER BY id",
             params,
         ).fetchall()
@@ -136,8 +127,8 @@ def load_questions(
             "question": r[0],
             "expected_source": r[1],
             "note": r[2],
-            "company": r[3],
-            "department": r[4],
+            "project": r[3],
+            "topic": r[4],
         }
         for r in rows
     ]
@@ -158,8 +149,9 @@ def evaluate(
     gold: list[dict] | None = None,
     params: dict[str, dict] | None = None,
     rrf_k: int | None = None,
+    query_vecs: list[list[float]] | None = None,
 ) -> dict:
-    """GOLD を1問ずつ検索にかけ、Hit@k と MRR を集計して返す。
+    """質問を1問ずつ検索にかけ、Hit@k と MRR を集計して返す。
 
     各問について hybrid_search を実行し、正解文書が上位 top_k に入ったか・
     何位だったかを記録する。ここでは回答生成はしないが、--gen で回答を目視する
@@ -169,14 +161,33 @@ def evaluate(
     params / rrf_k を渡すと、検索の数値パラメータ（字面の閾値・BM25のk1/b・RRFのk）を
     変えて評価できる。「k1を上げるとHit@kは上がるか」を数値で測るための引数。
     未指定なら設定の既定値で評価する。
+
+    query_vecs: 質問のベクトルを外から渡す（gold と同じ並び・同じ長さ）。
+      取り込み方を変えて2回評価する A/B 測定（app.compare）で、両方の評価に
+      ★同一のベクトル★を使うための引数。こうすると差が文書側の変更だけに
+      由来すると言い切れるうえ、埋め込みAPIの呼び出しも1回で済む。
     """
     # None のときだけ既定を使う。空リスト [] は「0問で評価」の明示指定として尊重する
-    gold = GOLD if gold is None else gold
+    gold = load_seed_questions() if gold is None else gold
     results = []
     hit_count = 0
     reciprocal_sum = 0.0
 
-    for item in gold:
+    # ★質問のベクトル化は1回にまとめる★
+    #   1問ずつ埋め込むと「質問数 = APIリクエスト数」になり、埋め込みAPIの分間
+    #   リクエスト上限（Voyage 無料枠は 3 RPM）に4問目で当たって評価が完走しない。
+    #   評価は質問が最初から全部分かっているので、まとめて1リクエストで済む。
+    #   ベクトル検索を使わない構成（trgm/bm25 のみ）では埋め込み自体を呼ばない。
+    if query_vecs is not None:
+        if len(query_vecs) != len(gold):
+            raise ValueError("query_vecs は gold と同じ長さで渡してください")
+        vecs: list[list[float] | None] = list(query_vecs)
+    elif gold and "vector" in resolve_retrievers(retrievers):
+        vecs = list(embed_texts([g["question"] for g in gold], input_type="query"))
+    else:
+        vecs = [None] * len(gold)
+
+    for item, query_vec in zip(gold, vecs):
         hits = hybrid_search(
             item["question"],
             top_n=top_k,
@@ -184,6 +195,7 @@ def evaluate(
             retrievers=retrievers,
             params=params,
             rrf_k=rrf_k,
+            query_vec=query_vec,
         )
         rank = _rank_of(hits, item["expected_source"])
         hit = rank is not None and rank < top_k
@@ -269,25 +281,32 @@ def main() -> None:
     parser.add_argument(
         "--seed",
         action="store_true",
-        help="サンプル質問(GOLD)をDBへ投入して終了する（冪等）",
+        help="fixture(seed_data/eval_questions.json)をDBへ投入して終了する（冪等）",
     )
     parser.add_argument(
-        "--company", type=str, default=None, help="この会社の質問だけで評価する"
+        "--project", type=str, default=None, help="このプロジェクトの質問だけで評価する"
     )
     parser.add_argument(
-        "--department", type=str, default=None, help="この部署の質問だけで評価する"
+        "--topic", type=str, default=None, help="このトピックの質問だけで評価する"
     )
     args = parser.parse_args()
 
     if args.seed:
         added = seed_questions()
-        print(f"サンプル質問を {added} 件投入しました（既存はスキップ）。")
+        # 「0件」は fixture が空なのか全部スキップされたのか区別が付かないので、
+        # fixture の件数とDBの現在件数まで出す（冪等な操作は結果が読めることが大事）。
+        total = len(load_questions())
+        print(
+            f"評価質問: {added} 件を追加"
+            f"（fixture {len(load_seed_questions())} 件中、既存はスキップ）。"
+            f"DBの登録件数は {total} 件。"
+        )
         return
 
-    gold = load_questions(company=args.company, department=args.department)
+    gold = load_questions(project=args.project, topic=args.topic)
     if not gold:
         scope = " / ".join(
-            filter(None, [args.company, args.department])
+            filter(None, [args.project, args.topic])
         ) or "指定なし"
         print(
             f"評価用の質問が見つかりません（絞り込み: {scope}）。\n"

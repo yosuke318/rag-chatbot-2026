@@ -19,11 +19,17 @@ tasks:
     cmds:
       # 現在のホストソースをマウントした使い捨てコンテナで pytest を回す。
       # --no-deps で db 等を起こさない。pytest はイメージに無いので都度入れる。
+      # DATABASE_URL は到達不能な値で上書きする: compose の既定は db:5432 を指し、
+      # `task up` 済みだと実DBに繋がってしまい「DB非依存」が崩れても気づけない。
+      # ここが繋がらない前提なら、DBに触れたテストは即座に失敗して露見する。
       - >
         docker compose run --rm --no-deps
         -e ANTHROPIC_API_KEY=dummy -e VOYAGE_API_KEY=dummy
+        -e DATABASE_URL=postgresql://unused:unused@127.0.0.1:1/unused
         -v "$PWD/backend/app:/app/app"
         -v "$PWD/backend/tests:/app/tests"
+        -v "$PWD/backend/seed_data:/app/seed_data"
+        -v "$PWD/backend/seed_docs:/app/seed_docs"
         -v "$PWD/backend/pytest.ini:/app/pytest.ini"
         -v "$PWD/backend/requirements.txt:/app/requirements.txt"
         -v "$PWD/backend/requirements-dev.txt:/app/requirements-dev.txt"
@@ -45,9 +51,17 @@ tasks:
       - docker compose logs -f
 
   seed:
-    desc: backend/seed_docs/*.txt を登録する（デフォルト文書の投入）
+    desc: 初期データの投入（seed_docs/*.txt の文書 + 評価質問の fixture）。冪等
     cmds:
       - docker compose exec -T backend python -m app.seed
+      # 評価質問(eval_questions)も同じ seed で入れる。文書だけ入って質問が空だと
+      # `python -m app.eval` が「質問が見つかりません」で止まるため、セットで流す。
+      - docker compose exec -T backend python -m app.eval --seed
+
+  compare-contextual:
+    desc: contextual retrieval の有無で検索精度を比較する（seed_docs を2回取り込み直す）
+    cmds:
+      - docker compose exec -T backend python -m app.compare
 
   # 例: 単一ファイルだけ入れたいときのテンプレ（拡張の見本）
   # ingest-file:
