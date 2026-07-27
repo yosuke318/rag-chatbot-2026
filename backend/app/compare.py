@@ -35,18 +35,27 @@ from app.eval import evaluate, load_questions
 from app.ingest import ingest_text
 from app.llm import embed_texts
 from app.retrieval import resolve_retrievers
-from app.seed import RETRY_WAITS, SEED_DIR
+from app.seed import RETRY_WAITS, SEED_DIR, load_scopes
 
 LABELS = {False: "文脈なし（見出しのみ）", True: "contextual あり"}
 
 
 def reingest(contextual: bool, seed_dir: Path | None = None) -> int:
-    """seed_docs の文書を、指定した contextual 設定で取り込み直す。チャンク総数を返す。"""
+    """seed_docs の文書を、指定した contextual 設定で取り込み直す。チャンク総数を返す。
+
+    区分(project/topic)は app.seed と同じ documents.json から読む。
+    取り込みは既存の同名文書を削除してから入れ直すので、ここで区分を渡さないと
+    `task seed` で付けた区分がこのCLIを実行するたびに NULL で消える。
+    """
+    scopes = load_scopes()
     total = 0
     for path in sorted((seed_dir or SEED_DIR).glob("*.txt")):
+        scope = scopes.get(path.name, {})
         result = ingest_text(
             source=path.name,
             text=path.read_text(encoding="utf-8"),
+            project=scope.get("project"),
+            topic=scope.get("topic"),
             contextual=contextual,
             embed_retry_waits=RETRY_WAITS,
         )

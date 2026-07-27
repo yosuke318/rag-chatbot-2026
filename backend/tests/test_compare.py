@@ -125,12 +125,41 @@ def test_reingest_passes_contextual_and_retry_waits(monkeypatch, tmp_path):
     (tmp_path / "b.txt").write_text("本文2", encoding="utf-8")
     captured = []
 
-    def fake_ingest(source, text, contextual=None, embed_retry_waits=None):
+    def fake_ingest(
+        source, text, project=None, topic=None, contextual=None, embed_retry_waits=None
+    ):
         captured.append((source, contextual, embed_retry_waits))
         return {"chunks_created": 3, "replaced": 1}
 
     monkeypatch.setattr(compare_module, "ingest_text", fake_ingest)
+    monkeypatch.setattr(compare_module, "load_scopes", dict)
     monkeypatch.setattr(compare_module, "RETRY_WAITS", [20])
 
     assert compare_module.reingest(contextual=True, seed_dir=tmp_path) == 6
     assert captured == [("a.txt", True, [20]), ("b.txt", True, [20])]
+
+
+def test_reingest_keeps_document_scope(monkeypatch, tmp_path):
+    """★区分を消さない★ 取り込み直しは削除→再登録なので、documents.json の
+    project/topic を渡さないと `task seed` で付けた区分が NULL で上書きされる。"""
+    (tmp_path / "a.txt").write_text("本文", encoding="utf-8")
+    (tmp_path / "z.txt").write_text("本文", encoding="utf-8")  # マニフェスト未掲載
+    captured = {}
+
+    def fake_ingest(
+        source, text, project=None, topic=None, contextual=None, embed_retry_waits=None
+    ):
+        captured[source] = (project, topic)
+        return {"chunks_created": 1, "replaced": 1}
+
+    monkeypatch.setattr(compare_module, "ingest_text", fake_ingest)
+    monkeypatch.setattr(
+        compare_module,
+        "load_scopes",
+        lambda: {"a.txt": {"project": "社内規程", "topic": "労務"}},
+    )
+
+    compare_module.reingest(contextual=False, seed_dir=tmp_path)
+
+    assert captured["a.txt"] == ("社内規程", "労務")
+    assert captured["z.txt"] == (None, None)  # 未掲載は元から区分なし
