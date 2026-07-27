@@ -92,6 +92,7 @@ def ingest_text(
     category: str | None = None,
     store_original: bool = True,
     contextual: bool | None = None,
+    embed_retry_waits: list[int] | None = None,
 ) -> dict:
     """1つの文書を取り込む（upsert）。{"chunks_created", "replaced"} を返す。
 
@@ -107,6 +108,10 @@ def ingest_text(
     contextual: チャンクへの文脈付与に Claude を使うか。None なら設定
       (USE_CONTEXTUAL_CHUNKING)に従う。eval で有無を比較するための引数。
 
+    embed_retry_waits: 埋め込みAPIが 429 を返したときに待つ秒数の並び
+      （None = 再試行しない）。文脈生成はこの前に済ませてあるので、
+      待って再試行しても Claude を呼び直さない。
+
     ※本来は設計書どおり content_hash で差分検知し、内容が変わっていなければ
       埋め込みAPIの呼び出し自体を省くべき。ここでは常に入れ直す簡易版。
     """
@@ -120,6 +125,7 @@ def ingest_text(
     embeddings = embed_texts(
         [_embed_source(ctx, c.text) for ctx, c in zip(contexts, chunks)],
         input_type="document",
+        retry_waits=embed_retry_waits,
     )
 
     with get_conn() as conn:

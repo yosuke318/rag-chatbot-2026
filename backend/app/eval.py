@@ -272,7 +272,14 @@ def main() -> None:
 
     if args.seed:
         added = seed_questions()
-        print(f"サンプル質問を {added} 件投入しました（既存はスキップ）。")
+        # 「0件」は fixture が空なのか全部スキップされたのか区別が付かないので、
+        # fixture の件数とDBの現在件数まで出す（冪等な操作は結果が読めることが大事）。
+        total = len(load_questions())
+        print(
+            f"評価質問: {added} 件を追加"
+            f"（fixture {len(load_seed_questions())} 件中、既存はスキップ）。"
+            f"DBの登録件数は {total} 件。"
+        )
         return
 
     gold = load_questions(company=args.company, department=args.department)

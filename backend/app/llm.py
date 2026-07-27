@@ -5,6 +5,7 @@ Anthropicには埋め込みAPIが無いため、埋め込みだけ別プロバ�
 """
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
@@ -43,11 +44,30 @@ def _require(key: str | None, name: str) -> None:
 # ============================================================
 
 
-def embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:
-    """テキスト群をベクトル化。input_type は "document" か "query"。"""
+def embed_texts(
+    texts: list[str],
+    input_type: str = "document",
+    retry_waits: list[int] | None = None,
+) -> list[list[float]]:
+    """テキスト群をベクトル化。input_type は "document" か "query"。
+
+    retry_waits: レート制限(429)を受けたときに待つ秒数の並び。既定の None は
+      「再試行しない」＝ 429 をそのまま投げる。APIリクエストの処理中に何十秒も
+      待つと利用者を待たせるため、Web経路は既定のまま 429 を即返す
+      （main.py の例外ハンドラ）。待っても困らないバッチ処理（app.seed）だけが
+      待ち時間を渡す。無料枠(3 RPM)は文書を4件以上連続投入すると必ず当たる。
+    """
     _require(VOYAGE_API_KEY, "VOYAGE_API_KEY")
-    result = _voyage.embed(texts, model=EMBED_MODEL, input_type=input_type)
-    return result.embeddings
+    for wait in [*(retry_waits or []), None]:
+        try:
+            result = _voyage.embed(texts, model=EMBED_MODEL, input_type=input_type)
+            return result.embeddings
+        except voyageai.error.RateLimitError:
+            if wait is None:  # 待ち時間を使い切った
+                raise
+            logger.warning("埋め込みAPIのレート制限。%d秒待って再試行します", wait)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
 
 
 def embed_query(text: str) -> list[float]:

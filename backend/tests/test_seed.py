@@ -1,21 +1,23 @@
-"""app.seed の再試行のユニットテスト。
+"""埋め込みAPIのレート制限に対する再試行のユニットテスト。
 
-埋め込みAPIは呼ばず、ingest_text をモックして分岐だけ確かめる。
 `task seed` は文書数ぶん連続で埋め込みAPIを叩くため、無料枠(3 RPM)では
-4件目から 429 が返る。そこで落ちずに待って再試行することがここの要件。
+4件目から 429 が返る。バッチ処理は落ちずに待って再試行することがここの要件。
+再試行は埋め込み呼び出しだけを包む（文脈生成をやり直して Claude を無駄に
+呼ばない）ので、テストも llm.embed_texts に対して書く。
 """
+from unittest.mock import MagicMock, patch
+
 import pytest
 import voyageai
 
-from app import seed
+from app import llm, seed
 
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
-    """待ち時間はテストでは飛ばす（待ったかどうかだけ記録する）。"""
+    """待ち時間は飛ばす（何秒待とうとしたかだけ記録する）。"""
     waited: list[int] = []
-    monkeypatch.setattr(seed.time, "sleep", lambda s: waited.append(s))
-    monkeypatch.setattr(seed, "RETRY_WAITS", [20, 40])
+    monkeypatch.setattr(llm.time, "sleep", lambda s: waited.append(s))
     return waited
 
 
@@ -23,52 +25,68 @@ def _rate_limit() -> voyageai.error.RateLimitError:
     return voyageai.error.RateLimitError("3 RPM")
 
 
-def test_retries_after_rate_limit_and_succeeds(monkeypatch, no_sleep):
-    calls = []
+def _embeddings(n: int = 1) -> MagicMock:
+    result = MagicMock()
+    result.embeddings = [[0.1] * 4 for _ in range(n)]
+    return result
 
-    def fake_ingest(source, text):
-        calls.append(source)
-        if len(calls) == 1:
-            raise _rate_limit()
-        return {"chunks_created": 3, "replaced": 0}
 
-    monkeypatch.setattr(seed, "ingest_text", fake_ingest)
+def test_retries_after_rate_limit_and_succeeds(no_sleep):
+    with patch.object(llm, "_voyage") as voyage:
+        voyage.embed.side_effect = [_rate_limit(), _embeddings()]
+        assert llm.embed_texts(["a"], retry_waits=[20, 40]) == [[0.1] * 4]
 
-    assert seed.ingest_with_retry("a.txt", "本文")["chunks_created"] == 3
-    assert len(calls) == 2
+    assert voyage.embed.call_count == 2
     assert no_sleep == [20]  # 1回だけ待った
 
 
-def test_gives_up_after_all_retries(monkeypatch, no_sleep):
-    def always_limited(source, text):
-        raise _rate_limit()
+def test_gives_up_after_all_retries(no_sleep):
+    with patch.object(llm, "_voyage") as voyage:
+        voyage.embed.side_effect = _rate_limit()
+        with pytest.raises(voyageai.error.RateLimitError):
+            llm.embed_texts(["a"], retry_waits=[20, 40])
 
-    monkeypatch.setattr(seed, "ingest_text", always_limited)
-
-    with pytest.raises(voyageai.error.RateLimitError):
-        seed.ingest_with_retry("a.txt", "本文")
     assert no_sleep == [20, 40]  # 待ちを使い切ってから諦める
 
 
-def test_does_not_retry_other_errors(monkeypatch, no_sleep):
+def test_does_not_retry_by_default(no_sleep):
+    """既定(None)は再試行しない。APIリクエストの処理中に待たせないため。"""
+    with patch.object(llm, "_voyage") as voyage:
+        voyage.embed.side_effect = _rate_limit()
+        with pytest.raises(voyageai.error.RateLimitError):
+            llm.embed_texts(["a"])
+
+    assert voyage.embed.call_count == 1
+    assert no_sleep == []
+
+
+def test_does_not_retry_other_errors(no_sleep):
     """429 以外（認証エラー等）は待っても直らないので即座に投げる。"""
-    calls = []
+    with patch.object(llm, "_voyage") as voyage:
+        voyage.embed.side_effect = voyageai.error.AuthenticationError("bad key")
+        with pytest.raises(voyageai.error.AuthenticationError):
+            llm.embed_texts(["a"], retry_waits=[20, 40])
 
-    def boom(source, text):
-        calls.append(source)
-        raise voyageai.error.AuthenticationError("bad key")
-
-    monkeypatch.setattr(seed, "ingest_text", boom)
-
-    with pytest.raises(voyageai.error.AuthenticationError):
-        seed.ingest_with_retry("a.txt", "本文")
-    assert len(calls) == 1
+    assert voyage.embed.call_count == 1
     assert no_sleep == []
 
 
-def test_no_retry_when_first_attempt_succeeds(monkeypatch, no_sleep):
-    monkeypatch.setattr(
-        seed, "ingest_text", lambda source, text: {"chunks_created": 1, "replaced": 1}
-    )
-    assert seed.ingest_with_retry("a.txt", "本文")["replaced"] == 1
-    assert no_sleep == []
+def test_seed_passes_retry_waits_to_ingest(monkeypatch, tmp_path):
+    """app.seed は待ち時間を渡す（＝バッチだけが待つ）。"""
+    (tmp_path / "a.txt").write_text("本文", encoding="utf-8")
+    monkeypatch.setattr(seed, "SEED_DIR", tmp_path)
+    monkeypatch.setattr(seed, "RETRY_WAITS", [5, 10])
+    monkeypatch.setattr(seed, "init_db", lambda: None)
+    monkeypatch.setattr(seed.sys, "argv", ["app.seed"])
+
+    captured = {}
+
+    def fake_ingest(source, text, embed_retry_waits=None):
+        captured["source"] = source
+        captured["waits"] = embed_retry_waits
+        return {"chunks_created": 1, "replaced": 0}
+
+    monkeypatch.setattr(seed, "ingest_text", fake_ingest)
+    seed.main()
+
+    assert captured == {"source": "a.txt", "waits": [5, 10]}

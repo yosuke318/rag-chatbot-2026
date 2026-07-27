@@ -14,12 +14,10 @@ backend/seed_docs/ に置いた .txt を順に取り込む。
   python -m app.seed              # seed_docs/ の全 .txt を投入
   python -m app.seed foo.txt      # seed_docs/foo.txt だけ投入
 """
+import logging
 import os
 import sys
-import time
 from pathlib import Path
-
-import voyageai
 
 from app.db import init_db
 from app.ingest import ingest_text
@@ -31,24 +29,12 @@ SEED_DIR = Path(__file__).resolve().parent.parent / "seed_docs"
 RETRY_WAITS = [int(w) for w in os.getenv("SEED_RETRY_WAITS", "20,40,60").split(",")]
 
 
-def ingest_with_retry(source: str, text: str) -> dict:
-    """1文書を取り込む。埋め込みAPIの 429 だけ待って再試行する。"""
-    for attempt, wait in enumerate([*RETRY_WAITS, None]):
-        try:
-            return ingest_text(source=source, text=text)
-        except voyageai.error.RateLimitError:
-            if wait is None:  # 最後の試行も失敗
-                raise
-            print(
-                f"  {source}: 埋め込みAPIのレート制限。{wait}秒待って再試行"
-                f"（{attempt + 1}/{len(RETRY_WAITS)}）",
-                flush=True,
-            )
-            time.sleep(wait)
-    raise AssertionError("unreachable")
-
-
 def main() -> None:
+    # 再試行やフォールバックは llm.py が WARNING に出す。既定では表示されないので
+    # CLI として動かすときだけロギングを有効にする（何が起きたか見えるように）。
+    # WARNING 止まりにするのは、boto3/voyage の INFO ログで進捗が埋もれるため。
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+
     init_db()  # スキーマが無ければ作る（単体実行できるように）
 
     if len(sys.argv) > 1:
@@ -64,7 +50,11 @@ def main() -> None:
         if not f.exists():
             print(f"見つかりません: {f}")
             continue
-        r = ingest_with_retry(source=f.name, text=f.read_text(encoding="utf-8"))
+        r = ingest_text(
+            source=f.name,
+            text=f.read_text(encoding="utf-8"),
+            embed_retry_waits=RETRY_WAITS,
+        )
         note = "（既存を置き換え）" if r["replaced"] else ""
         print(f"{f.name}: {r['chunks_created']} チャンク登録{note}", flush=True)
 
