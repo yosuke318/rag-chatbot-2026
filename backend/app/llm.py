@@ -17,6 +17,7 @@ from app.config import (
     CONTEXT_CONCURRENCY,
     CONTEXT_MODEL,
     EMBED_MODEL,
+    RERANK_MODEL,
     VOYAGE_API_KEY,
 )
 
@@ -39,6 +40,26 @@ def _require(key: str | None, name: str) -> None:
         raise MissingAPIKey(name)
 
 
+def _voyage_call(call, retry_waits: list[int] | None):
+    """Voyage APIを1回呼ぶ。429なら retry_waits の秒数だけ待って再試行する。
+
+    retry_waits: レート制限(429)を受けたときに待つ秒数の並び。既定の None は
+      「再試行しない」＝ 429 をそのまま投げる。APIリクエストの処理中に何十秒も
+      待つと利用者を待たせるため、Web経路は既定のまま 429 を即返す
+      （main.py の例外ハンドラ）。待っても困らないバッチ処理（app.seed）だけが
+      待ち時間を渡す。無料枠(3 RPM)は文書を4件以上連続投入すると必ず当たる。
+    """
+    for wait in [*(retry_waits or []), None]:
+        try:
+            return call()
+        except voyageai.error.RateLimitError:
+            if wait is None:  # 待ち時間を使い切った
+                raise
+            logger.warning("Voyage APIのレート制限。%d秒待って再試行します", wait)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
 # ============================================================
 # 埋め込み (Voyage)
 # ============================================================
@@ -51,23 +72,14 @@ def embed_texts(
 ) -> list[list[float]]:
     """テキスト群をベクトル化。input_type は "document" か "query"。
 
-    retry_waits: レート制限(429)を受けたときに待つ秒数の並び。既定の None は
-      「再試行しない」＝ 429 をそのまま投げる。APIリクエストの処理中に何十秒も
-      待つと利用者を待たせるため、Web経路は既定のまま 429 を即返す
-      （main.py の例外ハンドラ）。待っても困らないバッチ処理（app.seed）だけが
-      待ち時間を渡す。無料枠(3 RPM)は文書を4件以上連続投入すると必ず当たる。
+    retry_waits の意味は _voyage_call を参照。
     """
     _require(VOYAGE_API_KEY, "VOYAGE_API_KEY")
-    for wait in [*(retry_waits or []), None]:
-        try:
-            result = _voyage.embed(texts, model=EMBED_MODEL, input_type=input_type)
-            return result.embeddings
-        except voyageai.error.RateLimitError:
-            if wait is None:  # 待ち時間を使い切った
-                raise
-            logger.warning("埋め込みAPIのレート制限。%d秒待って再試行します", wait)
-            time.sleep(wait)
-    raise AssertionError("unreachable")
+    result = _voyage_call(
+        lambda: _voyage.embed(texts, model=EMBED_MODEL, input_type=input_type),
+        retry_waits,
+    )
+    return result.embeddings
 
 
 def embed_query(text: str) -> list[float]:
@@ -179,12 +191,41 @@ def generate_chunk_contexts(document: str, chunks: list[str]) -> list[str]:
 
 
 # ============================================================
-# 検索（Voyageのみ / Claudeは任意のリランクだけ）
+# 検索・リランク
 #   検索そのもの（ベクトル / 字面 / BM25 → RRF）は retrieval.py 側にあり、
 #   必要なAPIは質問のベクトル化に使う Voyage の埋め込みだけ。Claudeは呼ばない。
-#   下の rank_by_relevance は「任意」のLLMリランク（USE_RERANK有効時のみ）で、
-#   これだけは例外的にClaudeを使う。素の検索・検索評価に生成APIは要らない。
+#   下の2つは「任意」のリランク（USE_RERANK有効時のみ）。どちらも
+#   (question, passages) -> 関連順の番号リスト という同じ形で、切り替えて比較できる。
+#     voyage_rerank     … Voyage の専用リランクAPI(rerank-2)。既定。Claude不要
+#     rank_by_relevance … Claudeに番号を並べ替えさせるプロンプト式。比較用
+#   素の検索・検索評価そのものに生成APIは要らない。
 # ============================================================
+
+
+def voyage_rerank(
+    question: str, passages: list[str], retry_waits: list[int] | None = None
+) -> list[int]:
+    """Voyage の専用リランクAPIで並べ替え、関連が高い順の番号リストを返す。
+
+    生成モデルに番号を書かせる（rank_by_relevance）のに比べて:
+      - 安い・速い    … 順位付け専用の小さいモデルで、出力はスコアだけ
+      - 順位が安定する … 生成のゆらぎが無く、同じ入力なら同じ順位
+      - 取りこぼしが無い … 全候補に必ずスコアが付く（番号の書き漏らしが起きない）
+    埋め込みで既にVoyageを使っているので、キーも契約もそのまま流用できる。
+
+    APIは relevance_score の降順で results を返すので、その index を並べるだけ。
+    ※リランクは質問1件につき1リクエスト（埋め込みのようにまとめられない）。
+      無料枠(3 RPM)では評価を回すと4問目で429になるため、retry_waits を渡すか
+      支払い方法の登録で上限を緩和すること。
+    """
+    _require(VOYAGE_API_KEY, "VOYAGE_API_KEY")
+    if not passages:
+        return []
+    result = _voyage_call(
+        lambda: _voyage.rerank(question, passages, model=RERANK_MODEL),
+        retry_waits,
+    )
+    return [r.index for r in result.results]
 
 
 def rank_by_relevance(question: str, passages: list[str]) -> list[int]:
