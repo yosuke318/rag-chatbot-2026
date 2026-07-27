@@ -104,19 +104,26 @@ def content_hash(text: str, contextual: bool) -> str:
         本文だけのハッシュだと2回目がスキップされ比較が成立しない
       - EMBED_MODEL: モデルを差し替えたらベクトル空間ごと変わる
       - チャンクのサイズ設定と CHUNKING_VERSION: 切り方が変われば中身も変わる
+
+    各要素は「長さ→中身」の順で流し込む。区切り文字で連結すると、本文にその
+    区切りが混ざったときに項目の境目が動き、別々の入力が同じ並びに化けうる
+    （今の項目は本文以外が固定値なので実際には作れないが、項目を足したときに
+    その前提が崩れるのを避ける）。本文を丸ごとコピーせずに済む利点もある。
     """
-    key = "\x00".join(
-        [
-            text,
-            str(contextual),
-            EMBED_MODEL,
-            CHUNKING_VERSION,
-            str(CHUNK_MAX_CHARS),
-            str(CHUNK_MIN_CHARS),
-            str(CHUNK_OVERLAP),
-        ]
-    )
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256()
+    for part in (
+        text,
+        str(contextual),
+        EMBED_MODEL,
+        CHUNKING_VERSION,
+        str(CHUNK_MAX_CHARS),
+        str(CHUNK_MIN_CHARS),
+        str(CHUNK_OVERLAP),
+    ):
+        encoded = part.encode("utf-8")
+        digest.update(f"{len(encoded)}:".encode("ascii"))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 def ingest_text(
@@ -163,15 +170,13 @@ def ingest_text(
     # その間コネクションを掴んだままにしない）。
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT d.id, d.content_hash, d.project, d.topic, "
-            "       (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) "
-            "FROM documents d WHERE d.source = %s",
+            "SELECT id, content_hash, project, topic FROM documents WHERE source = %s",
             (source,),
         ).fetchone()
         # content_hash が NULL の行＝この機能より前に入った文書。作り直して値を入れる。
         unchanged = existing is not None and existing[1] == new_hash
         if unchanged:
-            document_id, _, current_project, current_topic, chunk_count = existing
+            document_id, _, current_project, current_topic = existing
             # 本文は同じで区分だけ変えた場合（登録し直しでの分類修正）。
             # 埋め込みは使い回せるので documents の行だけ更新する。
             if (current_project, current_topic) != (project, topic):
@@ -179,6 +184,11 @@ def ingest_text(
                     "UPDATE documents SET project = %s, topic = %s WHERE id = %s",
                     (project, topic, document_id),
                 )
+            # チャンク数はスキップ時の戻り値にしか要らないので、ここでだけ数える
+            # （作り直す場合は数えても捨てるだけなので、上のSELECTには含めない）。
+            chunk_count = conn.execute(
+                "SELECT count(*) FROM chunks WHERE document_id = %s", (document_id,)
+            ).fetchone()[0]
 
     if unchanged:
         # 原本の保存だけは続ける。DBに文書があってもS3側だけ欠けている状態

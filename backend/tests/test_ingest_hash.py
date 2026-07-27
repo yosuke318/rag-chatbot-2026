@@ -54,11 +54,13 @@ class FakeConn:
     """ingest_text が発行するSQLだけを解釈する偽コネクション。
 
     existing: documents の既存行として SELECT が返すタプル
-      (id, content_hash, project, topic, チャンク数)。None なら未登録。
+      (id, content_hash, project, topic)。None なら未登録。
+    chunk_count: スキップ時に数える既存チャンク数。
     """
 
-    def __init__(self, existing=None):
+    def __init__(self, existing=None, chunk_count=2):
         self.existing = existing
+        self.chunk_count = chunk_count
         self.sql = []  # (sql, params) の記録
         self.chunk_rows = []
 
@@ -75,6 +77,8 @@ class FakeConn:
         self.sql.append((sql, params))
         head = sql.strip().split()[0].upper()
         if head == "SELECT":
+            if "count(*)" in sql:  # スキップ時のチャンク数
+                return _Result(row=(self.chunk_count,))
             return _Result(row=self.existing)
         if head == "DELETE":
             return _Result(rowcount=1 if self.existing else 0)
@@ -116,8 +120,8 @@ def calls(monkeypatch):
     return counts
 
 
-def _existing(hash_value, project=None, topic=None, chunk_count=2):
-    return (42, hash_value, project, topic, chunk_count)
+def _existing(hash_value, project=None, topic=None):
+    return (42, hash_value, project, topic)
 
 
 # --- content_hash 単体 -------------------------------------------------
@@ -137,6 +141,12 @@ def test_hash_changes_with_contextual():
     ここが同じハッシュになると2回目がスキップされ、比較が成立しなくなる。
     """
     assert content_hash(TEXT, False) != content_hash(TEXT, True)
+
+
+def test_hash_handles_separator_like_text():
+    """本文に区切り文字（NUL）が混ざっても、項目の境目がずれない。"""
+    assert content_hash("a\x00False", False) != content_hash("a", False)
+    assert content_hash("a\x00b", False) == content_hash("a\x00b", False)
 
 
 def test_hash_changes_with_embed_model(monkeypatch):
@@ -171,7 +181,7 @@ def test_first_ingest_embeds_and_stores_hash(monkeypatch, calls):
 
 def test_reingest_same_content_skips_embedding(monkeypatch, calls):
     """受け入れ条件: 同一内容の再取り込みで埋め込みAPIが呼ばれない。"""
-    conn = FakeConn(existing=_existing(content_hash(TEXT, False), chunk_count=2))
+    conn = FakeConn(existing=_existing(content_hash(TEXT, False)), chunk_count=2)
     monkeypatch.setattr(ingest_module, "get_conn", conn)
 
     result = ingest_text("a.txt", TEXT, contextual=False)
@@ -195,6 +205,8 @@ def test_changed_content_reembeds(monkeypatch, calls):
     assert result["skipped"] is False
     assert result["replaced"] == 1
     assert conn.statements("INSERT")[0][1][3] == content_hash(changed, False)
+    # 作り直す場合、既存チャンク数は戻り値に使わないので数えない
+    assert not [s for s, _ in conn.sql if "count(*)" in s]
 
 
 def test_contextual_switch_reembeds(monkeypatch, calls):
