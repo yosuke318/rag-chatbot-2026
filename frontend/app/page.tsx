@@ -487,11 +487,9 @@ export default function Home() {
       {/* 書き込みフロー: text → chunk → embed → pgvector */}
       <section className="panel">
         <h2>① 文書を登録（/ingest・Voyageキー必要）</h2>
-        <input
-          placeholder="文書名（例: 有給休暇.txt）"
-          value={source}
-          onChange={(e) => setSource(e.target.value)}
-        />
+
+        {/* 文書の区分。テキスト貼り付けとファイル登録の両方に付くので、
+            どちらか一方の入力欄に見えないようパネルの先頭に置く。 */}
         <div className="scope-row">
           <input
             placeholder="プロジェクト（任意）"
@@ -504,6 +502,15 @@ export default function Home() {
             onChange={(e) => setDocTopic(e.target.value)}
           />
         </div>
+        <p className="hint">
+          区分は下の<strong>テキスト登録・ファイル登録の両方</strong>に付きます（空欄なら区分なし）。
+        </p>
+
+        <input
+          placeholder="文書名（例: 有給休暇.txt）"
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+        />
         <textarea
           placeholder="本文を貼り付け…"
           value={docText}
