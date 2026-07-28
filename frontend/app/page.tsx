@@ -132,9 +132,13 @@ function AnswerText({
         return (
           <button
             key={i}
+            // type を明示しないと <form> 配下に置かれたとき submit になる
+            type="button"
             className="cite-mark"
             onClick={() => onCite(cite.n)}
             title={`根拠 [${cite.n}] ${cite.source}`}
+            // 表示は数字だけなので、読み上げには何のボタンかを補って伝える
+            aria-label={`根拠 ${cite.n} を表示（${cite.source}）`}
           >
             {cite.n}
           </button>
@@ -538,12 +542,16 @@ export default function Home() {
 
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      // ★読み終わりでも引数なしの decode() を必ず呼ぶ★
+      //   stream:true はマルチバイト文字がチャンク境界で割れたとき、続きが来る前提で
+      //   端数バイトをデコーダ内部に残す。最後にフラッシュしないとその文字が消える
+      //   （日本語は3バイトなので、ちょうど境界に当たると末尾が欠ける）。
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
       // SSEのイベント区切りは空行。最後の断片は次のチャンクと繋げる
       const blocks = buffer.split("\n\n");
       buffer = blocks.pop() ?? "";
       blocks.forEach(handle);
+      if (done) break;
     }
     if (buffer.trim()) handle(buffer);
   }
