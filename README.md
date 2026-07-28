@@ -145,7 +145,8 @@ python -m app.eval --seed                     # サンプル質問をDBへ初期
 python -m app.eval                            # DBの質問で評価
 python -m app.eval --project 社内規程 --topic 労務   # プロジェクト・トピックで絞って評価
 python -m app.eval --retrievers vector,bm25   # 手法を変えて比較
-python -m app.eval --rerank                   # LLMリランク有りで比較（要 Anthropic）
+python -m app.eval --rerank                   # リランク有りで比較（既定は Voyage rerank-2）
+python -m app.eval --rerank --rerank-method llm  # プロンプト式リランクと比較（要 Anthropic）
 python -m app.eval --gen                      # 回答生成まで走らせて目視（要 Anthropic）
 ```
 
@@ -159,9 +160,13 @@ python -m app.eval --gen                      # 回答生成まで走らせて�
 ポイント:
 
 - **検索評価だけなら Anthropic キーは不要**（質問のベクトル化に Voyage は要る）。
-  `--gen` / `--rerank` を付けたときだけ Claude を呼ぶ。
+  `--gen`、および `--rerank --rerank-method llm` のときだけ Claude を呼ぶ
+  （既定の Voyage リランクは Anthropic キー不要）。
 - `--retrievers` や `--rerank` を切り替えると数字が動くので、
-  「BM25を足すと上がるか」「リランクは効くか」を**同じ質問集で公平に比較**できる。
+  「BM25を足すと上がるか」「リランクは効くか」「どの方式のリランクが効くか」を
+  **同じ質問集で公平に比較**できる。
+- リランクは質問1件につきAPI 1リクエスト。Voyage 無料枠（3 RPM）では4問目で
+  429 になるので、評価を回すなら支払い方法を登録して上限を緩和しておく。
 - 改良（チャンク分割の変更・リランク導入など）の**前後で回して差分を見る**のが本来の使い方。
 
 質問と正解ラベルは **DB の `eval_questions` テーブル**に置く。プロジェクト・トピック
