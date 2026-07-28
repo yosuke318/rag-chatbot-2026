@@ -23,6 +23,10 @@ class IngestRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str = Field(description="質問文")
+    conversation_id: Optional[int] = Field(
+        default=None,
+        description="続きを話す会話のID。null=新しい会話を始める（IDは応答に入る）",
+    )
 
 
 class FeedbackRequest(BaseModel):
@@ -189,6 +193,9 @@ class Citation(BaseModel):
 class ChatResponse(BaseModel):
     answer: str = Field(
         description="回答本文。各文の末尾に根拠を指す引用マーカー [n] が付く"
+    )
+    conversation_id: int = Field(
+        description="この発言が属する会話のID。次の質問にこれを渡すと履歴が効く"
     )
     sources: List[str] = Field(description="根拠に使ったチャンクの出典（重複排除済み）")
     citations: List[Citation] = Field(

@@ -241,6 +241,30 @@ button:disabled {
   text-decoration: none;
 }
 
+/* 会話（履歴）の状態表示と、会話を切り替えるボタン */
+.conversation-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.conversation-bar .new-conversation {
+  padding: 2px 10px;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.conversation-bar .new-conversation:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* チャンク単位の根拠（引用）。回答本文の [n] と番号で対応する */
 .citations {
   margin-top: 10px;

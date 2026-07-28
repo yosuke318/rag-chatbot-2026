@@ -7,7 +7,6 @@ import { Fragment, useEffect, useRef, useState } from "react";
 //   手書きしないことで、BEの型を変えたらここで型エラーになりズレに気づける。
 import type { components } from "./api-types";
 
-type ChatResponse = components["schemas"]["ChatResponse"];
 type Citation = components["schemas"]["Citation"];
 type SearchStages = components["schemas"]["SearchResponse"];
 type ApiError = components["schemas"]["ErrorResponse"];
@@ -225,6 +224,8 @@ export default function Home() {
   // 回答本文の [n] を押したときに光らせる根拠。"メッセージ番号:引用番号" で持つ
   // （同じ引用番号が別の回答にもあるため、メッセージまで込みで一意にする）。
   const [activeCite, setActiveCite] = useState<string | null>(null);
+  // 続きの質問で履歴を効かせるための会話ID。null = 次の質問で新しい会話を始める。
+  const [conversationId, setConversationId] = useState<number | null>(null);
 
   // --- 評価パネル（/eval = 質問集で Hit@k / MRR を測る）---
   const [evalSelected, setEvalSelected] = useState<string[]>([]);
@@ -463,41 +464,88 @@ export default function Home() {
     }
   }
 
+  /** 最後のメッセージ（＝生成中の回答）だけを書き換える。 */
+  function patchLastMessage(patch: Partial<Message>) {
+    setMessages((m) =>
+      m.map((x, i) => (i === m.length - 1 ? { ...x, ...patch } : x)),
+    );
+  }
+
   async function ask() {
     const q = question.trim();
     if (!q || loading) return;
-    setMessages((m) => [...m, { role: "user", text: q }]);
+    // 質問と「これから埋まる空の回答」を同時に置く。以降 delta が届くたびに
+    // 末尾（＝この空の回答）を書き換えていく。
+    // question を持たせておくと、この回答に 👍/👎 を付けられる（送信時に復元する）。
+    setMessages((m) => [
+      ...m,
+      { role: "user", text: q },
+      { role: "bot", text: "", question: q },
+    ]);
     setQuestion("");
     setLoading(true);
     try {
-      const res = await fetch("/api/backend/chat", {
+      const res = await fetch("/api/backend/chat/stream", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        // conversation_id を渡すと直近の履歴を踏まえて答える（null=新しい会話）
+        body: JSON.stringify({ question: q, conversation_id: conversationId }),
       });
       const err = await errorMessage(res);
       if (err) {
         // Anthropicキー未設定などをチャット欄にそのまま出す
-        setMessages((m) => [...m, { role: "bot", text: err }]);
+        patchLastMessage({ text: err, question: undefined });
         return;
       }
-      const data: ChatResponse = await res.json();
-      // question を持たせておくと、この回答に 👍/👎 を付けられる（送信時に復元する）
-      setMessages((m) => [
-        ...m,
-        {
-          role: "bot",
-          text: data.answer,
-          sources: data.sources,
-          citations: data.citations,
-          question: q,
-        },
-      ]);
+      await readStream(res);
     } catch (e) {
-      setMessages((m) => [...m, { role: "bot", text: `エラー: ${String(e)}` }]);
+      patchLastMessage({ text: `エラー: ${String(e)}`, question: undefined });
     } finally {
       setLoading(false);
     }
+  }
+
+  /** SSE(text/event-stream)を読み進め、届いたイベントを回答へ反映する。 */
+  async function readStream(res: Response) {
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("ストリームを読み取れませんでした");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let answer = "";
+
+    const handle = (block: string) => {
+      const lines = block.split("\n");
+      const name = lines.find((l) => l.startsWith("event: "))?.slice(7);
+      const raw = lines.find((l) => l.startsWith("data: "))?.slice(6);
+      if (!name || !raw) return;
+      const data = JSON.parse(raw);
+      if (name === "meta") {
+        // 根拠は生成より先に確定するので、本文が届く前に出せる
+        setConversationId(data.conversation_id);
+        patchLastMessage({ sources: data.sources, citations: data.citations });
+      } else if (name === "delta") {
+        answer += data.text;
+        patchLastMessage({ text: answer });
+      } else if (name === "error") {
+        // 生成中の失敗。HTTPは200で流れているのでイベントで受け取る
+        const message = data.hint ? `${data.message}\n${data.hint}` : data.message;
+        patchLastMessage({
+          text: answer ? `${answer}\n\n${message}` : message,
+          question: undefined, // 失敗した回答は 👍/👎 の対象にしない
+        });
+      }
+    };
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // SSEのイベント区切りは空行。最後の断片は次のチャンクと繋げる
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() ?? "";
+      blocks.forEach(handle);
+    }
+    if (buffer.trim()) handle(buffer);
   }
 
   /** 回答に 👍/👎 を送る。楽観的に印を付け、失敗したら戻す。 */
@@ -892,7 +940,24 @@ export default function Home() {
 
       {/* 質問フロー: question → hybrid_search → rerank → Claude */}
       <section className="panel">
-        <h2>③ 質問する（/chat・Voyage + Anthropicキー必要）</h2>
+        <h2>③ 質問する（/chat/stream・Voyage + Anthropicキー必要）</h2>
+        {/* 会話は続きものとして扱われる（直近のやり取りが回答生成に載る）。
+            話題を変えるときは新しい会話にすると、前の話に引きずられない。 */}
+        <div className="conversation-bar">
+          {conversationId === null
+            ? "次の質問から新しい会話を始めます"
+            : `会話 #${conversationId}（続きの質問は履歴を踏まえて回答します）`}
+          <button
+            className="new-conversation"
+            onClick={() => {
+              setConversationId(null);
+              setMessages([]);
+            }}
+            disabled={loading || (conversationId === null && messages.length === 0)}
+          >
+            新しい会話
+          </button>
+        </div>
         <div className="messages">
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>

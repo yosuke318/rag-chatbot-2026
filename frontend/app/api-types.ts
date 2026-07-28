@@ -179,8 +179,50 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Chat */
+        /**
+         * Chat
+         * @description 検索した上位チャンクを根拠に回答する（生成が終わってから一括で返す）。
+         *
+         *     回答本文には [1] [2] の引用マーカーが入り、citations[n-1] がその根拠チャンク
+         *     （id・出典・該当箇所・原本URL）になる。出典名だけを返していた頃と違い、
+         *     利用者が「回答のこの主張はこの条文が根拠」と自分で検証できる。
+         *
+         *     conversation_id を渡すと直近の履歴を踏まえて答える（未指定なら新しい会話）。
+         *     逐次表示したい場合は /chat/stream を使う。
+         */
         post: operations["chat_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Stream
+         * @description /chat のストリーミング版。Server-Sent Events で回答を逐次返す。
+         *
+         *     イベントの順序と意味:
+         *       meta  … 会話ID・出典・引用（★生成より先に確定する★ので最初に送る。
+         *               受け取り側は本文が届く前に根拠を出せる）
+         *       delta … 回答本文の断片。届いた順に連結すると完成した回答になる
+         *       done  … 生成完了（ここで初めて履歴に回答を保存する）
+         *       error … 生成中の失敗。HTTPステータスは200のまま流れているので、
+         *               エラーは本文の中で伝えるしかない（形は通常のエラー応答と同じ）
+         *
+         *     ★検索と会話の解決はストリームを開く前に済ませる★
+         *       そこで失敗したら通常のエラー応答（4xx/5xx）を返せる。ストリームを開いた後は
+         *       ステータスを変えられないため、開く前に失敗できる工程は全部先に終わらせる。
+         */
+        post: operations["chat_stream_chat_stream_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -321,6 +363,11 @@ export interface components {
              * @description 質問文
              */
             question: string;
+            /**
+             * Conversation Id
+             * @description 続きを話す会話のID。null=新しい会話を始める（IDは応答に入る）
+             */
+            conversation_id?: number | null;
         };
         /** ChatResponse */
         ChatResponse: {
@@ -329,6 +376,11 @@ export interface components {
              * @description 回答本文。各文の末尾に根拠を指す引用マーカー [n] が付く
              */
             answer: string;
+            /**
+             * Conversation Id
+             * @description この発言が属する会話のID。次の質問にこれを渡すと履歴が効く
+             */
+            conversation_id: number;
             /**
              * Sources
              * @description 根拠に使ったチャンクの出典（重複排除済み）
@@ -1191,6 +1243,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatResponse"];
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    chat_stream_chat_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description APIキー未設定・認証失敗 */

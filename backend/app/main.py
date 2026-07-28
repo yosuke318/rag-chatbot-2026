@@ -1,6 +1,7 @@
 """FastAPI エントリポイント。最小RAGループ: /ingest で入れて /chat で聞く。"""
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -10,12 +11,13 @@ import urllib.parse
 import anthropic
 import voyageai.error
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
 from app.ingest import UnsupportedFileType, extract_text, ingest_text
-from app import storage
-from app.llm import MissingAPIKey, generate_answer
+from app import conversations, storage
+from app.conversations import UnknownConversation
+from app.llm import MissingAPIKey, generate_answer, stream_answer
 from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
 from app.retrieval import (
     UnknownReranker,
@@ -70,11 +72,69 @@ def _blank_to_none(value: Optional[str]) -> Optional[str]:
     return value.strip() or None
 
 
+def _error_payload(code: str, message: str, hint: str = "", detail: str = "") -> dict:
+    """UIがそのまま表示できる形のエラー本文（ErrorResponse と同じ形）。
+
+    ストリーミング(/chat/stream)は途中で失敗してもHTTPステータスを変えられず、
+    エラーを本文の中で伝えるしかない。そのときも通常のエラー応答と同じ形に
+    揃えられるよう、本文の組み立てだけを切り出してある。
+    """
+    return {"error": code, "message": message, "hint": hint, "detail": detail}
+
+
 def _error(status: int, code: str, message: str, hint: str = "", detail: str = ""):
     """UIがそのまま表示できる形のエラー応答。"""
     return JSONResponse(
-        status_code=status,
-        content={"error": code, "message": message, "hint": hint, "detail": detail},
+        status_code=status, content=_error_payload(code, message, hint, detail)
+    )
+
+
+def _stream_error(exc: Exception) -> tuple[str, str, str, str]:
+    """生成中に出た例外を (code, message, hint, detail) に写す。
+
+    ストリームを開いた後は例外ハンドラ（＝ステータス付きの応答）を通せないので、
+    同じ内容を error イベントとして流すためのもの。生成中に出るのは
+    Anthropic 側のエラーだけなので、そこだけを扱う。
+    """
+    if isinstance(exc, MissingAPIKey):
+        return (
+            "missing_api_key",
+            "生成API（Claude）のAPIキーが未設定です。",
+            f"backend/.env の {exc} を設定して再起動してください。",
+            "",
+        )
+    if isinstance(exc, anthropic.RateLimitError):
+        return (
+            "anthropic_rate_limit",
+            "生成API（Claude）のレート制限に達しました。少し待ってから再試行してください。",
+            "",
+            str(exc),
+        )
+    if isinstance(exc, anthropic.AuthenticationError):
+        return (
+            "anthropic_auth",
+            "生成API（Claude）の認証に失敗しました。",
+            "backend/.env の ANTHROPIC_API_KEY を設定してください。",
+            str(exc),
+        )
+    return (
+        "anthropic_error",
+        "生成API（Claude）の呼び出しに失敗しました。",
+        "",
+        str(exc),
+    )
+
+
+def _reject_empty_question(req: ChatRequest):
+    """質問が空なら400。空だと無意味な検索と生成API呼び出しになるので手前で弾く。"""
+    if req.question.strip():
+        return None
+    return _error(
+        400,
+        "invalid_question",
+        "質問は必須です。",
+        "question を入力してください。",
+        "",
     )
 
 
@@ -106,6 +166,18 @@ async def unknown_retriever(request: Request, exc: Exception):
         "指定された検索手法が不正です。",
         str(exc),
         "",
+    )
+
+
+@app.exception_handler(UnknownConversation)
+async def unknown_conversation(request: Request, exc: Exception):
+    """存在しない会話IDは黙って新規作成せず404にする（履歴が繋がらない事故に気づけるように）。"""
+    return _error(
+        404,
+        "unknown_conversation",
+        "指定された会話が見つかりません。",
+        "conversation_id を外すと新しい会話として始められます。",
+        str(exc),
     )
 
 
@@ -468,28 +540,117 @@ def _citations(hits: list[dict]) -> list[dict]:
     return citations
 
 
+def _prepare_answer(req: ChatRequest) -> dict:
+    """回答生成の手前まで（会話の確定・検索・引用の組み立て・履歴の読み出し）。
+
+    /chat と /chat/stream で共通。ここまでは生成APIを呼ばないので、キー未設定や
+    検索エラーは通常の例外ハンドラで拾える（＝ストリームを開く前に失敗できる）。
+
+    ★履歴を読むのは今回の質問を保存する前★。自分の質問が履歴に混ざらないようにする。
+    """
+    conversation_id = conversations.resolve(req.conversation_id, title=req.question)
+    history = conversations.load_history(conversation_id)
+    hits = hybrid_search(req.question)
+    conversations.add_message(conversation_id, conversations.USER, req.question)
+    return {
+        "conversation_id": conversation_id,
+        "history": history,
+        "contexts": [h["content"] for h in hits],
+        # 根拠として使ったチャンクの出典も返す（重複排除）
+        "sources": list(dict.fromkeys(h["source"] for h in hits)),
+        "citations": _citations(hits),
+    }
+
+
 @app.post("/chat", response_model=ChatResponse, responses=_ERRORS)
 def chat(req: ChatRequest):
-    """検索した上位チャンクを根拠に回答する。
+    """検索した上位チャンクを根拠に回答する（生成が終わってから一括で返す）。
 
     回答本文には [1] [2] の引用マーカーが入り、citations[n-1] がその根拠チャンク
     （id・出典・該当箇所・原本URL）になる。出典名だけを返していた頃と違い、
     利用者が「回答のこの主張はこの条文が根拠」と自分で検証できる。
+
+    conversation_id を渡すと直近の履歴を踏まえて答える（未指定なら新しい会話）。
+    逐次表示したい場合は /chat/stream を使う。
     """
-    # 質問は必須。空だと無意味な検索とLLM呼び出しになるので手前で弾く。
-    if not req.question.strip():
-        return _error(
-            400,
-            "invalid_question",
-            "質問は必須です。",
-            "question を入力してください。",
-            "",
+    if (invalid := _reject_empty_question(req)) is not None:
+        return invalid
+    prepared = _prepare_answer(req)
+    answer = generate_answer(req.question, prepared["contexts"], prepared["history"])
+    conversations.add_message(
+        prepared["conversation_id"],
+        conversations.ASSISTANT,
+        answer,
+        prepared["sources"],
+    )
+    return {
+        "answer": answer,
+        "conversation_id": prepared["conversation_id"],
+        "sources": prepared["sources"],
+        "citations": prepared["citations"],
+    }
+
+
+def _sse(event: str, payload: dict) -> str:
+    """Server-Sent Events の1イベント。data は1行のJSONにする（改行が区切りのため）。"""
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.post("/chat/stream", responses=_ERRORS)
+def chat_stream(req: ChatRequest):
+    """/chat のストリーミング版。Server-Sent Events で回答を逐次返す。
+
+    イベントの順序と意味:
+      meta  … 会話ID・出典・引用（★生成より先に確定する★ので最初に送る。
+              受け取り側は本文が届く前に根拠を出せる）
+      delta … 回答本文の断片。届いた順に連結すると完成した回答になる
+      done  … 生成完了（ここで初めて履歴に回答を保存する）
+      error … 生成中の失敗。HTTPステータスは200のまま流れているので、
+              エラーは本文の中で伝えるしかない（形は通常のエラー応答と同じ）
+
+    ★検索と会話の解決はストリームを開く前に済ませる★
+      そこで失敗したら通常のエラー応答（4xx/5xx）を返せる。ストリームを開いた後は
+      ステータスを変えられないため、開く前に失敗できる工程は全部先に終わらせる。
+    """
+    if (invalid := _reject_empty_question(req)) is not None:
+        return invalid
+    prepared = _prepare_answer(req)
+
+    def events():
+        yield _sse(
+            "meta",
+            {
+                "conversation_id": prepared["conversation_id"],
+                "sources": prepared["sources"],
+                "citations": prepared["citations"],
+            },
         )
-    hits = hybrid_search(req.question)
-    answer = generate_answer(req.question, [h["content"] for h in hits])
-    # 根拠として使ったチャンクの出典も返す（重複排除）
-    sources = list(dict.fromkeys(h["source"] for h in hits))
-    return {"answer": answer, "sources": sources, "citations": _citations(hits)}
+        chunks: list[str] = []
+        try:
+            for text in stream_answer(
+                req.question, prepared["contexts"], prepared["history"]
+            ):
+                chunks.append(text)
+                yield _sse("delta", {"text": text})
+        except Exception as exc:
+            logger.exception("ストリーミング生成に失敗")
+            yield _sse("error", _error_payload(*_stream_error(exc)))
+            return
+        answer = "".join(chunks)
+        conversations.add_message(
+            prepared["conversation_id"],
+            conversations.ASSISTANT,
+            answer,
+            prepared["sources"],
+        )
+        yield _sse("done", {"conversation_id": prepared["conversation_id"]})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        # 中継（Nginx等）にバッファされると逐次表示にならないので明示的に切る
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post(

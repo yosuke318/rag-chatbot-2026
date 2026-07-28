@@ -6,6 +6,7 @@ Anthropicには埋め込みAPIが無いため、埋め込みだけ別プロバ�
 import logging
 import re
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
@@ -292,18 +293,79 @@ def number_contexts(contexts: list[str]) -> str:
     return "\n\n---\n\n".join(f"[{i}] {c}" for i, c in enumerate(contexts, start=1))
 
 
-def generate_answer(question: str, contexts: list[str]) -> str:
+CITATION_MARKER = re.compile(r"\s*\[\d+\]")
+
+
+def strip_citations(text: str) -> str:
+    """本文から引用マーカー [n] を取り除く。
+
+    過去の回答を履歴として渡すときに使う。★番号は毎回付け直される★ため
+    （今回の検索結果の並びで決まる）、古い [1] を残したままにすると
+    「前の回答で [1] と書いたから」と別のチャンクを指す番号を再利用されうる。
+    """
+    return CITATION_MARKER.sub("", text)
+
+
+def _answer_messages(
+    question: str, contexts: list[str], history: list[dict] | None = None
+) -> list[dict]:
+    """回答生成に渡すメッセージ列を組み立てる。
+
+    並びは [過去のやり取り…, 今回の質問(コンテキスト付き)]。
+    ★コンテキストは毎回「今回の質問」にだけ付ける★
+      過去の質問に当時のコンテキストまで足すと、古い根拠が新しい回答に混ざる。
+      根拠は常に今回の検索結果だけに限る。
+    """
+    messages = [
+        {
+            "role": m["role"],
+            "content": strip_citations(m["content"])
+            if m["role"] == "assistant"
+            else m["content"],
+        }
+        for m in (history or [])
+    ]
+    messages.append(
+        {
+            "role": "user",
+            "content": f"# コンテキスト\n{number_contexts(contexts)}\n\n# 質問\n{question}",
+        }
+    )
+    return messages
+
+
+def generate_answer(
+    question: str, contexts: list[str], history: list[dict] | None = None
+) -> str:
     """検索した関連チャンクをコンテキストに与えて回答を生成する。
 
     戻り値の本文には [n] の引用マーカーが含まれる（n は contexts の1始まりの位置）。
+    history に直近のやり取りを渡すと、続きの質問（「その上限は？」等）に答えられる。
     """
     _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
-    user_content = f"# コンテキスト\n{number_contexts(contexts)}\n\n# 質問\n{question}"
-
     response = _anthropic.messages.create(
         model=CHAT_MODEL,
         max_tokens=1024,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
+        messages=_answer_messages(question, contexts, history),
     )
     return "".join(block.text for block in response.content if block.type == "text")
+
+
+def stream_answer(
+    question: str, contexts: list[str], history: list[dict] | None = None
+) -> Iterator[str]:
+    """generate_answer のストリーミング版。生成された文字を順に yield する。
+
+    回答が出るまで数秒待たされると「固まった」ように見えるため、書けたところから
+    表示する。渡すもの（system / メッセージ列）は非ストリーミング版と同一で、
+    受け取り方だけが違う ＝ 同じ質問なら同じ品質の回答になる。
+    """
+    _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
+    with _anthropic.messages.stream(
+        model=CHAT_MODEL,
+        max_tokens=1024,
+        system=SYSTEM_PROMPT,
+        messages=_answer_messages(question, contexts, history),
+    ) as stream:
+        yield from stream.text_stream

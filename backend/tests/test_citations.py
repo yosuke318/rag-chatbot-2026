@@ -17,7 +17,7 @@ pytest.importorskip("psycopg")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import llm, main as main_module, storage  # noqa: E402
+from app import conversations, llm, main as main_module, storage  # noqa: E402
 
 HITS = [
     {"id": 101, "content": "第5条 年次有給休暇は入社6か月経過後に10日を付与する。", "source": "有給休暇.txt"},
@@ -38,14 +38,19 @@ def chat(client, monkeypatch):
     """/chat を検索・生成・S3抜きで叩けるようにする。生成に渡った引数も返す。"""
     seen: dict = {}
 
-    def fake_generate(question, contexts):
+    def fake_generate(question, contexts, history=None):
         seen["question"] = question
         seen["contexts"] = list(contexts)
+        seen["history"] = list(history or [])
         return "入社6か月で10日付与されます。[1] 翌年度への繰り越しも可能です。[2]"
 
     monkeypatch.setattr(main_module, "hybrid_search", lambda q: HITS)
     monkeypatch.setattr(main_module, "generate_answer", fake_generate)
     monkeypatch.setattr(storage, "file_url", lambda source: None)
+    # 会話履歴(DB)はここでは関心外なので素通しにする（本体は test_conversations.py）
+    monkeypatch.setattr(conversations, "resolve", lambda cid, title=None: cid or 1)
+    monkeypatch.setattr(conversations, "load_history", lambda cid: [])
+    monkeypatch.setattr(conversations, "add_message", lambda *a, **kw: 1)
 
     def ask(question: str = "有給は何日?"):
         return client.post("/chat", json={"question": question}), seen
