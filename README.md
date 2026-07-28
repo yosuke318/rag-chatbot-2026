@@ -60,7 +60,8 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 |---|---|---|
 | `POST /ingest` | 文書登録（テキスト→チャンク→埋め込み→保存、原本はS3へ） | Voyage |
 | `GET /search` | 検索の内訳（ベクトル/字面/BM25/RRF） | Voyage |
-| `POST /chat` | 回答生成（チャンク単位の根拠＋原本URL付き） | Voyage + Anthropic |
+| `POST /chat` | 回答生成（チャンク単位の根拠＋原本URL付き・会話履歴対応） | Voyage + Anthropic |
+| `POST /chat/stream` | 同上をSSEで逐次返す（根拠は本文より先に届く） | Voyage + Anthropic |
 | `GET /eval` | 質問集で Hit@k / MRR を測定 | Voyage（リランク時 Anthropic） |
 | `GET,POST /eval-questions` | 評価用質問の一覧・登録（プロジェクト・トピックで分離可） | 不要 |
 | `POST /feedback` | 回答への 👍/👎 記録 | 不要 |
@@ -72,7 +73,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 |---|---|
 | 公開API（`/v1/...`） | APIキー認証・レート制限・利用ログ・バージョニング |
 | 検索のプロジェクト・トピック分離 | `documents.project` / `topic` は登録済み。検索・回答をこの軸で絞る対応が未実装 |
-| ファイル取り込み | PDF / xlsx / pptx のテキスト・図表抽出、会話履歴、ストリーミング回答 |
+| ファイル取り込み | PDF / xlsx / pptx の図表抽出（テキスト抽出は実装済み） |
 | マルチモーダル | 文書内画像の検索対象化、原本画像を根拠にした回答、チャート読解支援 |
 
 （ロードマップの詳細は本ファイル末尾の「開発ロードマップ」と Linear を参照）
@@ -228,10 +229,10 @@ cd frontend
 ## 開発ロードマップ
 
 - [ ] Terraform: network → database → app → ingest → secrets（plan が通る状態まで）
-- [ ] backend/db: pgvector スキーマ（documents / chunks / conversations）
+- [x] backend/db: pgvector スキーマ（documents / chunks / conversations / messages）
 - [ ] backend/ingest: S3取り込み → PDF構造化 → チャンク分割(contextual) → 埋め込み → UPSERT
 - [ ] backend/retrieval: ハイブリッド検索（ベクトル + BM25 + RRF）→ LLMリランク
-- [ ] backend/chat: ストリーミング回答（根拠のチャンク明示＋原本URL添付は実装済み）
+- [x] backend/chat: ストリーミング回答（SSE）＋会話履歴＋根拠のチャンク明示・原本URL添付
 - [x] backend/eval: Hit@k / MRR による検索評価（`python -m app.eval`）※ Ragas等での回答忠実性評価は次段
 - [ ] frontend: Next.js + Vercel AI SDK チャットUI
 - [ ] ポートフォリオ: README仕上げ + 操作GIF
