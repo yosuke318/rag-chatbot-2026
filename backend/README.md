@@ -186,8 +186,10 @@ curl -X POST localhost:8000/chat -H 'content-type: application/json' -d '{
 
 ## この最小版で「やっていないこと」（＝次にやると学びが深い）
 
-- **LLMリランク** … `retrieval.py` の `llm_rerank` はまだ TODO スタブ。
-  まず RRF 版で精度を測り、リランク有り/無しを評価で比較するのが目的
+- **リランクのチューニング** … `retrieval.py` の `rerank_candidates` は実装済みで、
+  方式を2つ持つ（`voyage`=Voyage rerank-2 / `llm`=Claudeに番号を並べ替えさせる
+  プロンプト式）。既定は off なので、`python -m app.eval --rerank` で
+  「なし / llm / voyage」の3条件を比較して効果を測るところから
 - ハイブリッド検索の字面側は pg_trgm（トライグラム）で、厳密なBM25ではない。
   日本語BM25が欲しくなったら PGroonga 等の日本語対応エンジンに差し替える
 - PDF/docx/xlsx 取り込み・図表のマルチモーダル文章化（今はプレーンテキストのみ）
