@@ -18,6 +18,7 @@ from app import storage
 from app.llm import MissingAPIKey, generate_answer
 from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
 from app.retrieval import (
+    UnknownReranker,
     UnknownRetriever,
     hybrid_search,
     FUSION_PARAM_SPECS,
@@ -102,6 +103,17 @@ async def unknown_retriever(request: Request, exc: Exception):
         400,
         "unknown_retriever",
         "指定された検索手法が不正です。",
+        str(exc),
+        "",
+    )
+
+
+@app.exception_handler(UnknownReranker)
+async def unknown_reranker(request: Request, exc: Exception):
+    return _error(
+        400,
+        "unknown_reranker",
+        "指定されたリランク方式が不正です。",
         str(exc),
         "",
     )
@@ -562,6 +574,7 @@ def run_eval(
     top_k: int = 4,
     retrievers: Optional[str] = None,
     rerank: Optional[bool] = None,
+    rerank_method: Optional[str] = None,
     project: Optional[str] = None,
     topic: Optional[str] = None,
     rrf_k: Optional[int] = None,
@@ -578,7 +591,9 @@ def run_eval(
     同じ意味で、指定するとその値で評価する（例: k1を上げてHit@kが上がるか測る）。
     未指定なら設定の既定値。
 
-    Claudeは rerank=True のときだけ呼ぶ（検索評価そのものは Voyage のみ）。
+    リランクは rerank=True のときだけ走る。方式は rerank_method で切り替える
+    （voyage=専用リランクAPI / llm=プロンプト式。未指定は設定の既定）。
+    Claudeを呼ぶのは rerank=True かつ方式が llm のときだけ。
     質問が0件なら n=0 の空レポートを返す（UI側で「まず質問を登録」と促す）。
     contexts など内部フィールドは response_model(EvalReport)で自動的に落ちる。
     """
@@ -605,4 +620,5 @@ def run_eval(
         gold=gold,
         params=params or None,  # 空dictは「指定なし＝既定」として None に倒す
         rrf_k=rrf_k,
+        rerank_method=_blank_to_none(rerank_method),
     )

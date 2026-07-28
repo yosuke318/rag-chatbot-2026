@@ -22,7 +22,7 @@ def spies(monkeypatch):
     embed_calls: list[list[str]] = []
     search_calls: list[dict] = []
 
-    def fake_embed(texts, input_type="document"):
+    def fake_embed(texts, input_type="document", retry_waits=None):
         embed_calls.append(list(texts))
         return [[float(i)] for i in range(len(texts))]
 

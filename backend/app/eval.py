@@ -33,6 +33,8 @@
   python -m app.eval --project 社内規程 --topic 労務    # プロジェクト・トピックで絞って評価
   python -m app.eval --retrievers vector,bm25     # 手法を変えて比較
   python -m app.eval --top-k 4 --rerank           # 上位件数やリランクの有無を変える
+  python -m app.eval --rerank --rerank-method llm # リランクの方式を変えて比較
+      （3条件の比較: 素の検索 / --rerank --rerank-method llm / --rerank --rerank-method voyage）
   python -m app.eval --gen                        # 回答生成まで走らせて目視（要Anthropic）
 """
 from __future__ import annotations
@@ -44,7 +46,10 @@ from pathlib import Path
 from app.config import TOP_K
 from app.db import get_conn
 from app.llm import embed_texts, generate_answer
-from app.retrieval import hybrid_search, resolve_retrievers
+from app.retrieval import RERANKERS, hybrid_search, resolve_retrievers
+# 429の待ち時間はseedと同じ設定(SEED_RETRY_WAITS)を使う。バッチ処理の待ち方は
+# 「取り込み」も「評価」も同じでよく、環境変数を2つに増やす理由がないため。
+from app.seed import RETRY_WAITS
 
 
 # --- 初期投入用の質問セット（fixture） ----------------------------------------
@@ -150,6 +155,8 @@ def evaluate(
     params: dict[str, dict] | None = None,
     rrf_k: int | None = None,
     query_vecs: list[list[float]] | None = None,
+    rerank_method: str | None = None,
+    retry_waits: list[int] | None = None,
 ) -> dict:
     """質問を1問ずつ検索にかけ、Hit@k と MRR を集計して返す。
 
@@ -161,6 +168,15 @@ def evaluate(
     params / rrf_k を渡すと、検索の数値パラメータ（字面の閾値・BM25のk1/b・RRFのk）を
     変えて評価できる。「k1を上げるとHit@kは上がるか」を数値で測るための引数。
     未指定なら設定の既定値で評価する。
+
+    rerank_method: リランクの方式（"voyage" / "llm"）。rerank=True のときだけ効く。
+      「リランクなし / プロンプト式 / rerank-2」の3条件を同じ質問集で比較するための引数。
+
+    retry_waits: Voyage が 429 を返したときに待つ秒数の並び（質問のベクトル化と
+      リランクの両方に効く）。★埋め込みと違いリランクは質問ごとに1リクエスト★
+      （まとめられない）ため、無料枠(3 RPM)ではリランク有りの評価が4問目で必ず
+      当たる。CLI(python -m app.eval)は待ってでも完走させたいので渡す。
+      Web経路(/eval)は None のまま即429を返す（利用者を何十秒も待たせない）。
 
     query_vecs: 質問のベクトルを外から渡す（gold と同じ並び・同じ長さ）。
       取り込み方を変えて2回評価する A/B 測定（app.compare）で、両方の評価に
@@ -183,7 +199,13 @@ def evaluate(
             raise ValueError("query_vecs は gold と同じ長さで渡してください")
         vecs: list[list[float] | None] = list(query_vecs)
     elif gold and "vector" in resolve_retrievers(retrievers):
-        vecs = list(embed_texts([g["question"] for g in gold], input_type="query"))
+        vecs = list(
+            embed_texts(
+                [g["question"] for g in gold],
+                input_type="query",
+                retry_waits=retry_waits,
+            )
+        )
     else:
         vecs = [None] * len(gold)
 
@@ -196,6 +218,8 @@ def evaluate(
             params=params,
             rrf_k=rrf_k,
             query_vec=query_vec,
+            rerank_method=rerank_method,
+            rerank_retry_waits=retry_waits,
         )
         rank = _rank_of(hits, item["expected_source"])
         hit = rank is not None and rank < top_k
@@ -222,6 +246,7 @@ def evaluate(
         # この評価で実際に使った検索条件（Noneは「設定の既定を使用」の意味）
         "retrievers": retrievers,
         "rerank": rerank,
+        "rerank_method": rerank_method,
         "rrf_k": rrf_k,
         "params": params,
         "hit_at_k": round(hit_count / n, 3) if n else 0.0,
@@ -236,6 +261,8 @@ def _print_report(report: dict, generate: bool = False) -> None:
     # 評価に使った検索条件（Noneは設定の既定）
     retrievers = ",".join(report["retrievers"]) if report["retrievers"] else "既定"
     rerank = {True: "有効", False: "無効", None: "既定"}[report["rerank"]]
+    if report["rerank"]:  # 有効なときだけ方式を添える（None/無効では意味が無い）
+        rerank += f"({report.get('rerank_method') or '既定'})"
     print(f"\n{'='*60}")
     print(f"検索評価  N={report['n']}  top_k={k}  手法={retrievers}  リランク={rerank}")
     print(f"  Hit@{k} = {report['hit_at_k']:.3f}   （上位{k}件に正解が入った割合）")
@@ -271,7 +298,15 @@ def main() -> None:
     parser.add_argument(
         "--rerank",
         action="store_true",
-        help="LLMリランクを有効にして評価する（要 ANTHROPIC_API_KEY）",
+        help="リランクを有効にして評価する",
+    )
+    parser.add_argument(
+        "--rerank-method",
+        type=str,
+        default=None,
+        choices=sorted(RERANKERS),
+        help="リランクの方式（voyage=専用API / llm=プロンプト式・要 ANTHROPIC_API_KEY）。"
+        "未指定は設定の既定",
     )
     parser.add_argument(
         "--gen",
@@ -325,6 +360,9 @@ def main() -> None:
         retrievers=names,
         rerank=True if args.rerank else None,
         gold=gold,
+        rerank_method=args.rerank_method,
+        # CLIはバッチなので、429は待って再試行する（Web経路の /eval は待たない）
+        retry_waits=RETRY_WAITS,
     )
     _print_report(report, generate=args.gen)
 

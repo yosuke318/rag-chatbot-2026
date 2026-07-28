@@ -493,8 +493,8 @@ export default function Home() {
             （消費するのは質問文ぶんの数十トークン）
           </li>
           <li>
-            <code>ANTHROPIC_API_KEY</code>（生成）… <b>回答生成とLLMリランクのみ</b>。
-            検索の内訳を見るだけなら不要
+            <code>ANTHROPIC_API_KEY</code>（生成）… <b>回答生成のみ</b>。
+            検索の内訳を見るだけなら不要（リランクも既定はVoyageの専用APIなので不要）
           </li>
         </ul>
       </div>
@@ -985,7 +985,7 @@ export default function Home() {
                 checked={evalRerank}
                 onChange={(e) => setEvalRerank(e.target.checked)}
               />
-              LLMリランク（要Anthropic）
+              リランク（既定: Voyage rerank-2）
             </label>
           </span>
           {evalSelected.length === 0 && (

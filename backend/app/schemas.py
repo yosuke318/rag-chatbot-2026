@@ -212,6 +212,10 @@ class EvalReport(BaseModel):
     top_k: int
     retrievers: Optional[List[str]] = Field(description="使った手法（null=設定の既定）")
     rerank: Optional[bool] = Field(description="リランクの有無（null=設定の既定）")
+    rerank_method: Optional[str] = Field(
+        default=None,
+        description="リランクの方式 voyage/llm（null=設定の既定）。rerankが無効なら無意味",
+    )
     rrf_k: Optional[int] = Field(default=None, description="使ったRRF k（null=既定）")
     params: Optional[Dict[str, Dict[str, float]]] = Field(
         default=None, description="使った数値パラメータ（手法ごと。null/空=既定）"

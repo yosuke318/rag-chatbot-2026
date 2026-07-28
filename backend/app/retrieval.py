@@ -19,7 +19,6 @@ from app.config import (
     LEXICAL_MIN_SIMILARITY,
     RERANK_CANDIDATES,
     RERANK_METHOD,
-    RERANK_MODEL,
     RETRIEVERS_DEFAULT,
     TOP_K,
     USE_RERANK,
@@ -264,18 +263,25 @@ def reciprocal_rank_fusion(ranked_lists: list[list[dict]], k: int = RRF_K) -> li
 
 
 # --- リランクの方式レジストリ -------------------------------------------------
-# どちらも (question, passages) -> 関連順の番号リスト という同じ形。
+# どちらも (question, passages, retry_waits) -> 関連順の番号リスト という同じ形。
 # 方式を足すときはここに1行増やす（呼び出し側は変更不要）。
+
+
+def _prompt_rerank(
+    question: str, passages: list[str], retry_waits: list[int] | None = None
+) -> list[int]:
+    """プロンプト式リランク。レジストリの引数を揃えるための薄い包み。
+
+    retry_waits は使わない: Anthropic SDK は 429 を内部で数回リトライしてから
+    例外にするため、ここで待ち時間を重ねる必要がない（Voyage SDK はしない）。
+    """
+    return rank_by_relevance(question, passages)
+
+
 RERANKERS = {
     "voyage": voyage_rerank,      # Voyage 専用リランクAPI(rerank-2)。既定
-    "llm": rank_by_relevance,     # Claudeに番号を並べ替えさせるプロンプト式。比較用
+    "llm": _prompt_rerank,        # Claudeに番号を並べ替えさせるプロンプト式。比較用
 }
-
-RERANKER_META = {
-    "voyage": {"label": f"Voyage 専用リランク（{RERANK_MODEL}）"},
-    "llm": {"label": "プロンプト式リランク（Claude）"},
-}
-
 
 class UnknownReranker(ValueError):
     """未知のリランク方式が指定された（RERANK_METHOD のtypo等）。"""
@@ -300,12 +306,16 @@ def rerank_candidates(
     candidates: list[dict],
     top_n: int = TOP_K,
     method: str | None = None,
+    retry_waits: list[int] | None = None,
 ) -> list[dict]:
     """候補をリランクにかけて関連度で並べ替え、上位top_nを返す。
 
     RRFは「複数の検索が上位に挙げたか」で決まるが、実際に質問に答えているかは
     見ていない。そこを読み直して最終順位を付け直すのがリランク。
     方式（voyage / llm）は method で切り替える。未指定なら設定の既定。
+
+    retry_waits: レート制限(429)で待つ秒数の並び（app.llm._voyage_call）。
+      Web経路は None のまま即429を返し、待っても困らないバッチ（評価）だけが渡す。
 
     番号を漏らした候補は末尾に補う（安全網：件数が減らないように）。
     voyage は全候補にスコアを付けるので漏れないが、プロンプト式(llm)は
@@ -314,7 +324,7 @@ def rerank_candidates(
     if not candidates:
         return []
     reranker = RERANKERS[resolve_rerank_method(method)]
-    order = reranker(question, [c["content"] for c in candidates])
+    order = reranker(question, [c["content"] for c in candidates], retry_waits)
     seen = set(order)
     order += [i for i in range(len(candidates)) if i not in seen]
     return [candidates[i] for i in order[:top_n]]
@@ -446,15 +456,21 @@ def hybrid_search(
     params: dict[str, dict] | None = None,
     rrf_k: int | None = None,
     query_vec: list[float] | None = None,
+    rerank_method: str | None = None,
+    rerank_retry_waits: list[int] | None = None,
 ) -> list[dict]:
-    """指定した検索手法を RRF で融合。rerank=True ならLLMで再並べ替え。
+    """指定した検索手法を RRF で融合。rerank=True ならリランクで再並べ替え。
 
     retrievers 未指定なら設定の既定を使う。手法を増やしても
     reciprocal_rank_fusion は可変長リストを受けるので変更不要。
-    rerank を省略すると設定(USE_RERANK)に従う。
+    rerank を省略すると設定(USE_RERANK)に、rerank_method を省略すると
+    設定(RERANK_METHOD)に従う。
     """
     if rerank is None:
         rerank = USE_RERANK
+    if rerank:
+        # 名前の妥当性はAPIを呼ぶ前に検証しておく（typoで検索まで走らせない）
+        resolve_rerank_method(rerank_method)
 
     names = resolve_retrievers(retrievers)
     p = params or {}
@@ -468,7 +484,13 @@ def hybrid_search(
 
     if rerank:
         # 融合上位を少し多めにリランク対象へ渡し、そこから top_n を選ばせる
-        return llm_rerank(question, fused[:RERANK_CANDIDATES], top_n)
+        return rerank_candidates(
+            question,
+            fused[:RERANK_CANDIDATES],
+            top_n,
+            method=rerank_method,
+            retry_waits=rerank_retry_waits,
+        )
     return fused[:top_n]
 
 
