@@ -168,9 +168,33 @@ class SearchResponse(BaseModel):
     fused: List[FusedHit]
 
 
+class Citation(BaseModel):
+    """回答の根拠に使ったチャンク1件。
+
+    出典名（文書）だけでは「その文書のどこか」までしか分からず、利用者が回答を
+    自分で検証できない。チャンクのid・該当箇所・原本URLまで返して、
+    回答中の [n] から根拠そのものへ辿れるようにする。
+    """
+
+    n: int = Field(description="回答本文の引用マーカー [n] に対応する番号（1始まり）")
+    chunk_id: int = Field(description="根拠チャンクのid（chunks.id）")
+    source: str = Field(description="出典の文書名")
+    preview: str = Field(description="該当箇所のプレビュー（本文の冒頭を抜粋）")
+    file_url: Optional[str] = Field(
+        default=None,
+        description="原本を開くURL（実S3なら署名URL / ローカルは中継URL）。null=原本なし",
+    )
+
+
 class ChatResponse(BaseModel):
-    answer: str
+    answer: str = Field(
+        description="回答本文。各文の末尾に根拠を指す引用マーカー [n] が付く"
+    )
     sources: List[str] = Field(description="根拠に使ったチャンクの出典（重複排除済み）")
+    citations: List[Citation] = Field(
+        default_factory=list,
+        description="回答の根拠に使ったチャンク（[n] の n はこの並びの1始まりの位置）",
+    )
 
 
 class FeedbackResponse(BaseModel):

@@ -8,6 +8,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import type { components } from "./api-types";
 
 type ChatResponse = components["schemas"]["ChatResponse"];
+type Citation = components["schemas"]["Citation"];
 type SearchStages = components["schemas"]["SearchResponse"];
 type ApiError = components["schemas"]["ErrorResponse"];
 type RetrieverInfo = components["schemas"]["RetrieverInfo"];
@@ -68,10 +69,12 @@ const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
 // question: 👍/👎 を送るとき評価対象を復元するため、bot回答に元の質問を持たせる。
 //           これが入っている bot メッセージだけがフィードバック対象（エラーは対象外）。
 // rating:   送信済みの評価。二重送信を防ぎ、選んだ側をハイライトする。
+// citations: チャンク単位の根拠。回答本文の [n] と citations[n-1] が対応する。
 type Message = {
   role: "user" | "bot";
   text: string;
   sources?: string[];
+  citations?: Citation[];
   question?: string;
   rating?: 1 | -1;
 };
@@ -98,6 +101,47 @@ function SourceLink({ source }: { source: string }) {
     >
       {source}
     </a>
+  );
+}
+
+// 根拠(citation)の原本URL。バックエンドは環境で2種類のURLを返す:
+//   "/files/..."（ローカルMinIO。backend中継）→ Next経由のプロキシに載せ替える
+//   "https://..."（実S3の署名URL）→ そのまま開く
+function citationHref(url: string): string {
+  return url.startsWith("/") ? `/api/backend${url}` : url;
+}
+
+// 回答本文の [1] [2] を、対応する根拠へジャンプするボタンに変える。
+// 該当する番号の根拠が無いマーカー（Claudeが番号を書き間違えた場合）は
+// ただの文字として残す＝存在しない根拠へのリンクを作らない。
+function AnswerText({
+  text,
+  citations,
+  onCite,
+}: {
+  text: string;
+  citations: Citation[];
+  onCite: (n: number) => void;
+}) {
+  const parts = text.split(/(\[\d+\])/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        const m = /^\[(\d+)\]$/.exec(part);
+        const cite = m && citations.find((c) => c.n === Number(m[1]));
+        if (!cite) return <Fragment key={i}>{part}</Fragment>;
+        return (
+          <button
+            key={i}
+            className="cite-mark"
+            onClick={() => onCite(cite.n)}
+            title={`根拠 [${cite.n}] ${cite.source}`}
+          >
+            {cite.n}
+          </button>
+        );
+      })}
+    </>
   );
 }
 
@@ -178,6 +222,9 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+  // 回答本文の [n] を押したときに光らせる根拠。"メッセージ番号:引用番号" で持つ
+  // （同じ引用番号が別の回答にもあるため、メッセージまで込みで一意にする）。
+  const [activeCite, setActiveCite] = useState<string | null>(null);
 
   // --- 評価パネル（/eval = 質問集で Hit@k / MRR を測る）---
   const [evalSelected, setEvalSelected] = useState<string[]>([]);
@@ -438,7 +485,13 @@ export default function Home() {
       // question を持たせておくと、この回答に 👍/👎 を付けられる（送信時に復元する）
       setMessages((m) => [
         ...m,
-        { role: "bot", text: data.answer, sources: data.sources, question: q },
+        {
+          role: "bot",
+          text: data.answer,
+          sources: data.sources,
+          citations: data.citations,
+          question: q,
+        },
       ]);
     } catch (e) {
       setMessages((m) => [...m, { role: "bot", text: `エラー: ${String(e)}` }]);
@@ -843,8 +896,49 @@ export default function Home() {
         <div className="messages">
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              {m.text}
-              {m.sources && m.sources.length > 0 && (
+              {m.citations && m.citations.length > 0 ? (
+                <AnswerText
+                  text={m.text}
+                  citations={m.citations}
+                  onCite={(n) => setActiveCite(`${i}:${n}`)}
+                />
+              ) : (
+                m.text
+              )}
+              {/* チャンク単位の根拠。回答中の [n] と番号で対応する */}
+              {m.citations && m.citations.length > 0 && (
+                <div className="citations">
+                  <div className="citations-head">根拠にしたチャンク</div>
+                  {m.citations.map((c) => (
+                    <div
+                      key={c.n}
+                      className={`citation${
+                        activeCite === `${i}:${c.n}` ? " citation-on" : ""
+                      }`}
+                    >
+                      <div className="citation-head">
+                        <span className="cite-n">[{c.n}]</span>
+                        {c.file_url ? (
+                          <a
+                            className="source-link"
+                            href={citationHref(c.file_url)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {c.source}
+                          </a>
+                        ) : (
+                          <SourceLink source={c.source} />
+                        )}
+                        <span className="cite-id">chunk #{c.chunk_id}</span>
+                      </div>
+                      <div className="cite-preview">{c.preview}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* 引用が付かない回答（エラー等）は従来どおり出典名だけ出す */}
+              {!m.citations?.length && m.sources && m.sources.length > 0 && (
                 <div className="sources">
                   根拠:{" "}
                   {m.sources.map((s, si) => (

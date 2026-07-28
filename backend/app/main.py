@@ -22,6 +22,7 @@ from app.retrieval import (
     UnknownRetriever,
     hybrid_search,
     FUSION_PARAM_SPECS,
+    preview,
     retriever_infos,
     search_stages,
 )
@@ -439,8 +440,42 @@ def backfill_files():
     return {"backfilled": saved, "documents": len(texts)}
 
 
+CITATION_PREVIEW_CHARS = 200  # 引用に載せる該当箇所の長さ（検索の内訳より少し長め）
+
+
+def _citations(hits: list[dict]) -> list[dict]:
+    """検索でヒットしたチャンクを、回答の引用 [n] に対応させた形に整える。
+
+    ★番号は hits の並びそのもの★（1始まり）。同じ並びを generate_answer にも
+    渡しているので、回答本文の [n] とここの n が必ず一致する。
+    原本URLは出典ごとに1回だけ引く（S3のhead_objectを同じ文書で何度も叩かない）。
+    """
+    urls: dict[str, str | None] = {}
+    citations = []
+    for n, hit in enumerate(hits, start=1):
+        source = hit["source"]
+        if source not in urls:
+            urls[source] = storage.file_url(source)
+        citations.append(
+            {
+                "n": n,
+                "chunk_id": hit["id"],
+                "source": source,
+                "preview": preview(hit["content"], CITATION_PREVIEW_CHARS),
+                "file_url": urls[source],
+            }
+        )
+    return citations
+
+
 @app.post("/chat", response_model=ChatResponse, responses=_ERRORS)
 def chat(req: ChatRequest):
+    """検索した上位チャンクを根拠に回答する。
+
+    回答本文には [1] [2] の引用マーカーが入り、citations[n-1] がその根拠チャンク
+    （id・出典・該当箇所・原本URL）になる。出典名だけを返していた頃と違い、
+    利用者が「回答のこの主張はこの条文が根拠」と自分で検証できる。
+    """
     # 質問は必須。空だと無意味な検索とLLM呼び出しになるので手前で弾く。
     if not req.question.strip():
         return _error(
@@ -454,7 +489,7 @@ def chat(req: ChatRequest):
     answer = generate_answer(req.question, [h["content"] for h in hits])
     # 根拠として使ったチャンクの出典も返す（重複排除）
     sources = list(dict.fromkeys(h["source"] for h in hits))
-    return {"answer": answer, "sources": sources}
+    return {"answer": answer, "sources": sources, "citations": _citations(hits)}
 
 
 @app.post(

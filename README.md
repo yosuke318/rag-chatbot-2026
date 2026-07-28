@@ -60,7 +60,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 |---|---|---|
 | `POST /ingest` | 文書登録（テキスト→チャンク→埋め込み→保存、原本はS3へ） | Voyage |
 | `GET /search` | 検索の内訳（ベクトル/字面/BM25/RRF） | Voyage |
-| `POST /chat` | 回答生成（根拠付き） | Voyage + Anthropic |
+| `POST /chat` | 回答生成（チャンク単位の根拠＋原本URL付き） | Voyage + Anthropic |
 | `GET /eval` | 質問集で Hit@k / MRR を測定 | Voyage（リランク時 Anthropic） |
 | `GET,POST /eval-questions` | 評価用質問の一覧・登録（プロジェクト・トピックで分離可） | 不要 |
 | `POST /feedback` | 回答への 👍/👎 記録 | 不要 |
@@ -231,7 +231,7 @@ cd frontend
 - [ ] backend/db: pgvector スキーマ（documents / chunks / conversations）
 - [ ] backend/ingest: S3取り込み → PDF構造化 → チャンク分割(contextual) → 埋め込み → UPSERT
 - [ ] backend/retrieval: ハイブリッド検索（ベクトル + BM25 + RRF）→ LLMリランク
-- [ ] backend/chat: ストリーミング回答 + 根拠S3署名URL添付
+- [ ] backend/chat: ストリーミング回答（根拠のチャンク明示＋原本URL添付は実装済み）
 - [x] backend/eval: Hit@k / MRR による検索評価（`python -m app.eval`）※ Ragas等での回答忠実性評価は次段
 - [ ] frontend: Next.js + Vercel AI SDK チャットUI
 - [ ] ポートフォリオ: README仕上げ + 操作GIF

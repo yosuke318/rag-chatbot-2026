@@ -494,7 +494,7 @@ def hybrid_search(
     return fused[:top_n]
 
 
-def _preview(text: str, n: int = 80) -> str:
+def preview(text: str, n: int = 80) -> str:
     text = " ".join(text.split())
     return text[:n] + ("…" if len(text) > n else "")
 
@@ -549,7 +549,7 @@ def search_stages(
                     "id": h["id"],
                     "source": h["source"],
                     "metric_value": round(float(h[METRIC_KEY[name]]), 4),
-                    "preview": _preview(h["content"]),
+                    "preview": preview(h["content"]),
                 }
                 for i, h in enumerate(lst[:show])
             ],
@@ -580,7 +580,7 @@ def search_stages(
                 "source": item["source"],
                 "score": round(score, 5),
                 "contributions": contributions,
-                "preview": _preview(item["content"]),
+                "preview": preview(item["content"]),
             }
         )
 

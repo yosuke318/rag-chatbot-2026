@@ -181,8 +181,18 @@ curl -X POST localhost:8000/ingest -H 'content-type: application/json' -d '{
 curl -X POST localhost:8000/chat -H 'content-type: application/json' -d '{
   "question": "有給は入社何か月で何日もらえる?"
 }'
-# => {"answer":"入社6か月後に10日付与されます。","sources":["有給休暇.txt"]}
+# => {"answer":"入社6か月後に10日付与されます。[1]",
+#     "sources":["有給休暇.txt"],
+#     "citations":[{"n":1,"chunk_id":134,"source":"有給休暇.txt",
+#                   "preview":"年次有給休暇は、入社から6か月継続勤務し…",
+#                   "file_url":"/files/%E6%9C%89%E7%B5%A6%E4%BC%91%E6%9A%87.txt"}]}
 ```
+
+回答本文の `[n]` は `citations[n-1]` に対応する（チャンク単位の根拠）。
+`file_url` は原本を開くURLで、環境によって形が変わる:
+実S3なら**署名URL**、ローカルのMinIOなら backend 中継の `/files/...`
+（MinIO の署名URLはホストが `minio:9000` になりブラウザから開けないため）。
+原本が未保存の文書では `null`。
 
 ## この最小版で「やっていないこと」（＝次にやると学びが深い）
 

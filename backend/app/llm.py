@@ -260,20 +260,45 @@ def rank_by_relevance(question: str, passages: list[str]) -> list[int]:
 # ============================================================
 # 回答生成 (Claude)
 #   検索で拾ったチャンクを根拠に、実際の回答文を作る工程。ここはClaudeが必須。
+#
+#   ★チャンク単位の根拠明示★
+#     コンテキストに [1] [2] … と番号を振って渡し、回答の各文の末尾に
+#     その文の根拠になった番号を書かせる。返ってきた本文の [n] は、
+#     呼び出し側が渡した contexts の n 番目（1始まり）に対応する
+#     ＝ 回答のどの主張がどのチャンク由来かを利用者が自分で検証できる。
+#     出典名だけでは「文書のどこか」までしか分からず、検証の役に立たないため。
 # ============================================================
 
 SYSTEM_PROMPT = (
     "あなたは文書検索アシスタントです。以下のコンテキストだけを根拠に、"
     "日本語で簡潔に回答してください。コンテキストに答えが無い場合は"
     "「資料からは分かりません」と答えてください。"
+    "\n\n各コンテキストには [1] [2] のような番号が付いています。"
+    "回答の各文には、その文の根拠になったコンテキストの番号を文末に [1] の形式で"
+    "必ず付けてください（複数の根拠があれば [1][3] のように並べる）。"
+    "番号は与えられたものだけを使い、存在しない番号を書かないでください。"
+    "根拠が無い文（「資料からは分かりません」など）には番号を付けないでください。"
 )
 
 
+def number_contexts(contexts: list[str]) -> str:
+    """コンテキストを [1] [2] … の番号付きブロックにまとめる（1始まり）。
+
+    番号は回答本文の引用マーカー [n] と対応する。回答から根拠チャンクを
+    引き当てる唯一の手がかりなので、並び順は呼び出し側の contexts と必ず一致させる。
+    """
+    if not contexts:
+        return "(該当なし)"
+    return "\n\n---\n\n".join(f"[{i}] {c}" for i, c in enumerate(contexts, start=1))
+
+
 def generate_answer(question: str, contexts: list[str]) -> str:
-    """検索した関連チャンクをコンテキストに与えて回答を生成する。"""
+    """検索した関連チャンクをコンテキストに与えて回答を生成する。
+
+    戻り値の本文には [n] の引用マーカーが含まれる（n は contexts の1始まりの位置）。
+    """
     _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
-    context_block = "\n\n---\n\n".join(contexts) if contexts else "(該当なし)"
-    user_content = f"# コンテキスト\n{context_block}\n\n# 質問\n{question}"
+    user_content = f"# コンテキスト\n{number_contexts(contexts)}\n\n# 質問\n{question}"
 
     response = _anthropic.messages.create(
         model=CHAT_MODEL,

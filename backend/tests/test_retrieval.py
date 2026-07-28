@@ -15,7 +15,7 @@ resolve_retrievers = retrieval.resolve_retrievers
 UnknownRetriever = retrieval.UnknownRetriever
 default_params = retrieval.default_params
 retriever_infos = retrieval.retriever_infos
-_preview = retrieval._preview
+preview = retrieval.preview
 
 
 # --- RRF 融合 ---------------------------------------------------------------
@@ -100,13 +100,13 @@ def test_retriever_infos_lists_all_methods():
 
 
 def test_preview_collapses_whitespace():
-    assert _preview("a  b\n c\t d") == "a b c d"
+    assert preview("a  b\n c\t d") == "a b c d"
 
 
 def test_preview_truncates_with_ellipsis():
-    out = _preview("x" * 100, n=10)
+    out = preview("x" * 100, n=10)
     assert out == "x" * 10 + "…"
 
 
 def test_preview_short_text_untouched():
-    assert _preview("短い本文") == "短い本文"
+    assert preview("短い本文") == "短い本文"
