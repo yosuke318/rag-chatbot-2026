@@ -254,6 +254,17 @@ class Citation(BaseModel):
         default=None,
         description="原本を開くURL（実S3なら署名URL / ローカルは中継URL）。null=原本なし",
     )
+    # 以下2つは画像チャンクのときだけ値が入る（テキストチャンクは null）。
+    # 回答生成に渡したのと同じ1枚を利用者にも見せ、図表を根拠にした回答を
+    # 自分の目で検証できるようにするためのもの（5-3）。
+    image_url: Optional[str] = Field(
+        default=None,
+        description="根拠が文書内の図表のとき、その画像を開くURL。null=画像ではない",
+    )
+    image_label: Optional[str] = Field(
+        default=None,
+        description="その画像の由来（「3ページ目」等）。null=画像ではない",
+    )
 
 
 class ChatResponse(BaseModel):

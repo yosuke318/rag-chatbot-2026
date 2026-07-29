@@ -26,6 +26,7 @@ tests/            # 単体テスト（DB・外部APIを使わない純ロジッ�
 ├── test_images.py      # 文書内画像の抽出・S3保存・画像チャンク登録
 ├── test_image_index.py # 画像の検索対象化（キャプション / マルチモーダル埋め込み）
 ├── test_eval_kinds.py  # チャンク種別の正解判定と比較評価の有意差検定
+├── test_answer_images.py # 原本画像を根拠にした回答生成（画像content block）
 ├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
 ├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
 ├── test_compare.py     # contextual有無の比較評価（比較の公平性）

@@ -624,6 +624,16 @@ export interface components {
              * @description 原本を開くURL（実S3なら署名URL / ローカルは中継URL）。null=原本なし
              */
             file_url?: string | null;
+            /**
+             * Image Url
+             * @description 根拠が文書内の図表のとき、その画像を開くURL。null=画像ではない
+             */
+            image_url?: string | null;
+            /**
+             * Image Label
+             * @description その画像の由来（「3ページ目」等）。null=画像ではない
+             */
+            image_label?: string | null;
         };
         /**
          * Contribution

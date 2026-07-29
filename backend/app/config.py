@@ -103,6 +103,15 @@ CAPTION_CONCURRENCY = int(os.getenv("CAPTION_CONCURRENCY", "4"))
 MULTIMODAL_EMBED_MODEL = os.getenv("MULTIMODAL_EMBED_MODEL", "voyage-multimodal-3")
 MULTIMODAL_EMBED_DIM = int(os.getenv("MULTIMODAL_EMBED_DIM", "1024"))
 
+# 回答生成に添付する原本画像（5-3）。
+# 検索でヒットしたチャンクが画像なら、言語化テキストではなく★画像そのもの★を
+# Claude に渡す。言語化は「検索で見つけるための索引」に格下げし、判断は毎回
+# 原本に対して行わせる（言語化時に書かれなかったことを後から問えるようにする）。
+ANSWER_MAX_IMAGES = int(os.getenv("ANSWER_MAX_IMAGES", "4"))
+# 1枚あたりの上限。Claude の画像1枚の上限は5MBで、超えるとリクエストごと失敗する。
+# 上限を超えた画像は添付せず言語化テキストで代替する（回答自体は成立させる）。
+ANSWER_IMAGE_MAX_BYTES = int(os.getenv("ANSWER_IMAGE_MAX_MB", "4")) * 1024 * 1024
+
 # 検索・生成
 TOP_K = 4  # 回答生成に使うチャンク数
 

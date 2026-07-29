@@ -9,6 +9,7 @@ import re
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import anthropic
 import voyageai
@@ -436,7 +437,34 @@ def rank_by_relevance(question: str, passages: list[str]) -> list[int]:
 #     呼び出し側が渡した contexts の n 番目（1始まり）に対応する
 #     ＝ 回答のどの主張がどのチャンク由来かを利用者が自分で検証できる。
 #     出典名だけでは「文書のどこか」までしか分からず、検証の役に立たないため。
+#
+#   ★原本画像を根拠にする（5-3）★
+#     ヒットしたチャンクが文書内の図表なら、言語化テキストではなく
+#     ★画像そのもの★をコンテキストに載せる（ImageContext）。
+#     言語化は「検索で見つけるための索引」に格下げし、判断は毎回原本に対して
+#     行わせる ＝ 言語化した時点で書かれなかったことも後から問える。
+#     （2023年方式の「図を逐一言語化して、以後はその文章だけを見る」の弱点を外す）
 # ============================================================
+
+
+@dataclass(frozen=True)
+class ImageContext:
+    """コンテキストに載せる原本画像1枚（5-3）。
+
+    contexts に str の代わりにこれを混ぜると、その番号の根拠が画像になる。
+    label は「3ページ目」「シート「売上」の画像1」のような★由来の名前★で、
+    中身の説明ではない（説明はさせない ＝ 中身は画像から読ませる）。
+    """
+
+    data: bytes
+    media_type: str
+    label: str
+
+
+# Claude に渡せる画像フォーマット（app.parsers.SUPPORTED_IMAGE_FORMATS と対）。
+# 取り込み時にこの範囲へ揃えてあるが、S3に古い形式が残っている場合の防波堤として
+# 添付側(app.main)でも検査する。
+ANSWER_IMAGE_MEDIA_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
 SYSTEM_PROMPT = (
     "あなたは文書検索アシスタントです。以下のコンテキストだけを根拠に、"
@@ -449,16 +477,62 @@ SYSTEM_PROMPT = (
     "根拠が無い文（「資料からは分かりません」など）には番号を付けないでください。"
 )
 
+# 画像を1枚でも載せるときだけ SYSTEM_PROMPT に足す指示。
+# ★常に足さない★のは、画像が無い質問のプロンプトを従来と1文字も変えないため
+# （変えると eval の数字が画像機能と無関係に動き、過去の測定と比較できなくなる）。
+IMAGE_SYSTEM_PROMPT = (
+    "\n\nコンテキストには文書内の図・表・チャートの画像が含まれることがあります。"
+    "画像の中身は必ずあなた自身が画像を見て読み取ってください。"
+    "画像の直前に置かれた短い見出しは「文書のどこにある図か」を示すだけのもので、"
+    "中身の説明ではありません。見出しから中身を推測しないでください。"
+    "画像から読み取れないことは推測せず、その点は分からないと答えてください。"
+)
+
+
+def _system_prompt(contexts: list) -> str:
+    """コンテキストに画像があるときだけ画像用の指示を足したシステムプロンプト。"""
+    if any(isinstance(c, ImageContext) for c in contexts):
+        return SYSTEM_PROMPT + IMAGE_SYSTEM_PROMPT
+    return SYSTEM_PROMPT
+
 
 def number_contexts(contexts: list[str]) -> str:
     """コンテキストを [1] [2] … の番号付きブロックにまとめる（1始まり）。
 
     番号は回答本文の引用マーカー [n] と対応する。回答から根拠チャンクを
     引き当てる唯一の手がかりなので、並び順は呼び出し側の contexts と必ず一致させる。
+
+    ★テキストだけのとき用★。画像が混ざる場合は content block の並びが要るので
+    _context_blocks を使う（番号の振り方はどちらも同じ）。
     """
     if not contexts:
         return "(該当なし)"
     return "\n\n---\n\n".join(f"[{i}] {c}" for i, c in enumerate(contexts, start=1))
+
+
+def _context_blocks(contexts: list) -> list[dict]:
+    """コンテキストを Anthropic の content block の並びにする（画像を含む場合）。
+
+    画像は「番号と由来を書いたテキスト → 画像」の順に置く。逆にすると、どの番号の
+    根拠がその画像なのかが対応付かず、引用マーカーがずれる。
+    """
+    blocks: list[dict] = []
+    for i, c in enumerate(contexts, start=1):
+        if isinstance(c, ImageContext):
+            blocks.append({"type": "text", "text": f"[{i}] 次の画像（{c.label}）"})
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": c.media_type,
+                        "data": base64.b64encode(c.data).decode("ascii"),
+                    },
+                }
+            )
+        else:
+            blocks.append({"type": "text", "text": f"[{i}] {c}"})
+    return blocks
 
 
 CITATION_MARKER = re.compile(r"\s*\[\d+\]")
@@ -475,14 +549,17 @@ def strip_citations(text: str) -> str:
 
 
 def _answer_messages(
-    question: str, contexts: list[str], history: list[dict] | None = None
+    question: str, contexts: list, history: list[dict] | None = None
 ) -> list[dict]:
     """回答生成に渡すメッセージ列を組み立てる。
+
+    contexts の各要素は本文テキスト(str)か原本画像(ImageContext)。
 
     並びは [過去のやり取り…, 今回の質問(コンテキスト付き)]。
     ★コンテキストは毎回「今回の質問」にだけ付ける★
       過去の質問に当時のコンテキストまで足すと、古い根拠が新しい回答に混ざる。
-      根拠は常に今回の検索結果だけに限る。
+      根拠は常に今回の検索結果だけに限る。画像も同じで、履歴には残さない
+      （過去のやり取りに画像を積むと、会話が続くほど入力が膨らみ続ける）。
     """
     messages = [
         {
@@ -493,20 +570,28 @@ def _answer_messages(
         }
         for m in (history or [])
     ]
-    messages.append(
-        {
-            "role": "user",
-            "content": f"# コンテキスト\n{number_contexts(contexts)}\n\n# 質問\n{question}",
-        }
-    )
+    if any(isinstance(c, ImageContext) for c in contexts):
+        content = [
+            {"type": "text", "text": "# コンテキスト"},
+            *_context_blocks(contexts),
+            {"type": "text", "text": f"# 質問\n{question}"},
+        ]
+    else:
+        # ★画像が無いときは従来と同じ1本のテキスト★
+        # プロンプトを1文字も変えないことで、画像機能を入れる前後で eval の
+        # 数字が地続きに比較できる（形だけ変えて数字が動くのを避ける）。
+        content = f"# コンテキスト\n{number_contexts(contexts)}\n\n# 質問\n{question}"
+    messages.append({"role": "user", "content": content})
     return messages
 
 
 def generate_answer(
-    question: str, contexts: list[str], history: list[dict] | None = None
+    question: str, contexts: list, history: list[dict] | None = None
 ) -> str:
     """検索した関連チャンクをコンテキストに与えて回答を生成する。
 
+    contexts の要素は本文テキスト(str)か原本画像(ImageContext)。画像を混ぜると
+    その番号の根拠が「画像そのもの」になる（5-3）。
     戻り値の本文には [n] の引用マーカーが含まれる（n は contexts の1始まりの位置）。
     history に直近のやり取りを渡すと、続きの質問（「その上限は？」等）に答えられる。
     """
@@ -514,26 +599,26 @@ def generate_answer(
     response = _anthropic.messages.create(
         model=CHAT_MODEL,
         max_tokens=1024,
-        system=SYSTEM_PROMPT,
+        system=_system_prompt(contexts),
         messages=_answer_messages(question, contexts, history),
     )
     return "".join(block.text for block in response.content if block.type == "text")
 
 
 def stream_answer(
-    question: str, contexts: list[str], history: list[dict] | None = None
+    question: str, contexts: list, history: list[dict] | None = None
 ) -> Iterator[str]:
     """generate_answer のストリーミング版。生成された文字を順に yield する。
 
     回答が出るまで数秒待たされると「固まった」ように見えるため、書けたところから
     表示する。渡すもの（system / メッセージ列）は非ストリーミング版と同一で、
-    受け取り方だけが違う ＝ 同じ質問なら同じ品質の回答になる。
+    受け取り方だけが違う ＝ 同じ質問なら同じ品質の回答になる（画像の扱いも同じ）。
     """
     _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
     with _anthropic.messages.stream(
         model=CHAT_MODEL,
         max_tokens=1024,
-        system=SYSTEM_PROMPT,
+        system=_system_prompt(contexts),
         messages=_answer_messages(question, contexts, history),
     ) as stream:
         yield from stream.text_stream

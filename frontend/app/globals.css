@@ -317,6 +317,26 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+/* 根拠が文書内の図表だったときの表示。
+   言語化テキストではなく★回答生成に渡したのと同じ画像★を出す（5-3）。
+   クリックで原寸を開けるので、図の細部まで自分で確かめられる。 */
+.cite-image {
+  display: block;
+  margin-top: 6px;
+  max-width: 100%;
+  max-height: 320px;
+  /* 読み込み前でも高さを確保する。0に潰れると根拠欄がガタつき、
+     図が出るたびに下の引用が飛ぶ */
+  min-height: 80px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff; /* 透過PNGでも図が読めるように下地を白で固定 */
+}
+
+.cite-image-label {
+  color: var(--muted);
+}
+
 /* 回答本文に埋め込む引用マーカー [n] */
 .cite-mark {
   font-size: 11px;

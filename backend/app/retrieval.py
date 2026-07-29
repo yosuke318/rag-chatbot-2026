@@ -98,7 +98,7 @@ def vector_search(
     with get_conn() as conn:
         rows = conn.execute(
             f"""
-            SELECT c.id, c.content, d.source, c.image_path,
+            SELECT c.id, c.content, d.source, c.image_path, c.context,
                    c.embedding <=> %s::vector AS cosine_distance
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
@@ -114,8 +114,9 @@ def vector_search(
             "content": r[1],
             "source": r[2],
             "image_path": r[3],
-            "cosine_distance": float(r[4]),
-            "cosine_similarity": 1.0 - float(r[4]),
+            "context": r[4],
+            "cosine_distance": float(r[5]),
+            "cosine_similarity": 1.0 - float(r[5]),
         }
         for r in rows
     ]
@@ -151,7 +152,7 @@ def image_search(
     with get_conn() as conn:
         rows = conn.execute(
             f"""
-            SELECT c.id, c.content, d.source, c.image_path,
+            SELECT c.id, c.content, d.source, c.image_path, c.context,
                    c.image_embedding <=> %s::vector AS cosine_distance
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
@@ -167,8 +168,9 @@ def image_search(
             "content": r[1],
             "source": r[2],
             "image_path": r[3],
-            "cosine_distance": float(r[4]),
-            "cosine_similarity": 1.0 - float(r[4]),
+            "context": r[4],
+            "cosine_distance": float(r[5]),
+            "cosine_similarity": 1.0 - float(r[5]),
         }
         for r in rows
     ]
@@ -208,7 +210,7 @@ def lexical_search(
     with get_conn() as conn:
         rows = conn.execute(
             f"""
-            SELECT c.id, c.content, d.source, c.image_path,
+            SELECT c.id, c.content, d.source, c.image_path, c.context,
                    similarity(COALESCE(c.content_nouns, ''), %s) AS trgm_similarity
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
@@ -224,7 +226,8 @@ def lexical_search(
             "content": r[1],
             "source": r[2],
             "image_path": r[3],
-            "trgm_similarity": float(r[4]),  # 0〜1（1に近いほど字面が一致）
+            "context": r[4],
+            "trgm_similarity": float(r[5]),  # 0〜1（1に近いほど字面が一致）
         }
         for r in rows
     ]
@@ -331,7 +334,7 @@ def bm25_search(
                 CROSS JOIN stats s
                 GROUP BY tf.chunk_id
             )
-            SELECT c.id, c.content, d.source, c.image_path, sc.bm25
+            SELECT c.id, c.content, d.source, c.image_path, c.context, sc.bm25
             FROM scored sc
             JOIN chunks c ON c.id = sc.chunk_id
             JOIN documents d ON d.id = c.document_id
@@ -348,7 +351,8 @@ def bm25_search(
             "content": r[1],
             "source": r[2],
             "image_path": r[3],
-            "bm25_score": float(r[4]),
+            "context": r[4],
+            "bm25_score": float(r[5]),
         }
         for r in rows
     ]

@@ -381,7 +381,9 @@ def test_image_search_uses_the_multimodal_vector_not_the_text_one(monkeypatch):
     取り違えてもSQLはエラーにならず（どちらも1024次元）、ただ無意味な順位が
     返るだけなので、テストで固定しておく。
     """
-    spy = _SqlSpy([(1, "[画像] 1ページ目", "決算.pdf", "images/決算.pdf/0001.png", 0.2)])
+    spy = _SqlSpy(
+        [(1, "[画像] 1ページ目", "決算.pdf", "images/決算.pdf/0001.png", "1ページ目", 0.2)]
+    )
     monkeypatch.setattr(retrieval, "get_conn", spy)
     monkeypatch.setattr(
         retrieval, "embed_multimodal_queries", lambda texts: [["should-not-be-used"]]

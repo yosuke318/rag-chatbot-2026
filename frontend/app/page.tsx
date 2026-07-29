@@ -1242,9 +1242,36 @@ export default function Home() {
                         ) : (
                           <SourceLink source={c.source} />
                         )}
+                        {c.image_label && (
+                          <span className="cite-image-label">
+                            図: {c.image_label}
+                          </span>
+                        )}
                         <span className="cite-id">chunk #{c.chunk_id}</span>
                       </div>
-                      <div className="cite-preview">{c.preview}</div>
+                      {/* 根拠が図表なら、回答生成に渡したのと同じ画像をそのまま見せる。
+                          「この図のここが根拠」を利用者が自分の目で確かめられる */}
+                      {c.image_url ? (
+                        <a
+                          href={citationHref(c.image_url)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {/* 原本画像。next/image は最適化サーバを挟むので使わない。
+                              ★遅延読み込みにしない★ 1回答で最大4枚しか出ないうえ、
+                              これは回答の根拠そのもの＝すぐ見たいもの。加えて
+                              読み込み前は高さ0に潰れるため、遅延させると画面内に
+                              入らず永久に読み込まれないことがある。 */}
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            className="cite-image"
+                            src={citationHref(c.image_url)}
+                            alt={c.image_label ?? c.source}
+                          />
+                        </a>
+                      ) : (
+                        <div className="cite-preview">{c.preview}</div>
+                      )}
                     </div>
                   ))}
                 </div>

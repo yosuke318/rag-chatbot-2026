@@ -13,7 +13,13 @@ from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app import apikeys, conversations, saved_questions, storage
-from app.config import IMAGE_INDEX_METHOD, RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
+from app.config import (
+    ANSWER_IMAGE_MAX_BYTES,
+    ANSWER_MAX_IMAGES,
+    IMAGE_INDEX_METHOD,
+    RETRIEVERS_DEFAULT,
+    UPLOAD_MAX_BYTES,
+)
 from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
 from app.eval import EXPECTED_KINDS, evaluate, load_questions
@@ -25,7 +31,13 @@ from app.ingest import (
     ingest_text,
     reindex_images,
 )
-from app.llm import MissingAPIKey, generate_answer, stream_answer
+from app.llm import (
+    ANSWER_IMAGE_MEDIA_TYPES,
+    ImageContext,
+    MissingAPIKey,
+    generate_answer,
+    stream_answer,
+)
 from app.retrieval import (
     FUSION_PARAM_SPECS,
     UnknownReranker,
@@ -767,6 +779,9 @@ def _citations(hits: list[dict]) -> list[dict]:
     ★番号は hits の並びそのもの★（1始まり）。同じ並びを generate_answer にも
     渡しているので、回答本文の [n] とここの n が必ず一致する。
     原本URLは出典ごとに1回だけ引く（S3のhead_objectを同じ文書で何度も叩かない）。
+
+    画像チャンクには image_url も付ける。回答生成に渡したのと同じ1枚を利用者にも
+    見せるため ＝ 「この図のここが根拠」を自分の目で確かめられる（5-3）。
     """
     urls: dict[str, str | None] = {}
     citations = []
@@ -774,6 +789,7 @@ def _citations(hits: list[dict]) -> list[dict]:
         source = hit["source"]
         if source not in urls:
             urls[source] = storage.file_url(source)
+        image_path = hit.get("image_path")
         citations.append(
             {
                 "n": n,
@@ -781,9 +797,74 @@ def _citations(hits: list[dict]) -> list[dict]:
                 "source": source,
                 "preview": preview(hit["content"], CITATION_PREVIEW_CHARS),
                 "file_url": urls[source],
+                # 画像チャンクなら「その画像」へのURL。文書の原本(file_url)とは別物で、
+                # 何ページ目の図が根拠だったかはこちらでしか分からない。
+                "image_url": storage.file_url(image_path) if image_path else None,
+                "image_label": hit.get("context") if image_path else None,
             }
         )
     return citations
+
+
+def _image_context(hit: dict) -> Optional[ImageContext]:
+    """画像チャンクなら原本画像を S3 から取り出す。使えなければ None。
+
+    None を返した場合、呼び出し側は言語化テキスト（キャプション等）で代替する。
+    ★画像が取れないことを理由に回答を失敗させない★のが方針で、S3障害でも
+    5-2 までの品質（言語化テキストで答える）には落ちるだけで済ませる。
+
+    大きすぎる画像を弾くのは、Claude の画像1枚の上限(5MB)を超えると
+    リクエストごと失敗し、回答が1文字も返らなくなるため。
+    """
+    image_path = hit.get("image_path")
+    if not image_path:
+        return None
+    obj = storage.get_object(image_path)
+    if obj is None:
+        logger.warning("原本画像を取得できませんでした（言語化テキストで代替）: %s", image_path)
+        return None
+    data, media_type = obj
+    if media_type not in ANSWER_IMAGE_MEDIA_TYPES:
+        logger.warning(
+            "回答生成に渡せない画像形式です（言語化テキストで代替）: %s (%s)",
+            image_path,
+            media_type,
+        )
+        return None
+    if len(data) > ANSWER_IMAGE_MAX_BYTES:
+        logger.warning(
+            "画像が大きすぎるため添付しません（言語化テキストで代替）: %s (%d bytes)",
+            image_path,
+            len(data),
+        )
+        return None
+    # label は「3ページ目」等の由来。中身の説明ではない（中身は画像から読ませる）
+    return ImageContext(
+        data=data, media_type=media_type, label=hit.get("context") or hit["source"]
+    )
+
+
+def _answer_contexts(hits: list[dict]) -> list:
+    """回答生成に渡すコンテキストを組み立てる。並びは hits と1対1（引用番号の根拠）。
+
+    ★画像チャンクは言語化テキストではなく原本画像を渡す（5-3）★
+      キャプションは検索で見つけるための索引に格下げし、判断は毎回原本に
+      対して行わせる。こうしないと「言語化した時点で書かれなかったこと」を
+      後から問えない（それが2023年方式の弱点だった）。
+
+    添付する枚数に上限を置くのは入力トークンとコストの保護。上限を超えた分は
+    従来どおり言語化テキストで渡す（順位が上のものから優先して画像にする）。
+    """
+    contexts: list = []
+    attached = 0
+    for hit in hits:
+        image = _image_context(hit) if attached < ANSWER_MAX_IMAGES else None
+        if image is None:
+            contexts.append(hit["content"])
+        else:
+            contexts.append(image)
+            attached += 1
+    return contexts
 
 
 def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
@@ -811,7 +892,8 @@ def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
     return {
         "conversation_id": conversation_id,
         "history": history,
-        "contexts": [h["content"] for h in hits],
+        # 画像チャンクは原本画像そのものが入る（テキストと混在する。5-3）
+        "contexts": _answer_contexts(hits),
         # 根拠として使ったチャンクの出典も返す（重複排除）
         "sources": list(dict.fromkeys(h["source"] for h in hits)),
         "citations": _citations(hits),
