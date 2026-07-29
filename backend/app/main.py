@@ -10,8 +10,9 @@ import urllib.parse
 
 import anthropic
 import voyageai.error
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from app import apikeys
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
 from app.ingest import UnsupportedFileType, extract_text, ingest_text
@@ -42,6 +43,7 @@ from app.schemas import (
     IngestRequest,
     IngestResponse,
     ProjectsResponse,
+    PublicChatRequest,
     RetrieversResponse,
     SearchResponse,
     TopicsResponse,
@@ -293,6 +295,132 @@ _ERRORS = {
     429: {"model": ErrorResponse, "description": "レート制限"},
     502: {"model": ErrorResponse, "description": "外部API呼び出し失敗"},
 }
+
+
+@app.exception_handler(apikeys.ApiKeyError)
+async def invalid_api_key(request: Request, exc: Exception):
+    """公開API(/v1)の認証失敗。どのキーが無効かは返さない（探索の手掛かりを与えない）。"""
+    return _error(
+        401,
+        "invalid_api_key",
+        "APIキーが無効です。",
+        "Authorization: Bearer <APIキー> を付けてください。"
+        "キーの発行は `python -m app.apikeys --create` です。",
+        str(exc),
+    )
+
+
+@app.exception_handler(apikeys.RateLimitExceeded)
+async def api_rate_limited(request: Request, exc: apikeys.RateLimitExceeded):
+    return _error(
+        429,
+        "api_rate_limit",
+        "このAPIキーのレート制限に達しました。少し待ってから再試行してください。",
+        f"上限は {exc.limit} リクエスト/分です。",
+        str(exc),
+    )
+
+
+@app.middleware("http")
+async def record_api_usage_status(request: Request, call_next):
+    """公開APIの利用ログに、応答のHTTPステータスを書き戻す。
+
+    受付の記録は認証の時点で入れている（レート制限がその件数を数えるため）。
+    ステータスだけは応答が決まるまで分からないので、ここで後から埋める。
+    """
+    response = await call_next(request)
+    usage_id = getattr(request.state, "usage_id", None)
+    if usage_id is not None:
+        apikeys.set_status(usage_id, response.status_code)
+    return response
+
+
+def require_api_key(request: Request) -> apikeys.ApiKey:
+    """/v1 の入口。認証・レート制限・利用ログをまとめて行う。
+
+    ★リクエストに project を書かせない★
+      テナントの境界はキー側にあるので、クエリで project を渡されたら
+      黙って無視せず 400 で弾く。無視すると「絞ったつもりで全体を見ている」
+      と誤解したまま使われうる（本文側は PublicChatRequest が extra="forbid"）。
+    """
+    if "project" in request.query_params:
+        raise ProjectNotAllowed()
+    key, usage_id = apikeys.authenticate(
+        request.headers.get("authorization"), request.url.path
+    )
+    # 応答時にステータスを書き戻すため、この行IDをミドルウェアへ渡す
+    request.state.usage_id = usage_id
+    return key
+
+
+class ProjectNotAllowed(ValueError):
+    """/v1 で project を指定しようとした（テナントはキー側で決まる）。"""
+
+
+@app.exception_handler(ProjectNotAllowed)
+async def project_not_allowed(request: Request, exc: Exception):
+    return _error(
+        400,
+        "project_not_allowed",
+        "project は指定できません。",
+        "検索対象のプロジェクトはAPIキーに紐づいています。"
+        "さらに絞るときは topic を使ってください。",
+        "",
+    )
+
+
+# 公開API。既存の /ingest・/search・/chat は据え置きで、公開する面だけを
+# /v1 で包む（内部の実験用パラメータを外に出さないため、引数も絞ってある）。
+v1 = APIRouter(
+    prefix="/v1",
+    tags=["public"],
+    dependencies=[Depends(require_api_key)],  # ルータ配下は全て認証必須
+    responses={
+        400: {"model": ErrorResponse, "description": "入力不正"},
+        401: {"model": ErrorResponse, "description": "APIキーが無効"},
+        429: {"model": ErrorResponse, "description": "レート制限"},
+        502: {"model": ErrorResponse, "description": "外部API呼び出し失敗"},
+    },
+)
+
+
+@v1.get("/search", response_model=SearchResponse)
+def v1_search(
+    q: str,
+    top_n: int = 4,
+    topic: Optional[str] = None,
+    key: apikeys.ApiKey = Depends(require_api_key),
+):
+    """このキーのプロジェクトの文書だけを検索する。
+
+    検索手法や数値パラメータ（retrievers / rrf_k / bm25_k1 …）は公開しない。
+    あれは挙動を観察するための実験用ノブで、外部に出すと結果の再現性を
+    こちらで保証できなくなるため、既定の構成で固定して返す。
+    """
+    return search_stages(
+        q, top_n=top_n, project=key.project, topic=_blank_to_none(topic)
+    )
+
+
+@v1.post("/chat", response_model=ChatResponse)
+def v1_chat(req: PublicChatRequest, key: apikeys.ApiKey = Depends(require_api_key)):
+    """このキーのプロジェクトの文書だけを根拠に回答する。
+
+    ★project はリクエストから受け取らず、キーの値を使う★
+    conversation_id は自分のキーで始めた会話しか続けられない（他は404）。
+    """
+    return _answer(
+        ChatRequest(
+            question=req.question,
+            conversation_id=req.conversation_id,
+            project=key.project,
+            topic=req.topic,
+        ),
+        api_key_id=key.id,
+    )
+
+
+app.include_router(v1)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -592,7 +720,7 @@ def _citations(hits: list[dict]) -> list[dict]:
     return citations
 
 
-def _prepare_answer(req: ChatRequest) -> dict:
+def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
     """回答生成の手前まで（会話の確定・検索・引用の組み立て・履歴の読み出し）。
 
     /chat と /chat/stream で共通。ここまでは生成APIを呼ばないので、キー未設定や
@@ -601,8 +729,12 @@ def _prepare_answer(req: ChatRequest) -> dict:
     ★履歴を読むのは今回の質問を保存する前★。自分の質問が履歴に混ざらないようにする。
 
     project / topic を指定すると、その区分の文書だけを根拠にして答える。
+    api_key_id: 公開API(/v1)から来た場合の発行キー。会話の持ち主として記録し、
+      続きの質問も同じキーのものだけを許す（他テナントの履歴を読ませない）。
     """
-    conversation_id = conversations.resolve(req.conversation_id, title=req.question)
+    conversation_id = conversations.resolve(
+        req.conversation_id, title=req.question, api_key_id=api_key_id
+    )
     history = conversations.load_history(conversation_id)
     hits = hybrid_search(
         req.question,
@@ -631,9 +763,18 @@ def chat(req: ChatRequest):
     conversation_id を渡すと直近の履歴を踏まえて答える（未指定なら新しい会話）。
     逐次表示したい場合は /chat/stream を使う。
     """
+    return _answer(req)
+
+
+def _answer(req: ChatRequest, api_key_id: Optional[int] = None):
+    """検索 → 生成 → 履歴保存。/chat と /v1/chat で共通の本体。
+
+    違いは「誰の会話か（api_key_id）」と「どの区分を見るか（req.project）」だけで、
+    検索も生成もまったく同じものを通る（公開APIのためにコアを分岐させない）。
+    """
     if (invalid := _reject_empty_question(req)) is not None:
         return invalid
-    prepared = _prepare_answer(req)
+    prepared = _prepare_answer(req, api_key_id=api_key_id)
     answer = generate_answer(req.question, prepared["contexts"], prepared["history"])
     conversations.add_message(
         prepared["conversation_id"],

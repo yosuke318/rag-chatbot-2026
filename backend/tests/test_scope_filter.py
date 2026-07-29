@@ -298,7 +298,9 @@ def test_chat_forwards_scope_to_search(client, monkeypatch):
     monkeypatch.setattr(main_module, "hybrid_search", fake_search)
     monkeypatch.setattr(main_module, "generate_answer", lambda *a, **kw: "回答 [1]")
     monkeypatch.setattr(storage, "file_url", lambda source: None)
-    monkeypatch.setattr(conversations, "resolve", lambda cid, title=None: cid or 1)
+    monkeypatch.setattr(
+        conversations, "resolve", lambda cid, title=None, api_key_id=None: cid or 1
+    )
     monkeypatch.setattr(conversations, "load_history", lambda cid: [])
     monkeypatch.setattr(conversations, "add_message", lambda *a, **kw: 1)
 

@@ -48,7 +48,9 @@ def chat(client, monkeypatch):
     monkeypatch.setattr(main_module, "generate_answer", fake_generate)
     monkeypatch.setattr(storage, "file_url", lambda source: None)
     # 会話履歴(DB)はここでは関心外なので素通しにする（本体は test_conversations.py）
-    monkeypatch.setattr(conversations, "resolve", lambda cid, title=None: cid or 1)
+    monkeypatch.setattr(
+        conversations, "resolve", lambda cid, title=None, api_key_id=None: cid or 1
+    )
     monkeypatch.setattr(conversations, "load_history", lambda cid: [])
     monkeypatch.setattr(conversations, "add_message", lambda *a, **kw: 1)
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # --- リクエスト ---------------------------------------------------------------
@@ -33,6 +33,28 @@ class ChatRequest(BaseModel):
     )
     topic: Optional[str] = Field(
         default=None, description="トピック（任意。指定するとその区分の文書だけを根拠にする）"
+    )
+
+
+class PublicChatRequest(BaseModel):
+    """公開API(/v1/chat)の入力。
+
+    ★project を持たない★ 検索範囲はAPIキーに紐づくプロジェクトで決まり、
+    リクエストからは指定させない（指定できると分離が破れる）。
+    余計なキーは黙って無視せず弾く（extra="forbid"）: project を送って
+    「効いているつもり」になるのが一番危ないため、その場で気づけるようにする。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(description="質問文")
+    conversation_id: Optional[int] = Field(
+        default=None,
+        description="続きを話す会話のID。null=新しい会話（★自分のキーで始めた会話のみ継続可）",
+    )
+    topic: Optional[str] = Field(
+        default=None,
+        description="トピック（任意）。キーのプロジェクト内をさらに絞る",
     )
 
 

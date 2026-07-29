@@ -25,12 +25,16 @@ class UnknownConversation(ValueError):
     """指定された会話IDが存在しない。"""
 
 
-def create(title: str | None = None) -> int:
-    """会話を1件作ってIDを返す。"""
+def create(title: str | None = None, api_key_id: int | None = None) -> int:
+    """会話を1件作ってIDを返す。
+
+    api_key_id: 公開API(/v1)から始まった会話はその発行キーを持ち主にする。
+      None = 画面(UI)から始めた会話。
+    """
     with get_conn() as conn:
         row = conn.execute(
-            "INSERT INTO conversations (title) VALUES (%s) RETURNING id",
-            (title,),
+            "INSERT INTO conversations (title, api_key_id) VALUES (%s, %s) RETURNING id",
+            (title, api_key_id),
         ).fetchone()
     return int(row[0])
 
@@ -43,15 +47,38 @@ def exists(conversation_id: int) -> bool:
     return row is not None
 
 
-def resolve(conversation_id: int | None, title: str | None = None) -> int:
-    """会話IDを確定する。未指定なら新規作成、存在しないIDならエラー。
+def owned_by(conversation_id: int, api_key_id: int | None) -> bool:
+    """その会話が指定の持ち主のものか。存在しなければ False。
+
+    ★公開APIのテナント分離で効く★ これが無いと、APIの利用者が他人の
+    conversation_id を渡すだけで別テナントの履歴を読み出せてしまう
+    （履歴は回答生成にそのまま載るため、中身が漏れる）。
+    UI からの呼び出しは api_key_id=None 同士で照合される。
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM conversations WHERE id = %s AND api_key_id IS NOT DISTINCT FROM %s",
+            (conversation_id, api_key_id),
+        ).fetchone()
+    return row is not None
+
+
+def resolve(
+    conversation_id: int | None,
+    title: str | None = None,
+    api_key_id: int | None = None,
+) -> int:
+    """会話IDを確定する。未指定なら新規作成、存在しない・持ち主違いならエラー。
 
     「黙って新しい会話を作る」ようにすると、IDのtypoで履歴が繋がらないまま
     会話が増え続け、原因に気づけない。存在しないIDは明示的に弾く。
+
+    持ち主違いも「見つかりません」に倒す（403にすると「そのIDは存在する」と
+    教えることになり、他テナントのID探索の手掛かりになるため）。
     """
     if conversation_id is None:
-        return create(title)
-    if not exists(conversation_id):
+        return create(title, api_key_id)
+    if not owned_by(conversation_id, api_key_id):
         raise UnknownConversation(f"会話が見つかりません: {conversation_id}")
     return conversation_id
 

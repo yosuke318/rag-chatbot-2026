@@ -61,6 +61,11 @@ UPLOAD_MAX_BYTES = int(os.getenv("UPLOAD_MAX_MB", "20")) * 1024 * 1024
 # 検索・生成
 TOP_K = 4  # 回答生成に使うチャンク数
 
+# 公開API(/v1)のレート制限。APIキー1本あたり「直近1分間に受け付ける本数」。
+# キーごとに api_keys.rate_limit_per_min で上書きでき、ここはその既定値。
+# 目的は課金保護（1リクエストごとに埋め込み・生成APIを呼ぶため）と暴走の抑制。
+API_RATE_LIMIT_PER_MIN = int(os.getenv("API_RATE_LIMIT_PER_MIN", "60"))
+
 # 回答生成に載せる直近の会話履歴の件数（user/assistant を1件ずつ数える）。
 # 既定6件＝直近3往復。増やすほど文脈は繋がるが入力トークンとコストが増える。
 # 0にすると履歴を使わない＝単発の一問一答に戻る（挙動比較用）。

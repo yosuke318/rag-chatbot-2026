@@ -164,6 +164,53 @@ def init_db() -> None:
             );
             """
         )
+        # 公開API(/v1)のAPIキー。発行・検証は app.apikeys 参照。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id                 BIGSERIAL PRIMARY KEY,
+                -- 発行先が分かる名前（「営業部の社内ツール」等）。運用上必ず要るので NOT NULL
+                name               TEXT NOT NULL,
+                -- ★平文のキーは保存しない★ sha256(トークン) だけを持つ。
+                -- 漏洩時に他システムへ流用されないようにするため（照合はハッシュ同士）。
+                key_hash           TEXT NOT NULL UNIQUE,
+                -- ★テナント分離キー★ このキーで見えるのはこのプロジェクトの文書だけ。
+                -- NULL を許すと「区分なし＝全部見える」キーが作れてしまい分離が壊れるので NOT NULL。
+                project            TEXT NOT NULL,
+                -- 直近1分間に受け付ける本数（キーごとに変えられる）
+                rate_limit_per_min INT NOT NULL DEFAULT 60,
+                created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+                -- NULL = 有効。失効は行を消さず日時を入れる（利用ログを残すため）
+                revoked_at         TIMESTAMPTZ
+            );
+            """
+        )
+        # キー単位の利用ログ。レート制限の判定もこの表を数えて行う。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id         BIGSERIAL PRIMARY KEY,
+                api_key_id BIGINT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+                path       TEXT NOT NULL,
+                -- 応答のHTTPステータス。NULL = 応答を返す前に落ちた（記録は受付時に入れ、
+                -- 応答時に埋める）。受付の事実はレート制限に効くので先に1行作る。
+                status     INT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        # レート制限は毎リクエスト「このキーの直近1分」を数えるので、その形で引く
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS api_usage_key_time_idx "
+            "ON api_usage (api_key_id, created_at DESC);"
+        )
+        # 会話の持ち主。NULL = 画面(UI)から始めた会話、値あり = そのAPIキーの会話。
+        # これが無いと、公開APIの利用者が他人の conversation_id を渡すだけで
+        # 別テナントの履歴を読み出せてしまう（app.conversations.resolve で照合する）。
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS api_key_id BIGINT "
+            "REFERENCES api_keys(id) ON DELETE SET NULL;"
+        )
         # 評価用の質問集（Hit@k / MRR を測る正解ラベル）。
         # コードの定数に置くと、文書をプロジェクト・トピックごとに分けたときに評価
         # だけ全体共通という歪みが出るうえ、質問追加のたびにコード改修が要る。

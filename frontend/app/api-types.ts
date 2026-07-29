@@ -4,6 +4,53 @@
  */
 
 export interface paths {
+    "/v1/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * V1 Search
+         * @description このキーのプロジェクトの文書だけを検索する。
+         *
+         *     検索手法や数値パラメータ（retrievers / rrf_k / bm25_k1 …）は公開しない。
+         *     あれは挙動を観察するための実験用ノブで、外部に出すと結果の再現性を
+         *     こちらで保証できなくなるため、既定の構成で固定して返す。
+         */
+        get: operations["v1_search_v1_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * V1 Chat
+         * @description このキーのプロジェクトの文書だけを根拠に回答する。
+         *
+         *     ★project はリクエストから受け取らず、キーの値を使う★
+         *     conversation_id は自分のキーで始めた会話しか続けられない（他は404）。
+         */
+        post: operations["v1_chat_v1_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -833,6 +880,32 @@ export interface components {
             projects: string[];
         };
         /**
+         * PublicChatRequest
+         * @description 公開API(/v1/chat)の入力。
+         *
+         *     ★project を持たない★ 検索範囲はAPIキーに紐づくプロジェクトで決まり、
+         *     リクエストからは指定させない（指定できると分離が破れる）。
+         *     余計なキーは黙って無視せず弾く（extra="forbid"）: project を送って
+         *     「効いているつもり」になるのが一番危ないため、その場で気づけるようにする。
+         */
+        PublicChatRequest: {
+            /**
+             * Question
+             * @description 質問文
+             */
+            question: string;
+            /**
+             * Conversation Id
+             * @description 続きを話す会話のID。null=新しい会話（★自分のキーで始めた会話のみ継続可）
+             */
+            conversation_id?: number | null;
+            /**
+             * Topic
+             * @description トピック（任意）。キーのプロジェクト内をさらに絞る
+             */
+            topic?: string | null;
+        };
+        /**
          * RetrieverInfo
          * @description 選択可能な検索手法（UIの切り替え用）。
          */
@@ -976,6 +1049,144 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    v1_search_v1_search_get: {
+        parameters: {
+            query: {
+                q: string;
+                top_n?: number;
+                topic?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description APIキーが無効 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    v1_chat_v1_chat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description APIキーが無効 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     health_health_get: {
         parameters: {
             query?: never;
