@@ -5,10 +5,16 @@
 ここは「その2つを繋いでDBに入れる」役に徹する。
 再取り込みは content_hash で差分検知し、内容が変わっていなければ
 埋め込み・文脈生成のAPI呼び出しごと省く（content_hash 関数を参照）。
+
+文書内の画像（5-1）はテキストとは別の流れで扱う: 抽出→S3保存→画像チャンクとして
+登録（store_images）。埋め込みAPIを呼ばないので、本文が変わっていない
+再取り込みでも実行する（この機能より前に登録した文書を入れ直せばよい、という
+移行経路を作るため）。
 """
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 
 from app import parsers, storage
@@ -19,11 +25,14 @@ from app.config import (
     CHUNK_OVERLAP,
     CHUNKING_VERSION,
     EMBED_MODEL,
+    EXTRACT_IMAGES,
     USE_CONTEXTUAL_CHUNKING,
 )
 from app.db import get_conn
 from app.keywords import noun_text
 from app.llm import embed_texts, generate_chunk_contexts
+
+logger = logging.getLogger(__name__)
 
 
 class UnsupportedFileType(Exception):
@@ -69,6 +78,82 @@ def extract_text(filename: str, data: bytes) -> str:
     if parser is None:
         raise UnsupportedFileType(ext)
     return parser(data)
+
+
+def extract_images(filename: str, data: bytes) -> list[parsers.ExtractedImage]:
+    """アップロードされたファイルから画像を取り出す（PDF/XLSX/PPTX）。
+
+    extract_text と違い★例外を投げない★。画像が無い形式（.txt 等）も、解析に
+    失敗した場合も空リストを返す。図が取れなくても文書としては成立するので、
+    ここで取り込み全体を止めない、という判断（詳細は app.parsers の方針）。
+    EXTRACT_IMAGES=false なら常に空（画像機能を丸ごと止めるスイッチ）。
+    """
+    if not EXTRACT_IMAGES:
+        return []
+    ext = os.path.splitext(filename)[1].lower()
+    extractor = parsers.IMAGE_EXTRACTORS.get(ext)
+    if extractor is None:
+        return []
+    return extractor(data)
+
+
+def store_images(
+    document_id: int, source: str, images: list[parsers.ExtractedImage]
+) -> int:
+    """画像の原本を S3 に保存し、chunks に画像チャンクとして登録する。保存件数を返す。
+
+    画像チャンクは image_path（S3キー）を持つ行で、embedding も content_nouns も
+    持たない。この時点では検索にヒットしない（検索対象化は 5-2）。狙いは
+    「ヒットしたチャンクから原本画像を辿れる」土台を作ることまで。
+
+    ★S3に保存できた画像だけをDBに入れる★。行だけ作ると、実体の無いキーを指す
+    画像チャンクが残り、5-3 の回答生成で毎回取得に失敗することになるため。
+    S3未設定なら画像は扱わない（0件）。
+
+    同じ文書の画像チャンクは毎回まるごと入れ替える。再取り込みで同じ絵が
+    二重に積み上がるのを防ぐ（テキストチャンク側の「消してから入れ直す」と同じ方針）。
+    """
+    if not images:
+        return 0
+    if not storage.is_enabled():
+        logger.info("S3が未設定のため文書内画像は保存しません: %s", source)
+        return 0
+
+    stored: list[tuple[str, str]] = []  # (S3キー, ラベル)
+    for i, image in enumerate(images, start=1):
+        key = storage.image_key(source, i, image.ext)
+        if storage.save_bytes(key, image.data, image.content_type):
+            stored.append((key, image.label))
+    if not stored:
+        return 0
+
+    with get_conn() as conn:
+        with conn.transaction():
+            conn.execute(
+                "DELETE FROM chunks WHERE document_id = %s AND image_path IS NOT NULL",
+                (document_id,),
+            )
+            # chunk_index はテキストチャンクの続き番号にする。テキストと画像で
+            # 番号が衝突すると、chunk_index 順に並べる処理（原本の復元など）で
+            # 順序が入れ替わるため。
+            next_index = conn.execute(
+                "SELECT COALESCE(MAX(chunk_index), -1) + 1 FROM chunks "
+                "WHERE document_id = %s",
+                (document_id,),
+            ).fetchone()[0]
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO chunks (document_id, chunk_index, content, image_path) "
+                    "VALUES (%s, %s, %s, %s)",
+                    [
+                        # content は NOT NULL。画像チャンクには本文が無いので、
+                        # 由来がわかるラベルを置いておく（5-2 で自動キャプション
+                        # または埋め込みに差し替える予定の場所）。
+                        (document_id, next_index + n, f"[画像] {label}", key)
+                        for n, (key, label) in enumerate(stored)
+                    ],
+                )
+    return len(stored)
 
 
 def build_contexts(
@@ -134,10 +219,11 @@ def ingest_text(
     store_original: bool = True,
     contextual: bool | None = None,
     embed_retry_waits: list[int] | None = None,
+    images: list[parsers.ExtractedImage] | None = None,
 ) -> dict:
     """1つの文書を取り込む（upsert）。
 
-    戻り値は {"chunks_created", "replaced", "skipped"}。
+    戻り値は {"chunks_created", "replaced", "skipped", "images_stored"}。
     skipped=True なら内容が変わっていないので何も作り直しておらず、
     chunks_created は「今DBにある既存チャンク数」を表す。
 
@@ -161,6 +247,12 @@ def ingest_text(
     embed_retry_waits: 埋め込みAPIが 429 を返したときに待つ秒数の並び
       （None = 再試行しない）。文脈生成はこの前に済ませてあるので、
       待って再試行しても Claude を呼び直さない。
+
+    images: 文書から抽出した画像（app.ingest.extract_images の戻り値）。
+      原本バイナリを持つ /ingest-file だけが渡す。テキスト貼り付け登録には
+      画像が無いので None。★skipped のときも保存する★ ─ 画像の保存には
+      埋め込みAPIもClaudeも要らないので省く理由が無く、むしろこの機能より前に
+      登録済みの文書を「同じファイルを入れ直すだけ」で画像対応にできる。
     """
     use_contextual = USE_CONTEXTUAL_CHUNKING if contextual is None else contextual
     new_hash = content_hash(text, use_contextual)
@@ -186,8 +278,12 @@ def ingest_text(
                 )
             # チャンク数はスキップ時の戻り値にしか要らないので、ここでだけ数える
             # （作り直す場合は数えても捨てるだけなので、上のSELECTには含めない）。
+            # 画像チャンクは数えない。chunks_created は「本文を何チャンクに割ったか」
+            # を表す数字なので、新規登録時（len(chunks)）と意味を揃える。
             chunk_count = conn.execute(
-                "SELECT count(*) FROM chunks WHERE document_id = %s", (document_id,)
+                "SELECT count(*) FROM chunks "
+                "WHERE document_id = %s AND image_path IS NULL",
+                (document_id,),
             ).fetchone()[0]
 
     if unchanged:
@@ -195,11 +291,21 @@ def ingest_text(
         # （S3障害中に取り込んだ等）を、再取り込みで直せるようにするため。
         if store_original:
             storage.save_text(source, text)
-        return {"chunks_created": chunk_count, "replaced": 0, "skipped": True}
+        return {
+            "chunks_created": chunk_count,
+            "replaced": 0,
+            "skipped": True,
+            "images_stored": store_images(document_id, source, images or []),
+        }
 
     chunks = split_chunks(text)
     if not chunks:
-        return {"chunks_created": 0, "replaced": 0, "skipped": False}
+        return {
+            "chunks_created": 0,
+            "replaced": 0,
+            "skipped": False,
+            "images_stored": 0,
+        }
 
     contexts = build_contexts(text, chunks, use_contextual)
     # 埋め込むのは「文脈 + 本文」。本文だけを埋め込むと、断片のままの
@@ -251,4 +357,12 @@ def ingest_text(
     if store_original:
         storage.save_text(source, text)
 
-    return {"chunks_created": len(chunks), "replaced": replaced, "skipped": False}
+    return {
+        "chunks_created": len(chunks),
+        "replaced": replaced,
+        "skipped": False,
+        # 画像チャンクは chunks_created に数えない（「本文を何チャンクに割ったか」
+        # という数字の意味を保つため）。DELETE→INSERT でテキストを入れ直した
+        # 直後なので、この文書の画像チャンクはここで作られる分だけになる。
+        "images_stored": store_images(document_id, source, images or []),
+    }

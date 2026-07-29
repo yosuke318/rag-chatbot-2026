@@ -97,6 +97,19 @@ def init_db() -> None:
         # 埋め込み・字面検索には content と繋げたものを使うが、回答生成に渡すのは
         # あくまで content なので、別カラムに分けて保持する。
         conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS context TEXT;")
+        # 文書内画像の原本のS3キー（app.storage.image_key）。
+        # NULL = テキストチャンク。値あり = 画像チャンク（その1枚が根拠になる）。
+        # 画像チャンクは 5-1 の時点では embedding も content_nouns も持たないため
+        # 検索にはヒットしない（検索対象化は 5-2）。回答生成で原本画像を渡す（5-3）
+        # ときに、ヒットしたチャンクからこのキーで原本を引く。
+        conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS image_path TEXT;")
+        # 画像チャンクは「その文書の分を丸ごと入れ替える」形で書くので、
+        # 文書ID＋画像有無で引ける形にしておく（部分インデックスなので
+        # テキストチャンクが大半でも小さいまま）。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS chunks_image_idx ON chunks (document_id) "
+            "WHERE image_path IS NOT NULL;"
+        )
         # 外部キーの参照側にはインデックスが自動では付かない。無いと
         # スキップ時のチャンク数集計も、documents 削除時の CASCADE も
         # chunks 全体の逐次スキャンになる。

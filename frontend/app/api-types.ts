@@ -904,6 +904,12 @@ export interface components {
              * @description 内容が既存と同じで、埋め込みをやり直さずに済ませたか
              */
             skipped: boolean;
+            /**
+             * Images Stored
+             * @description 文書から抽出してS3に保存した画像の枚数（skipped=true でも保存する）
+             * @default 0
+             */
+            images_stored: number;
         };
         /**
          * ParamSpec

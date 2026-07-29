@@ -17,7 +17,12 @@ from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
 from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
-from app.ingest import UnsupportedFileType, extract_text, ingest_text
+from app.ingest import (
+    UnsupportedFileType,
+    extract_images,
+    extract_text,
+    ingest_text,
+)
 from app.llm import MissingAPIKey, generate_answer, stream_answer
 from app.retrieval import (
     FUSION_PARAM_SPECS,
@@ -487,6 +492,10 @@ async def ingest_file(
     そのまま S3 に保存する（storage.save_bytes）。抽出テキストを原本として
     保存すると原本ダウンロードが壊れるため、取り込みは store_original=False にし、
     原本の保存はここで明示的に行う。
+
+    加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する（5-1）。
+    画像を持つのは原本バイナリがあるこの経路だけなので、/ingest（テキスト貼り付け）
+    には無い処理になる。
     """
     source = (file.filename or "").strip()
     if not source:
@@ -537,12 +546,17 @@ async def ingest_file(
             "",
         )
 
+    # 文書内の画像（PDFはページ画像・xlsx/pptxは貼られた図）も取り出す。
+    # 抽出できなくても取り込みは続ける（extract_images は例外を投げない）。
+    images = extract_images(source, data)
+
     result = ingest_text(
         source,
         text,
         _blank_to_none(project),
         _blank_to_none(topic),
         store_original=False,
+        images=images,
     )
     # 原本バイナリを S3(MinIO) に保存し、出典名からダウンロードできるようにする。
     # 取り込み(DB登録)成立後に行う best-effort（S3が落ちていても登録は残す）。
@@ -701,6 +715,8 @@ def backfill_files():
         rows = conn.execute(
             "SELECT d.source, c.content "
             "FROM chunks c JOIN documents d ON d.id = c.document_id "
+            # 画像チャンクは本文を持たない（content はラベル）ので原本の復元に混ぜない
+            "WHERE c.image_path IS NULL "
             "ORDER BY d.source, c.chunk_index"
         ).fetchall()
     # 出典ごとにチャンク本文を順に連結して原本テキストを復元

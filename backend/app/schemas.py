@@ -102,6 +102,13 @@ class IngestResponse(BaseModel):
     skipped: bool = Field(
         description="内容が既存と同じで、埋め込みをやり直さずに済ませたか"
     )
+    # 常にサーバー側が値を入れる（画像を持たない登録は0）ので Optional にはしない。
+    # default=0 を置くのは、テキスト貼り付け登録のように画像の概念が無い経路で
+    # 呼び出し側がこのキーを組み立てなくて済むようにするため。
+    images_stored: int = Field(
+        default=0,
+        description="文書から抽出してS3に保存した画像の枚数（skipped=true でも保存する）",
+    )
 
 
 class StageHit(BaseModel):

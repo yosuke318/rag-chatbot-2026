@@ -8,6 +8,8 @@ voyageai               # 埋め込み (Anthropic推奨の埋め込みプロバ�
 janome                 # 形態素解析（字面検索を名詞だけに絞る）。pure Python・辞書同梱
 boto3                  # S3(ローカルはMinIO)への原本保存・取得
 pypdf                  # PDF からのテキスト抽出（pure Python）
+pypdfium2              # PDF のページ画像化（PDFium）。ベクタ図・チャートも画像で残す
 openpyxl               # XLSX（Excel）からのセル値抽出
 python-pptx            # PPTX（PowerPoint）からのテキスト抽出
+Pillow                 # 抽出画像の判別・サイズ確認・PNG変換
 python-dotenv

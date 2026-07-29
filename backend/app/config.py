@@ -58,6 +58,26 @@ CONTEXT_CONCURRENCY = int(os.getenv("CONTEXT_CONCURRENCY", "4"))
 # メモリを食い潰す。既定20MB。社内文書想定なら十分で、必要なら環境変数で調整。
 UPLOAD_MAX_BYTES = int(os.getenv("UPLOAD_MAX_MB", "20")) * 1024 * 1024
 
+# 文書内画像の抽出（フェーズ5 マルチモーダルの土台。app.parsers / app.ingest）。
+# 抽出した画像は原本を S3 に置き、chunks.image_path から辿れるようにする。
+# 画像を検索対象にする（キャプション or マルチモーダル埋め込み）のは次段(5-2)。
+EXTRACT_IMAGES = os.getenv("EXTRACT_IMAGES", "true").lower() == "true"
+
+# PDF は「埋め込みラスタ画像」ではなく★ページ全体をレンダリング★して1枚の画像にする。
+# Excel/PowerPoint から出力したPDFの図表はベクタ描画で、埋め込み画像として
+# 取り出せないものが多いため（チャート読解(5-4)がごっそり取りこぼす）。
+# スケールは 1.0 = 72dpi。2.0 ≒ 144dpi で、細かい軸ラベルも読める程度。
+# 上げるほど読みやすくなるがS3容量と入力トークンが増える。
+PDF_RENDER_SCALE = float(os.getenv("PDF_RENDER_SCALE", "2.0"))
+
+# 抽出画像の足切り（幅・高さのどちらかがこれ未満なら捨てる）。
+# ヘッダのロゴ・罫線・箇条書きアイコンが画像チャンクとして大量に積み上がるのを防ぐ。
+# PDFのページ画像は必ずこれを超えるので、実質 xlsx/pptx の埋め込み画像に効く。
+IMAGE_MIN_PIXELS = int(os.getenv("IMAGE_MIN_PIXELS", "100"))
+
+# 1文書あたりの抽出上限。数百ページのPDFで S3 と DB が膨らむのを止める安全弁。
+IMAGE_MAX_PER_DOC = int(os.getenv("IMAGE_MAX_PER_DOC", "50"))
+
 # 検索・生成
 TOP_K = 4  # 回答生成に使うチャンク数
 

@@ -11,7 +11,9 @@ app/
 ├── db.py         # pgvector 接続 + スキーマ初期化
 ├── llm.py        # 埋め込み(Voyage) + 文脈生成/回答生成(Claude)
 ├── chunking.py   # ★チャンク分割（見出し・条文の構造で切る）
-├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存
+├── parsers.py    # ファイル→テキスト / 文書内画像の抽出（PDF/XLSX/PPTX）
+├── storage.py    # 原本・文書内画像の S3(MinIO) 保存
+├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存（＋画像チャンク登録）
 ├── eval.py       # 検索評価（Hit@k / MRR）
 ├── compare.py    # contextual有無のA/B測定
 ├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）→ リランク
@@ -20,7 +22,8 @@ app/
 
 tests/            # 単体テスト（DB・外部APIを使わない純ロジック）
 ├── test_keywords.py    # 名詞抽出
-├── test_parsers.py     # PDF/XLSX/PPTX 抽出
+├── test_parsers.py     # PDF/XLSX/PPTX のテキスト抽出
+├── test_images.py      # 文書内画像の抽出・S3保存・画像チャンク登録
 ├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
 ├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
 ├── test_compare.py     # contextual有無のA/B測定（比較の公平性）

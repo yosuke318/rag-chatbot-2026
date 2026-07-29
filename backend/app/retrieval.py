@@ -217,7 +217,11 @@ def bm25_search(
                        ) AS nouns
                 FROM chunks c
                 JOIN documents d ON d.id = c.document_id
-                WHERE TRUE{scope}
+                -- 画像チャンク(image_path あり)は本文語を持たないので★コーパスから
+                -- 除く★。含めると語数0の行が N と avgdl を動かし、画像を1枚
+                -- 取り込んだだけで既存文書のBM25スコアが変わってしまう。
+                -- 5-2 で画像に言語化テキストが付いたら、その時点で入れ直す。
+                WHERE c.image_path IS NULL{scope}
             ),
             -- |D| : 各文書の語数
             lens AS (

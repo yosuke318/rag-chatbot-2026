@@ -623,15 +623,20 @@ export default function Home() {
           continue;
         }
         const data = await res.json();
+        // 文書内画像（PDFはページ画像、xlsx/pptxは貼られた図）を取り出せた枚数。
+        // 本文が同じでスキップした場合も保存されるので、両方の分岐に付ける。
+        const images = data.images_stored
+          ? `・画像${data.images_stored}枚`
+          : "";
         if (data.skipped) {
           // 内容が同じ＝埋め込みをやり直していない（差分検知）
           results.push(
-            `✓ ${file.name}: 内容に変更なし（${data.chunks_created}チャンクのまま）`,
+            `✓ ${file.name}: 内容に変更なし（${data.chunks_created}チャンクのまま${images}）`,
           );
         } else {
           const note = data.replaced ? "（同名を置き換え）" : "";
           results.push(
-            `✓ ${file.name}: ${data.chunks_created}チャンクで登録${note}`,
+            `✓ ${file.name}: ${data.chunks_created}チャンク${images}で登録${note}`,
           );
         }
       } catch (e) {
