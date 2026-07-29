@@ -53,7 +53,8 @@ h1 {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -394,24 +395,50 @@ button:disabled {
   border-radius: 12px;
 }
 
-/* プロジェクト／トピックの2列入力。①登録パネルと④評価パネルの両方で使う */
+/* プロジェクト／トピックの2列入力。①〜④の全パネルで使う
+   （登録側は datalist 付き input、絞り込み側は select） */
 .scope-row {
   display: flex;
   gap: 8px;
+  align-items: flex-end;
 }
 
-.scope-row input {
+.scope-row input,
+.scope-row select {
   flex: 1;
+  min-width: 0; /* flex項目の既定(auto)だと長い選択肢で列が押し広げられる */
+}
+
+/* select 側は何の欄か分からなくなるのでラベルを上に出す */
+.scope-field {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scope-label {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .eval-controls {
   display: flex;
   gap: 8px;
   margin-bottom: 10px;
+  align-items: flex-end;
 }
 
-.eval-controls input {
+.eval-controls input,
+.eval-controls select {
   margin-bottom: 0;
+}
+
+/* 評価パネルでは区分の2列と「検証する」を1行に並べる */
+.eval-controls .scope-row {
+  flex: 1;
+  min-width: 0;
 }
 
 .eval-controls button {

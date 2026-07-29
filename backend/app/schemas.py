@@ -160,6 +160,22 @@ class RetrieversResponse(BaseModel):
     fusion_params: List[ParamSpec] = Field(description="融合そのもののパラメータ（RRF k）")
 
 
+class ProjectsResponse(BaseModel):
+    """登録済みのプロジェクト一覧（UIのセレクタ用）。"""
+
+    projects: List[str] = Field(
+        description="文書または評価用質問に付いている project（NULL=共通は含まない）"
+    )
+
+
+class TopicsResponse(BaseModel):
+    """登録済みのトピック一覧（UIのセレクタ用）。"""
+
+    topics: List[str] = Field(
+        description="?project= を付けるとそのプロジェクト配下のトピックだけになる"
+    )
+
+
 class SearchResponse(BaseModel):
     """検索の各段階（Claudeを呼ばない）。
 

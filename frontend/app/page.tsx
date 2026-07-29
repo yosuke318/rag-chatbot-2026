@@ -141,6 +141,137 @@ function AnswerText({
   );
 }
 
+/** そのプロジェクト配下のトピック候補を取ってくる（GET /topics?project=）。
+ *
+ * パネルごとに選んでいるプロジェクトが違うので、パネル単位で呼ぶ。
+ * reloadKey は「登録して区分が増えたら取り直す」ための合図（値が変わると再取得）。
+ */
+function useTopics(project: string, reloadKey: number): string[] {
+  const [topics, setTopics] = useState<string[]>([]);
+  useEffect(() => {
+    const p = project.trim();
+    const query = p ? `?project=${encodeURIComponent(p)}` : "";
+    // 選び直しが速いと応答が前後するので、古い結果は捨てる
+    let current = true;
+    fetch(`/api/backend/topics${query}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (current) setTopics(d.topics ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [project, reloadKey]);
+  return topics;
+}
+
+/** 選択肢に無い値（他パネルで打った新規の区分など）も候補に残す。 */
+function withCurrent(options: string[], value: string): string[] {
+  const v = value.trim();
+  return v && !options.includes(v) ? [...options, v] : options;
+}
+
+type ScopeProps = {
+  project: string;
+  topic: string;
+  projects: string[];
+  topics: string[];
+  onProject: (v: string) => void;
+  onTopic: (v: string) => void;
+};
+
+/** 検索・質問・評価で使う区分の絞り込み。未選択（すべて）＝絞り込まない。
+ *
+ * ここは「既存の区分から選ぶ」場面なので select にしてある（打ち間違いで
+ * 0件になるのを防ぐ）。新しい区分を作れるのは登録側だけ（ScopeInput）。
+ * プロジェクトを変えたらトピックは外す: 別プロジェクトのトピックが残ると
+ * 存在しない組み合わせになり、黙って0件になるため。
+ */
+function ScopeSelect({
+  project,
+  topic,
+  projects,
+  topics,
+  onProject,
+  onTopic,
+}: ScopeProps) {
+  return (
+    <div className="scope-row">
+      <label className="scope-field">
+        <span className="scope-label">プロジェクト（任意）</span>
+        <select
+          value={project}
+          onChange={(e) => {
+            onProject(e.target.value);
+            onTopic("");
+          }}
+        >
+          <option value="">すべて</option>
+          {withCurrent(projects, project).map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="scope-field">
+        <span className="scope-label">トピック（任意）</span>
+        <select value={topic} onChange={(e) => onTopic(e.target.value)}>
+          <option value="">すべて</option>
+          {withCurrent(topics, topic).map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
+
+/** 登録側の区分入力。既存の候補を出しつつ、新しい区分も打てる（datalist）。
+ *
+ * 登録は「まだ無いプロジェクトを作る」入口でもあるので select にはできない。
+ * idPrefix: datalist の id はページ内で一意である必要があるため、置く場所ごとに変える。
+ */
+function ScopeInput({
+  project,
+  topic,
+  projects,
+  topics,
+  onProject,
+  onTopic,
+  idPrefix,
+}: ScopeProps & { idPrefix: string }) {
+  return (
+    <div className="scope-row">
+      <input
+        list={`${idPrefix}-projects`}
+        placeholder="プロジェクト（任意）"
+        value={project}
+        onChange={(e) => onProject(e.target.value)}
+      />
+      <datalist id={`${idPrefix}-projects`}>
+        {projects.map((p) => (
+          <option key={p} value={p} />
+        ))}
+      </datalist>
+      <input
+        list={`${idPrefix}-topics`}
+        placeholder="トピック（任意）"
+        value={topic}
+        onChange={(e) => onTopic(e.target.value)}
+      />
+      <datalist id={`${idPrefix}-topics`}>
+        {topics.map((t) => (
+          <option key={t} value={t} />
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
 // 見出しにカーソルを当てると説明が出る。tabIndexでキーボード操作でも開く。
 function Tip({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
@@ -153,6 +284,20 @@ function Tip({ label, children }: { label?: string; children: React.ReactNode })
 }
 
 export default function Home() {
+  // --- 区分（project / topic）の候補 -------------------------------------
+  // プロジェクトはページで1つ持ち、トピックはパネルごとに「選択中のプロジェクト
+  // 配下だけ」を引く（useTopics）。scopeVersion を増やすと両方を取り直す
+  // ＝登録で新しい区分が増えたら、他パネルのセレクタにもすぐ出る。
+  const [projects, setProjects] = useState<string[]>([]);
+  const [scopeVersion, setScopeVersion] = useState(0);
+
+  useEffect(() => {
+    fetch("/api/backend/projects")
+      .then((r) => r.json())
+      .then((d) => setProjects(d.projects ?? []))
+      .catch(() => {});
+  }, [scopeVersion]);
+
   // --- 取り込みパネル（/ingest = 書き込みフロー）---
   const [source, setSource] = useState("");
   const [docText, setDocText] = useState("");
@@ -160,6 +305,7 @@ export default function Home() {
   // 入力欄は1組だけ持つ）。空欄は送らない＝区分なし(NULL)の共通文書として登録。
   const [docProject, setDocProject] = useState("");
   const [docTopic, setDocTopic] = useState("");
+  const docTopics = useTopics(docProject, scopeVersion);
   const [ingestStatus, setIngestStatus] = useState("");
   // ファイルのドラッグ&ドロップ登録（/ingest-file）
   const [dragging, setDragging] = useState(false);
@@ -171,6 +317,10 @@ export default function Home() {
 
   // --- 検索パネル（/search = 検索の内訳。Claudeを呼ばない）---
   const [searchQ, setSearchQ] = useState("");
+  // 検索対象の区分。未選択＝全文書から探す
+  const [searchProject, setSearchProject] = useState("");
+  const [searchTopic, setSearchTopic] = useState("");
+  const searchTopics = useTopics(searchProject, scopeVersion);
   const [stages, setStages] = useState<SearchStages | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
@@ -223,12 +373,17 @@ export default function Home() {
   const [activeCite, setActiveCite] = useState<string | null>(null);
   // 続きの質問で履歴を効かせるための会話ID。null = 次の質問で新しい会話を始める。
   const [conversationId, setConversationId] = useState<number | null>(null);
+  // 回答の根拠にする文書の区分。未選択＝全文書から探す
+  const [chatProject, setChatProject] = useState("");
+  const [chatTopic, setChatTopic] = useState("");
+  const chatTopics = useTopics(chatProject, scopeVersion);
 
   // --- 評価パネル（/eval = 質問集で Hit@k / MRR を測る）---
   const [evalSelected, setEvalSelected] = useState<string[]>([]);
   const [evalRerank, setEvalRerank] = useState(false);
   const [evalProject, setEvalProject] = useState("");
   const [evalTopic, setEvalTopic] = useState("");
+  const evalTopics = useTopics(evalProject, scopeVersion);
   const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
   const [evalError, setEvalError] = useState("");
@@ -240,6 +395,7 @@ export default function Home() {
   const [newExpected, setNewExpected] = useState("");
   const [newQProject, setNewQProject] = useState("");
   const [newQTopic, setNewQTopic] = useState("");
+  const newQTopics = useTopics(newQProject, scopeVersion);
   const [newQNote, setNewQNote] = useState("");
   const [addQStatus, setAddQStatus] = useState("");
   const [addingQ, setAddingQ] = useState(false);
@@ -268,6 +424,7 @@ export default function Home() {
         return;
       }
       setAddQStatus(`「${newQ}」を登録しました（正解: ${newExpected}）`);
+      setScopeVersion((v) => v + 1); // 新しい区分が増えていれば他パネルの候補にも出す
       setNewQ("");
       setNewExpected("");
       setNewQNote("");
@@ -357,6 +514,7 @@ export default function Home() {
         );
       }
       setDocText("");
+      setScopeVersion((v) => v + 1); // 新しい区分で登録したら各パネルの候補に出す
     } catch (e) {
       setIngestStatus(`エラー: ${String(e)}`);
     }
@@ -430,6 +588,9 @@ export default function Home() {
       setIngestStatus(results.join("\n"));
     }
     setPendingFiles(failed); // 成功分は消し、失敗分だけ残す
+    if (failed.length < pendingFiles.length) {
+      setScopeVersion((v) => v + 1); // 1件でも入れば区分が増えている可能性がある
+    }
     setUploading(false);
   }
 
@@ -441,6 +602,9 @@ export default function Home() {
     try {
       const params = new URLSearchParams({ q });
       if (selected.length > 0) params.set("retrievers", selected.join(","));
+      // 区分は未選択なら送らない（＝全文書が対象。空文字を送ると空文字での絞り込み）
+      if (searchProject.trim()) params.set("project", searchProject.trim());
+      if (searchTopic.trim()) params.set("topic", searchTopic.trim());
       // 空欄のものは送らず、バックエンドの既定値を使わせる
       for (const [key, value] of Object.entries(paramValues)) {
         if (value !== "") params.set(key, value);
@@ -486,7 +650,13 @@ export default function Home() {
         method: "POST",
         headers: { "content-type": "application/json" },
         // conversation_id を渡すと直近の履歴を踏まえて答える（null=新しい会話）
-        body: JSON.stringify({ question: q, conversation_id: conversationId }),
+        // 区分を選んでいれば、その区分の文書だけを根拠にする（未選択は null=全体）
+        body: JSON.stringify({
+          question: q,
+          conversation_id: conversationId,
+          project: chatProject.trim() || null,
+          topic: chatTopic.trim() || null,
+        }),
       });
       const err = await errorMessage(res);
       if (err) {
@@ -584,20 +754,18 @@ export default function Home() {
 
         {/* 文書の区分。テキスト貼り付けとファイル登録の両方に付くので、
             どちらか一方の入力欄に見えないようパネルの先頭に置く。 */}
-        <div className="scope-row">
-          <input
-            placeholder="プロジェクト（任意）"
-            value={docProject}
-            onChange={(e) => setDocProject(e.target.value)}
-          />
-          <input
-            placeholder="トピック（任意）"
-            value={docTopic}
-            onChange={(e) => setDocTopic(e.target.value)}
-          />
-        </div>
+        <ScopeInput
+          idPrefix="doc"
+          project={docProject}
+          topic={docTopic}
+          projects={projects}
+          topics={docTopics}
+          onProject={setDocProject}
+          onTopic={setDocTopic}
+        />
         <p className="hint">
           区分は下の<strong>テキスト登録・ファイル登録の両方</strong>に付きます（空欄なら区分なし）。
+          既存の区分は入力欄から選べます。新しい名前を打てばその区分が作られます。
         </p>
 
         <input
@@ -741,6 +909,20 @@ export default function Home() {
             検索
           </button>
         </div>
+
+        {/* 検索対象の区分。BM25の統計（IDF）もこの範囲で計算される */}
+        <ScopeSelect
+          project={searchProject}
+          topic={searchTopic}
+          projects={projects}
+          topics={searchTopics}
+          onProject={setSearchProject}
+          onTopic={setSearchTopic}
+        />
+        <p className="hint">
+          区分を選ぶと<strong>その区分の文書だけ</strong>が検索対象になります
+          （「すべて」なら絞り込みなし）。
+        </p>
 
         {/* 使う検索手法を選ぶ。RRFは可変長なので何本でも融合できる */}
         <div className="retriever-picker">
@@ -936,6 +1118,21 @@ export default function Home() {
             新しい会話
           </button>
         </div>
+
+        {/* 回答の根拠にする文書の区分。②と同じ絞り込みが検索に効く */}
+        <ScopeSelect
+          project={chatProject}
+          topic={chatTopic}
+          projects={projects}
+          topics={chatTopics}
+          onProject={setChatProject}
+          onTopic={setChatTopic}
+        />
+        <p className="hint">
+          区分を選ぶと<strong>その区分の文書だけ</strong>を根拠に回答します
+          （「すべて」なら全文書から探します）。
+        </p>
+
         <div className="messages">
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
@@ -1063,18 +1260,15 @@ export default function Home() {
             value={newExpected}
             onChange={(e) => setNewExpected(e.target.value)}
           />
-          <div className="scope-row">
-            <input
-              placeholder="プロジェクト（任意）"
-              value={newQProject}
-              onChange={(e) => setNewQProject(e.target.value)}
-            />
-            <input
-              placeholder="トピック（任意）"
-              value={newQTopic}
-              onChange={(e) => setNewQTopic(e.target.value)}
-            />
-          </div>
+          <ScopeInput
+            idPrefix="newq"
+            project={newQProject}
+            topic={newQTopic}
+            projects={projects}
+            topics={newQTopics}
+            onProject={setNewQProject}
+            onTopic={setNewQTopic}
+          />
           <input
             placeholder="メモ（任意・何を確かめる質問か）"
             value={newQNote}
@@ -1088,20 +1282,21 @@ export default function Home() {
 
         {/* 評価対象の絞り込みと手法選択 */}
         <div className="eval-controls">
-          <input
-            placeholder="プロジェクト（任意）"
-            value={evalProject}
-            onChange={(e) => setEvalProject(e.target.value)}
-          />
-          <input
-            placeholder="トピック（任意）"
-            value={evalTopic}
-            onChange={(e) => setEvalTopic(e.target.value)}
+          <ScopeSelect
+            project={evalProject}
+            topic={evalTopic}
+            projects={projects}
+            topics={evalTopics}
+            onProject={setEvalProject}
+            onTopic={setEvalTopic}
           />
           <button onClick={runEval} disabled={evalRunning || evalSelected.length === 0}>
             {evalRunning ? "評価中…" : "検証する"}
           </button>
         </div>
+        <p className="hint">
+          区分を選ぶと<strong>その区分の質問だけ</strong>で評価します（「すべて」なら全件）。
+        </p>
         <div className="retriever-picker">
           {available.map((r) => (
             <span key={r.name} className="retriever-option">

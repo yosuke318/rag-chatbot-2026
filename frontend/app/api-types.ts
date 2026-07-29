@@ -87,6 +87,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Projects
+         * @description 登録済みのプロジェクト名の一覧。UIの区分セレクタを埋めるのに使う。
+         *
+         *     ★文書(documents)と評価用質問(eval_questions)の和集合★を返す。
+         *     文書だけを見ると「質問は登録したがまだ文書が無いプロジェクト」が
+         *     セレクタに出てこず、④の評価対象として選べなくなるため。
+         *     NULL（＝どこにも属さない共通）は選択肢にならないので除く。
+         */
+        get: operations["list_projects_projects_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/topics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Topics
+         * @description 登録済みのトピック名の一覧。project を付けるとその配下だけに絞る。
+         *
+         *     UIは「プロジェクトを選ぶ → そのトピックだけが候補になる」という順で使う。
+         *     project 未指定なら全プロジェクトのトピックを返す（絞り込みなし）。
+         */
+        get: operations["list_topics_topics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -105,6 +153,8 @@ export interface paths {
          *     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
          *     - GET /search?q=...&bm25_k1=2.0&bm25_b=0.3&rrf_k=10 … 定数を変えて挙動を比較
          *       （指定しなかった定数は既定値が使われる）
+         *     - GET /search?q=...&project=社内規程&topic=労務 … その区分の文書だけを検索
+         *       （指定しなかった軸は絞り込まない。BM25の統計も絞った範囲で計算される）
          *
          *     各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
          */
@@ -368,6 +418,16 @@ export interface components {
              * @description 続きを話す会話のID。null=新しい会話を始める（IDは応答に入る）
              */
             conversation_id?: number | null;
+            /**
+             * Project
+             * @description プロジェクト（任意。指定するとその区分の文書だけを根拠にする）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（任意。指定するとその区分の文書だけを根拠にする）
+             */
+            topic?: string | null;
         };
         /** ChatResponse */
         ChatResponse: {
@@ -762,6 +822,17 @@ export interface components {
             description: string;
         };
         /**
+         * ProjectsResponse
+         * @description 登録済みのプロジェクト一覧（UIのセレクタ用）。
+         */
+        ProjectsResponse: {
+            /**
+             * Projects
+             * @description 文書または評価用質問に付いている project（NULL=共通は含まない）
+             */
+            projects: string[];
+        };
+        /**
          * RetrieverInfo
          * @description 選択可能な検索手法（UIの切り替え用）。
          */
@@ -871,6 +942,17 @@ export interface components {
             metric_value: number;
             /** Preview */
             preview: string;
+        };
+        /**
+         * TopicsResponse
+         * @description 登録済みのトピック一覧（UIのセレクタ用）。
+         */
+        TopicsResponse: {
+            /**
+             * Topics
+             * @description ?project= を付けるとそのプロジェクト配下のトピックだけになる
+             */
+            topics: string[];
         };
         /** ValidationError */
         ValidationError: {
@@ -1081,6 +1163,57 @@ export interface operations {
             };
         };
     };
+    list_projects_projects_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectsResponse"];
+                };
+            };
+        };
+    };
+    list_topics_topics_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     search_search_get: {
         parameters: {
             query: {
@@ -1091,6 +1224,8 @@ export interface operations {
                 trgm_min_similarity?: number | null;
                 bm25_k1?: number | null;
                 bm25_b?: number | null;
+                project?: string | null;
+                topic?: string | null;
             };
             header?: never;
             path?: never;

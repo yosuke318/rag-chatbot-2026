@@ -239,6 +239,52 @@ def test_search_endpoint_treats_blank_scope_as_unspecified(client):
     assert m.call_args.kwargs["topic"] is None
 
 
+def test_projects_endpoint_unions_documents_and_eval_questions(client):
+    """★文書と評価用質問の和集合★（質問だけあるプロジェクトも選べるように）。"""
+    calls: list = []
+    with patch("app.main.get_conn", lambda: FakeConn(calls, [("社内規程",), ("製品",)])):
+        res = client.get("/projects")
+
+    assert res.status_code == 200
+    assert res.json() == {"projects": ["社内規程", "製品"]}
+    sql, _params = calls[0]
+    assert "FROM documents" in sql and "FROM eval_questions" in sql
+    assert "UNION" in sql
+    assert "IS NOT NULL" in sql  # NULL（共通）は選択肢に出さない
+
+
+def test_topics_endpoint_filters_by_project(client):
+    calls: list = []
+    with patch("app.main.get_conn", lambda: FakeConn(calls, [("労務",)])):
+        res = client.get("/topics?project=社内規程")
+
+    assert res.json() == {"topics": ["労務"]}
+    sql, params = calls[0]
+    # UNION の左右それぞれに同じ条件が要るので値は2つ渡す
+    assert sql.count("AND project = %s") == 2
+    assert params == ["社内規程", "社内規程"]
+
+
+def test_topics_endpoint_without_project_returns_all(client):
+    calls: list = []
+    with patch("app.main.get_conn", lambda: FakeConn(calls, [("労務",), ("経理",)])):
+        res = client.get("/topics")
+
+    assert res.json() == {"topics": ["労務", "経理"]}
+    sql, params = calls[0]
+    assert "AND project" not in sql
+    assert params == []
+
+
+def test_topics_endpoint_treats_blank_project_as_unspecified(client):
+    calls: list = []
+    with patch("app.main.get_conn", lambda: FakeConn(calls, [])):
+        client.get("/topics?project=%20")
+
+    sql, params = calls[0]
+    assert "AND project" not in sql and params == []
+
+
 def test_chat_forwards_scope_to_search(client, monkeypatch):
     from app import conversations, storage
     from app import main as main_module

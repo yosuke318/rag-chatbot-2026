@@ -41,8 +41,10 @@ from app.schemas import (
     HealthResponse,
     IngestRequest,
     IngestResponse,
+    ProjectsResponse,
     RetrieversResponse,
     SearchResponse,
+    TopicsResponse,
 )
 
 
@@ -417,6 +419,46 @@ def retrievers_list():
         "default": RETRIEVERS_DEFAULT,
         "fusion_params": FUSION_PARAM_SPECS,
     }
+
+
+@app.get("/projects", response_model=ProjectsResponse)
+def list_projects():
+    """登録済みのプロジェクト名の一覧。UIの区分セレクタを埋めるのに使う。
+
+    ★文書(documents)と評価用質問(eval_questions)の和集合★を返す。
+    文書だけを見ると「質問は登録したがまだ文書が無いプロジェクト」が
+    セレクタに出てこず、④の評価対象として選べなくなるため。
+    NULL（＝どこにも属さない共通）は選択肢にならないので除く。
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT project FROM documents WHERE project IS NOT NULL "
+            "UNION "
+            "SELECT project FROM eval_questions WHERE project IS NOT NULL "
+            "ORDER BY 1"
+        ).fetchall()
+    return {"projects": [r[0] for r in rows]}
+
+
+@app.get("/topics", response_model=TopicsResponse)
+def list_topics(project: Optional[str] = None):
+    """登録済みのトピック名の一覧。project を付けるとその配下だけに絞る。
+
+    UIは「プロジェクトを選ぶ → そのトピックだけが候補になる」という順で使う。
+    project 未指定なら全プロジェクトのトピックを返す（絞り込みなし）。
+    """
+    project = _blank_to_none(project)
+    scope = "" if project is None else " AND project = %s"
+    params = [] if project is None else [project, project]
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT topic FROM documents WHERE topic IS NOT NULL{scope} "
+            "UNION "
+            f"SELECT topic FROM eval_questions WHERE topic IS NOT NULL{scope} "
+            "ORDER BY 1",
+            params,
+        ).fetchall()
+    return {"topics": [r[0] for r in rows]}
 
 
 @app.get("/search", response_model=SearchResponse, responses=_ERRORS)
