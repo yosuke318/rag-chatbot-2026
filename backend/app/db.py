@@ -198,7 +198,8 @@ def init_db() -> None:
                 -- 漏洩時に他システムへ流用されないようにするため（照合はハッシュ同士）。
                 key_hash           TEXT NOT NULL UNIQUE,
                 -- ★テナント分離キー★ このキーで見えるのはこのプロジェクトの文書だけ。
-                -- NULL を許すと「区分なし＝全部見える」キーが作れてしまい分離が壊れるので NOT NULL。
+                -- NULL を許すと「区分なし＝全部見える」キーが作れてしまい、
+                -- 分離が壊れるので NOT NULL。
                 project            TEXT NOT NULL,
                 -- 直近1分間に受け付ける本数（キーごとに変えられる）
                 rate_limit_per_min INT NOT NULL DEFAULT 60,

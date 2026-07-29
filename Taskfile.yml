@@ -44,6 +44,61 @@ tasks:
       - npm run test
       - npx tsc --noEmit
 
+  lint:
+    desc: FE + BE のlintをまとめて確認（CIと同じ内容。直すのは task fmt）
+    cmds:
+      - task: lint-back
+      - task: lint-front
+
+  lint-back:
+    desc: バックエンドのlint（ruff。設定は backend/ruff.toml）
+    cmds:
+      # `task test` と同じく使い捨てコンテナで回す（ホストにPython環境を要求しない）。
+      # ruff は requirements-dev.txt に入れてあるので、テストと同じ1行で揃う。
+      - >
+        docker compose run --rm --no-deps
+        -e ANTHROPIC_API_KEY=dummy -e VOYAGE_API_KEY=dummy
+        -v "$PWD/backend/app:/app/app"
+        -v "$PWD/backend/tests:/app/tests"
+        -v "$PWD/backend/ruff.toml:/app/ruff.toml"
+        -v "$PWD/backend/requirements.txt:/app/requirements.txt"
+        -v "$PWD/backend/requirements-dev.txt:/app/requirements-dev.txt"
+        backend sh -c "pip install -q -r requirements-dev.txt && ruff check ."
+
+  lint-front:
+    desc: フロントのlint（ESLint。設定は frontend/.eslintrc.json）
+    dir: frontend
+    cmds:
+      - npm run lint
+
+  fmt:
+    desc: lintの自動修正（import順の並べ替え等）。直せないものは task lint に残る
+    cmds:
+      - task: fmt-back
+      - task: fmt-front
+
+  fmt-back:
+    desc: バックエンドのlintを自動修正（ruff --fix）
+    cmds:
+      # コンテナ内から書き戻すのでソースはマウントしたまま（-v で双方向）。
+      # --fix は「意味が変わらない」と ruff が判断したものだけを直す。
+      # 行が長すぎる等の直しようがないものは残るので、そこは手で直す。
+      - >
+        docker compose run --rm --no-deps
+        -e ANTHROPIC_API_KEY=dummy -e VOYAGE_API_KEY=dummy
+        -v "$PWD/backend/app:/app/app"
+        -v "$PWD/backend/tests:/app/tests"
+        -v "$PWD/backend/ruff.toml:/app/ruff.toml"
+        -v "$PWD/backend/requirements.txt:/app/requirements.txt"
+        -v "$PWD/backend/requirements-dev.txt:/app/requirements-dev.txt"
+        backend sh -c "pip install -q -r requirements-dev.txt && ruff check . --fix"
+
+  fmt-front:
+    desc: フロントのlintを自動修正（eslint --fix）
+    dir: frontend
+    cmds:
+      - npm run lint:fix
+
   down:
     desc: 停止（ベクトルDBのデータは残す）
     cmds:

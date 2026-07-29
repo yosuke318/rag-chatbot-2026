@@ -17,7 +17,8 @@ pytest.importorskip("psycopg")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import conversations, llm, main as main_module, storage  # noqa: E402
+from app import conversations, llm, storage  # noqa: E402
+from app import main as main_module
 
 HITS = [{"id": 1, "content": "第5条 有給は10日付与する。", "source": "有給休暇.txt"}]
 
@@ -111,7 +112,10 @@ def test_strip_citations_removes_markers():
 
 
 def test_history_is_placed_before_the_current_question():
-    history = [{"role": "user", "content": "有給は?"}, {"role": "assistant", "content": "10日です [1]。"}]
+    history = [
+        {"role": "user", "content": "有給は?"},
+        {"role": "assistant", "content": "10日です [1]。"},
+    ]
     messages = llm._answer_messages("その上限は?", ["文脈A"], history)
 
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]

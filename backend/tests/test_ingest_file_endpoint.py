@@ -13,6 +13,7 @@ import pytest
 pytest.importorskip("psycopg")
 
 from fastapi.testclient import TestClient  # noqa: E402
+
 from app.ingest import UnsupportedFileType  # noqa: E402
 
 

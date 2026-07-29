@@ -17,11 +17,20 @@ pytest.importorskip("psycopg")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import conversations, llm, main as main_module, storage  # noqa: E402
+from app import conversations, llm, storage  # noqa: E402
+from app import main as main_module
 
 HITS = [
-    {"id": 101, "content": "第5条 年次有給休暇は入社6か月経過後に10日を付与する。", "source": "有給休暇.txt"},
-    {"id": 102, "content": "第6条 未消化の休暇は翌年度に限り繰り越せる。", "source": "有給休暇.txt"},
+    {
+        "id": 101,
+        "content": "第5条 年次有給休暇は入社6か月経過後に10日を付与する。",
+        "source": "有給休暇.txt",
+    },
+    {
+        "id": 102,
+        "content": "第6条 未消化の休暇は翌年度に限り繰り越せる。",
+        "source": "有給休暇.txt",
+    },
     {"id": 203, "content": "第30条 経費は翌月5日までに申請する。", "source": "経費精算.txt"},
 ]
 

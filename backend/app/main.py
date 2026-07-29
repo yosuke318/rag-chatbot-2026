@@ -3,28 +3,27 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Optional
-
-import urllib.parse
 
 import anthropic
 import voyageai.error
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from app import apikeys
+
+from app import apikeys, conversations, saved_questions, storage
+from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
+from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
 from app.ingest import UnsupportedFileType, extract_text, ingest_text
-from app import conversations, saved_questions, storage
-from app.conversations import UnknownConversation
 from app.llm import MissingAPIKey, generate_answer, stream_answer
-from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
 from app.retrieval import (
+    FUSION_PARAM_SPECS,
     UnknownReranker,
     UnknownRetriever,
     hybrid_search,
-    FUSION_PARAM_SPECS,
     preview,
     retriever_infos,
     search_stages,
