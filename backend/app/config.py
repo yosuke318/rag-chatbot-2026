@@ -78,6 +78,31 @@ IMAGE_MIN_PIXELS = int(os.getenv("IMAGE_MIN_PIXELS", "100"))
 # 1文書あたりの抽出上限。数百ページのPDFで S3 と DB が膨らむのを止める安全弁。
 IMAGE_MAX_PER_DOC = int(os.getenv("IMAGE_MAX_PER_DOC", "50"))
 
+# 抽出画像を「テキストの質問で引ける」状態にする方式（5-2）。
+# ★どちらが良いかは eval で決める★ ものなので、両方を実装して切り替え可能にしてある。
+#
+#   "caption"    … 案A: Claudeに画像を説明文へ変換させ、その文を既存のテキスト経路
+#                  （埋め込み＋名詞の字面検索）に流す。3年前に人手でやっていた
+#                  「図の逐一言語化」の自動化版。既存の検索3手法がそのまま効く。
+#   "multimodal" … 案B: voyage-multimodal-3 で画像を直接ベクトル化し、テキストと
+#                  同じ空間に置く。言語化を挟まないので「説明文に書かれなかった
+#                  情報」を落とさないが、専用の検索手法(image)が要る。
+#   "none"       … 索引を作らない（5-1のまま＝保管だけ）。画像APIのコストを止める用。
+#
+# 比較のしかたは app.eval のドキュメント参照。
+IMAGE_INDEX_METHOD = os.getenv("IMAGE_INDEX_METHOD", "caption").lower()
+
+# 案A用。画像の説明文を書かせるモデル（未指定なら CHAT_MODEL と同じ）と並列数。
+CAPTION_MODEL = os.getenv("CAPTION_MODEL", CHAT_MODEL)
+CAPTION_CONCURRENCY = int(os.getenv("CAPTION_CONCURRENCY", "4"))
+
+# 案B用。voyage-multimodal-3 は画像とテキストを同じ1024次元の空間に埋め込む。
+# ★テキスト用の EMBED_MODEL とは別の空間★なので、比較できるのは
+# 「multimodalで埋めた画像」と「multimodalで埋めた質問」の間だけ。
+# そのため chunks.embedding とは別カラム(image_embedding)に持つ。
+MULTIMODAL_EMBED_MODEL = os.getenv("MULTIMODAL_EMBED_MODEL", "voyage-multimodal-3")
+MULTIMODAL_EMBED_DIM = int(os.getenv("MULTIMODAL_EMBED_DIM", "1024"))
+
 # 検索・生成
 TOP_K = 4  # 回答生成に使うチャンク数
 

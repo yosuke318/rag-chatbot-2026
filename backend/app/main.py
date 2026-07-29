@@ -13,15 +13,17 @@ from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app import apikeys, conversations, saved_questions, storage
-from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
+from app.config import IMAGE_INDEX_METHOD, RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
 from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
 from app.ingest import (
+    IMAGE_INDEX_METHODS,
     UnsupportedFileType,
     extract_images,
     extract_text,
     ingest_text,
+    reindex_images,
 )
 from app.llm import MissingAPIKey, generate_answer, stream_answer
 from app.retrieval import (
@@ -725,6 +727,27 @@ def backfill_files():
         texts[source] = texts.get(source, "") + content
     saved = storage.backfill_from_texts(list(texts.items()))
     return {"backfilled": saved, "documents": len(texts)}
+
+
+@app.post("/admin/reindex-images", responses=_ERRORS)
+def reindex_images_endpoint(method: Optional[str] = None):
+    """S3の原本画像から、画像チャンクの索引だけを作り直す（5-2のA/B比較用）。
+
+    画像の索引方式（自動キャプション / マルチモーダル埋め込み）は取り込み時に
+    決まるため、方式を変えて比べるには索引を作り直す必要がある。原本画像はS3に
+    あるので、ファイルを上げ直さずここで差し替えられる。
+
+    method 省略時は現在の設定(IMAGE_INDEX_METHOD)。手順は app.eval のドキュメント参照。
+    """
+    if method is not None and method not in IMAGE_INDEX_METHODS:
+        return _error(
+            400,
+            "invalid_image_index_method",
+            f"未知の画像索引方式: {method}",
+            f"利用可能: {', '.join(IMAGE_INDEX_METHODS)}",
+            "",
+        )
+    return {"method": method or IMAGE_INDEX_METHOD, **reindex_images(method)}
 
 
 CITATION_PREVIEW_CHARS = 200  # 引用に載せる該当箇所の長さ（検索の内訳より少し長め）

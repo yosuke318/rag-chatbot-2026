@@ -36,6 +36,23 @@
   python -m app.eval --rerank --rerank-method llm # リランクの方式を変えて比較
       （3条件の比較: 素の検索 / --rerank --rerank-method llm / --rerank --rerank-method voyage）
   python -m app.eval --gen                        # 回答生成まで走らせて目視（要Anthropic）
+
+図表（画像）の検索を A/B 比較する（5-2）:
+  画像の索引方式は「取り込み時」に決まるので、方式を変えたら索引を作り直してから
+  測る。画像原本はS3にあるので、ファイルを上げ直す必要はない。
+
+    # 案A: 自動キャプション（Claudeが説明文を書き、既存の3手法で引く）
+    IMAGE_INDEX_METHOD=caption  → POST /admin/reindex-images
+    python -m app.eval --retrievers vector,trgm,bm25
+
+    # 案B: マルチモーダル埋め込み（画像を直接ベクトル化し、image 手法で引く）
+    IMAGE_INDEX_METHOD=multimodal → POST /admin/reindex-images
+    python -m app.eval --retrievers vector,trgm,bm25,image
+
+  比較が成立するのは★画像にしか答えが無い質問★を質問集に入れたときだけ。
+  本文テキストでも答えられる質問ばかりだと、どちらの方式でも同じ数字が出る
+  （どちらの効果も測れていない）。eval_questions に図表根拠の設問を足すこと。
+  レポートの image_index_method に、そのとき何で索引したかが残る。
 """
 from __future__ import annotations
 
@@ -43,9 +60,9 @@ import argparse
 import json
 from pathlib import Path
 
-from app.config import TOP_K
+from app.config import IMAGE_INDEX_METHOD, TOP_K
 from app.db import get_conn
-from app.llm import embed_texts, generate_answer
+from app.llm import embed_multimodal_queries, embed_texts, generate_answer
 from app.retrieval import RERANKERS, hybrid_search, resolve_retrievers
 
 # 429の待ち時間はseedと同じ設定(SEED_RETRY_WAITS)を使う。バッチ処理の待ち方は
@@ -209,7 +226,18 @@ def evaluate(
     else:
         vecs = [None] * len(gold)
 
-    for item, query_vec in zip(gold, vecs):
+    # 画像ベクトル検索（案B）を使うときは、質問を★別のモデル★でもベクトル化する。
+    # まとめて1リクエストにする理由はテキスト側とまったく同じ（レート制限）。
+    if gold and "image" in resolve_retrievers(retrievers):
+        image_vecs: list[list[float] | None] = list(
+            embed_multimodal_queries(
+                [g["question"] for g in gold], retry_waits=retry_waits
+            )
+        )
+    else:
+        image_vecs = [None] * len(gold)
+
+    for item, query_vec, image_query_vec in zip(gold, vecs, image_vecs):
         hits = hybrid_search(
             item["question"],
             top_n=top_k,
@@ -218,6 +246,7 @@ def evaluate(
             params=params,
             rrf_k=rrf_k,
             query_vec=query_vec,
+            image_query_vec=image_query_vec,
             rerank_method=rerank_method,
             rerank_retry_waits=retry_waits,
             # ★質問と同じ区分の文書だけを対象にする★
@@ -255,6 +284,11 @@ def evaluate(
         "rerank_method": rerank_method,
         "rrf_k": rrf_k,
         "params": params,
+        # ★A/B比較の結果に条件を貼り付けておく★ 画像の索引方式は評価コマンドの
+        # 引数ではなく「取り込み時の設定」で決まるため、レポートだけを見比べても
+        # どちらを測ったのか分からなくなる。現在の設定値を一緒に残す
+        # （手順どおりなら、この値の索引に対して測っている）。
+        "image_index_method": IMAGE_INDEX_METHOD,
         "hit_at_k": round(hit_count / n, 3) if n else 0.0,
         "mrr": round(reciprocal_sum / n, 3) if n else 0.0,
         "results": results,
@@ -271,6 +305,8 @@ def _print_report(report: dict, generate: bool = False) -> None:
         rerank += f"({report.get('rerank_method') or '既定'})"
     print(f"\n{'='*60}")
     print(f"検索評価  N={report['n']}  top_k={k}  手法={retrievers}  リランク={rerank}")
+    # 画像の索引方式は取り込み時の設定なので、A/B比較の条件として毎回出す
+    print(f"  画像索引 = {report.get('image_index_method', 'none')}")
     print(f"  Hit@{k} = {report['hit_at_k']:.3f}   （上位{k}件に正解が入った割合）")
     print(f"  MRR    = {report['mrr']:.3f}   （正解の順位の逆数平均・1.0が満点）")
     print(f"{'='*60}")

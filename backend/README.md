@@ -16,7 +16,7 @@ app/
 ├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存（＋画像チャンク登録）
 ├── eval.py       # 検索評価（Hit@k / MRR）
 ├── compare.py    # contextual有無のA/B測定
-├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）→ リランク
+├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + 画像 + RRF融合）→ リランク
 ├── conversations.py # 会話履歴（conversations / messages）の読み書き
 └── main.py       # FastAPI: /health /ingest /chat /chat/stream
 
@@ -24,6 +24,7 @@ tests/            # 単体テスト（DB・外部APIを使わない純ロジッ�
 ├── test_keywords.py    # 名詞抽出
 ├── test_parsers.py     # PDF/XLSX/PPTX のテキスト抽出
 ├── test_images.py      # 文書内画像の抽出・S3保存・画像チャンク登録
+├── test_image_index.py # 画像の検索対象化（キャプション / マルチモーダル埋め込み）
 ├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
 ├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
 ├── test_compare.py     # contextual有無のA/B測定（比較の公平性）

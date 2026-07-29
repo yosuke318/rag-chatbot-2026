@@ -59,7 +59,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 | API | 役割 | キー |
 |---|---|---|
 | `POST /ingest` | 文書登録（テキスト→チャンク→埋め込み→保存、原本はS3へ） | Voyage |
-| `POST /ingest-file` | ファイル登録（PDF/xlsx/pptx。本文テキストに加え**文書内画像**も抽出してS3へ） | Voyage |
+| `POST /ingest-file` | ファイル登録（PDF/xlsx/pptx。本文テキストに加え**文書内画像**も抽出・索引化してS3へ） | Voyage（案Aは + Anthropic） |
 | `GET /search` | 検索の内訳（ベクトル/字面/BM25/RRF） | Voyage |
 | `POST /chat` | 回答生成（チャンク単位の根拠＋原本URL付き・会話履歴対応） | Voyage + Anthropic |
 | `POST /chat/stream` | 同上をSSEで逐次返す（根拠は本文より先に届く） | Voyage + Anthropic |
@@ -74,7 +74,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 |---|---|
 | 公開API（`/v1/...`） | APIキー認証・レート制限・利用ログ・バージョニング |
 | 検索のプロジェクト・トピック分離 | `documents.project` / `topic` は登録済み。検索・回答をこの軸で絞る対応が未実装 |
-| マルチモーダル | 画像の抽出・S3保管は実装済み（`chunks.image_path`）。**検索対象化**（自動キャプション or マルチモーダル埋め込み）・**原本画像での回答生成**・チャート読解支援が未実装 |
+| マルチモーダル | 画像の抽出・S3保管・**検索対象化**（自動キャプション / マルチモーダル埋め込みを切り替えて比較可）まで実装済み。**原本画像を根拠にした回答生成**とチャート読解支援が未実装 |
 
 （ロードマップの詳細は本ファイル末尾の「開発ロードマップ」と Linear を参照）
 
@@ -135,6 +135,29 @@ test.txt            0.01562  ← ベクトルにしか出ない（1票のみ）
 
 > スクリーンショットは `cd frontend && npm run screenshot` で再生成できる（要: backend/frontend 起動）。
 
+### 文書内の図表を引く
+
+PDF/xlsx/pptx を `/ingest-file` で登録すると、本文テキストとは別に**文書内の画像**も
+取り出して索引に載せる（PDFはページ全体を画像化するので、ベクタ描画のチャートも残る）。
+「どうやってテキストの質問で絵を引くか」には2つの流儀があり、**切り替えて比較できる**
+ようにしてある（`IMAGE_INDEX_METHOD`）。
+
+| 方式 | やること | 引くときの手法 |
+|---|---|---|
+| `caption`（既定） | Claude に画像の説明文を書かせ、その文を普通のチャンクとして埋め込む | `vector` / `trgm` / `bm25`（既存のまま） |
+| `multimodal` | `voyage-multimodal-3` で画像を直接ベクトル化 | `image`（専用の4本目） |
+| `none` | 索引を作らず保管だけ | （引けない） |
+
+方式を変えたら、原本画像はS3にあるので**ファイルを上げ直さずに索引だけ作り直せる**:
+
+```bash
+curl -X POST "http://localhost:8000/admin/reindex-images?method=multimodal"
+```
+
+> どちらが良いかは eval で決める前提。実測の手順は下記「検索精度を測る」を参照。
+> なお `caption` は「説明文に書かれなかったことは後から問えない」という弱点を持つ。
+> それを解消する（回答生成には原本画像そのものを渡す）のは次段の課題。
+
 ## 検索精度を測る（eval）
 
 「チューニングで良くなった気がする」を数字に変えるための評価ハーネス。
@@ -168,6 +191,23 @@ python -m app.eval --gen                      # 回答生成まで走らせて�
   **同じ質問集で公平に比較**できる。
 - リランクは質問1件につきAPI 1リクエスト。Voyage 無料枠（3 RPM）では4問目で
   429 になるので、評価を回すなら支払い方法を登録して上限を緩和しておく。
+
+### 図表の索引方式を A/B で比べる
+
+```bash
+# 案A: 自動キャプション
+curl -X POST "http://localhost:8000/admin/reindex-images?method=caption"
+python -m app.eval --retrievers vector,trgm,bm25
+
+# 案B: マルチモーダル埋め込み
+curl -X POST "http://localhost:8000/admin/reindex-images?method=multimodal"
+python -m app.eval --retrievers vector,trgm,bm25,image
+```
+
+**比較が成立するのは「画像にしか答えが無い質問」を質問集に入れたときだけ**。
+本文テキストでも答えられる質問ばかりだと、どちらの方式でも同じ数字が出る
+＝ どちらの効果も測れていない。`eval_questions` に図表根拠の設問を足すこと。
+レポートの `image_index_method` に、そのとき何で索引したかが残る。
 - 改良（チャンク分割の変更・リランク導入など）の**前後で回して差分を見る**のが本来の使い方。
 
 質問と正解ラベルは **DB の `eval_questions` テーブル**に置く。プロジェクト・トピック

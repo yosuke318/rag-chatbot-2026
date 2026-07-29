@@ -3,6 +3,7 @@
 Anthropicには埋め込みAPIが無いため、埋め込みだけ別プロバイダ(Voyage)を使う。
 ここを差し替えれば OpenAI 埋め込みやローカルモデルにも切り替えられる。
 """
+import base64
 import logging
 import re
 import time
@@ -14,10 +15,13 @@ import voyageai
 
 from app.config import (
     ANTHROPIC_API_KEY,
+    CAPTION_CONCURRENCY,
+    CAPTION_MODEL,
     CHAT_MODEL,
     CONTEXT_CONCURRENCY,
     CONTEXT_MODEL,
     EMBED_MODEL,
+    MULTIMODAL_EMBED_MODEL,
     RERANK_MODEL,
     VOYAGE_API_KEY,
 )
@@ -86,6 +90,64 @@ def embed_texts(
 def embed_query(text: str) -> list[float]:
     """検索クエリ1件をベクトル化。"""
     return embed_texts([text], input_type="query")[0]
+
+
+# ============================================================
+# マルチモーダル埋め込み (Voyage) — 案B（5-2）
+#   voyage-multimodal-3 は画像とテキストを「同じ空間」に埋め込む。つまり
+#   テキストの質問ベクトルと画像ベクトルを直接コサインで比較できる。
+#   ★EMBED_MODEL(voyage-3.5)とは別の空間★なので混ぜて比較してはいけない。
+#   下の2つは必ずペアで使う（画像側=document / 質問側=query）。
+# ============================================================
+
+
+def _multimodal_embed(
+    inputs: list[list], input_type: str, retry_waits: list[int] | None
+) -> list[list[float]]:
+    """multimodal_embed の共通呼び出し。inputs は「1件 = 要素の並び」の二重リスト。
+
+    要素には文字列と PIL.Image を混ぜられる（今は片方だけしか使っていない）。
+    """
+    _require(VOYAGE_API_KEY, "VOYAGE_API_KEY")
+    result = _voyage_call(
+        lambda: _voyage.multimodal_embed(
+            inputs, model=MULTIMODAL_EMBED_MODEL, input_type=input_type
+        ),
+        retry_waits,
+    )
+    return result.embeddings
+
+
+def embed_images(
+    images: list[bytes], retry_waits: list[int] | None = None
+) -> list[list[float]]:
+    """画像のバイト列をまとめてベクトル化する（取り込み側 = document）。
+
+    SDK は PIL.Image を受け取るのでここで開く。Pillow は画像抽出(app.parsers)で
+    既に依存に入っている。
+    """
+    import io
+
+    from PIL import Image
+
+    opened = [Image.open(io.BytesIO(data)) for data in images]
+    try:
+        return _multimodal_embed([[img] for img in opened], "document", retry_waits)
+    finally:
+        for img in opened:
+            img.close()
+
+
+def embed_multimodal_queries(
+    texts: list[str], retry_waits: list[int] | None = None
+) -> list[list[float]]:
+    """質問テキストを★画像と同じ空間★でベクトル化する（検索側 = query）。
+
+    embed_texts と同じ「質問のベクトル化」だが、モデルが違うので別関数にしてある。
+    間違えて embed_texts の結果で image_embedding を検索すると、エラーにならず
+    ただ無意味な順位が返る（次元は同じ1024）ので、呼び分けを型ではなく名前で守る。
+    """
+    return _multimodal_embed([[t] for t in texts], "query", retry_waits)
 
 
 # ============================================================
@@ -189,6 +251,112 @@ def generate_chunk_contexts(document: str, chunks: list[str]) -> list[str]:
             failures[0],
         )
     return contexts
+
+
+# ============================================================
+# 取り込み: 画像の自動キャプション — 案A（5-2）
+#   画像はそのままでは字面にもベクトルにも当たらない。そこで Claude に
+#   「検索で引っかかる説明文」を書かせ、その文を既存のテキスト経路
+#   （埋め込み + 名詞の字面検索）へ流す。
+#
+#   ★この説明文は"索引"であって"根拠"ではない★
+#     説明文に書かれなかったことは後から問えない、というのが言語化方式の弱点。
+#     5-3 で回答生成には原本画像そのものを渡すようにし、この文の役割を
+#     「検索で見つけるため」だけに限定する（言語化を索引に格下げする）。
+# ============================================================
+
+CAPTION_SYSTEM_PROMPT = (
+    "あなたは検索インデックスの前処理を行うアシスタントです。"
+    "与えられた画像を、後から日本語のテキスト検索で見つけられるような説明文にしてください。"
+    "\n\n書くこと: 画像の種類（表・グラフ・写真・スクリーンショット・図解など）、"
+    "見出しや軸ラベル・凡例に書かれている文字、扱っている対象や項目名、"
+    "読み取れる傾向や大小関係。数値が読める場合は代表的なものを含めてください。"
+    "\n\n書かないこと: 推測や評価、前置き、見出し、箇条書き。"
+    "説明文だけを日本語3〜5文で返してください。"
+    "画像から何も読み取れない場合は「読み取れる情報がありません」とだけ返してください。"
+)
+
+
+def generate_image_caption(
+    image: bytes, media_type: str, source: str, label: str
+) -> str:
+    """画像1枚を「検索で引っかかる説明文」にする。
+
+    source（文書名）と label（「3ページ目」等）を添えるのは、画像単体では
+    分からない所属を説明文に含められるようにするため。図の中身は画像そのものに
+    全部写っているので、文書本文までは渡さない（ページ画像はページの文字も
+    画像に含まれる ＝ 本文を別途渡すのは二重コストになる）。
+    """
+    _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
+    response = _anthropic.messages.create(
+        model=CAPTION_MODEL,
+        max_tokens=500,
+        system=CAPTION_SYSTEM_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": base64.b64encode(image).decode("ascii"),
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            f"この画像は文書「{source}」の{label}から取り出したものです。"
+                            "検索用の説明文を書いてください。"
+                        ),
+                    },
+                ],
+            }
+        ],
+    )
+    text = "".join(b.text for b in response.content if b.type == "text")
+    return text.strip()
+
+
+def generate_image_captions(
+    images: list[tuple[bytes, str, str]], source: str
+) -> list[str]:
+    """複数画像ぶんの説明文をまとめて生成する。失敗した画像は空文字。
+
+    images: (バイト列, MIMEタイプ, ラベル) の並び。
+
+    generate_chunk_contexts と同じ方針で、1枚の失敗が取り込み全体を落とさない
+    ようにしつつ★黙って落とさない★（失敗はまとめて WARNING）。
+    文脈生成と違い共通の前置き（文書全体）が無いので、プロンプトキャッシュを
+    作るための「1件目だけ直列」はしない ＝ 最初から全件並列で投げる。
+    """
+    if not images:
+        return []
+
+    failures: list[Exception] = []
+
+    def one(item: tuple[bytes, str, str]) -> str:
+        data, media_type, label = item
+        try:
+            return generate_image_caption(data, media_type, source, label)
+        except Exception as exc:  # APIキー未設定・レート制限・APIエラー等
+            failures.append(exc)
+            return ""
+
+    with ThreadPoolExecutor(max_workers=max(1, CAPTION_CONCURRENCY)) as pool:
+        captions = list(pool.map(one, images))
+
+    if failures:
+        logger.warning(
+            "画像キャプションの生成に失敗: %d/%d 枚（その画像は検索に出ません）。"
+            "最初のエラー: %s: %s",
+            len(failures),
+            len(images),
+            type(failures[0]).__name__,
+            failures[0],
+        )
+    return captions
 
 
 # ============================================================

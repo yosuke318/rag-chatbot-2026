@@ -255,6 +255,23 @@ def _mock_conn(next_index: int = 5):
     return get_conn, conn, conn.cursor.return_value.__enter__.return_value
 
 
+# INSERT の列並び（store_images）。位置で読むのでここに寄せておく。
+_COL = {
+    "document_id": 0,
+    "chunk_index": 1,
+    "content": 2,
+    "context": 3,
+    "content_nouns": 4,
+    "embedding": 5,
+    "image_embedding": 6,
+    "image_path": 7,
+}
+
+
+def _col(rows: list[tuple], name: str) -> list:
+    return [r[_COL[name]] for r in rows]
+
+
 def test_store_images_saves_to_s3_and_inserts_image_chunks(monkeypatch):
     ingest = pytest.importorskip("app.ingest")
     get_conn, conn, cur = _mock_conn(next_index=5)
@@ -268,7 +285,9 @@ def test_store_images_saves_to_s3_and_inserts_image_chunks(monkeypatch):
     )
     monkeypatch.setattr(ingest, "get_conn", get_conn)
 
-    count = ingest.store_images(7, "決算.pdf", [_image("1ページ目"), _image("2ページ目")])
+    count = ingest.store_images(
+        7, "決算.pdf", [_image("1ページ目"), _image("2ページ目")], index_method="none"
+    )
 
     assert count == 2
     # S3キーは1始まりの連番（storage.image_key）
@@ -280,12 +299,13 @@ def test_store_images_saves_to_s3_and_inserts_image_chunks(monkeypatch):
 
     # 画像チャンクは chunk_index をテキストチャンクの続き番号にする
     rows = cur.executemany.call_args.args[1]
-    assert [r[1] for r in rows] == [5, 6]
-    assert [r[3] for r in rows] == [
+    assert _col(rows, "chunk_index") == [5, 6]
+    assert _col(rows, "image_path") == [
         "images/決算.pdf/0001.png",
         "images/決算.pdf/0002.png",
     ]
-    assert "1ページ目" in rows[0][2]  # content は由来の分かるラベル（NOT NULL のため）
+    assert "1ページ目" in rows[0][_COL["content"]]  # content は NOT NULL なのでラベル
+    assert _col(rows, "context") == ["1ページ目", "2ページ目"]  # 由来は必ず残す
 
     # 再取り込みで同じ絵が二重に積まれないよう、先に既存の画像チャンクを消す
     deletes = [
@@ -307,11 +327,48 @@ def test_store_images_skips_rows_whose_s3_save_failed(monkeypatch):
     )
     monkeypatch.setattr(ingest, "get_conn", get_conn)
 
-    count = ingest.store_images(7, "決算.pdf", [_image("1ページ目"), _image("2ページ目")])
+    count = ingest.store_images(
+        7, "決算.pdf", [_image("1ページ目"), _image("2ページ目")], index_method="none"
+    )
 
     assert count == 1
     rows = cur.executemany.call_args.args[1]
-    assert [r[3] for r in rows] == ["images/決算.pdf/0001.png"]
+    assert _col(rows, "image_path") == ["images/決算.pdf/0001.png"]
+
+
+def test_store_images_indexes_only_images_that_reached_s3(monkeypatch):
+    """★索引作成はS3保存の後★。保存できなかった画像にAPIコストを払わない。"""
+    ingest = pytest.importorskip("app.ingest")
+    get_conn, _, _ = _mock_conn(next_index=0)
+    indexed: list[list] = []
+
+    monkeypatch.setattr(ingest.storage, "is_enabled", lambda: True)
+    results = iter([False, True])  # 1枚目は保存失敗
+    monkeypatch.setattr(
+        ingest.storage, "save_bytes", lambda key, data, ct: next(results)
+    )
+    monkeypatch.setattr(ingest, "get_conn", get_conn)
+    monkeypatch.setattr(
+        ingest,
+        "build_image_index",
+        lambda source, images, method: (
+            indexed.append([i.label for i in images]),
+            [
+                {
+                    "content": "x",
+                    "context": i.label,
+                    "content_nouns": None,
+                    "embedding": None,
+                    "image_embedding": None,
+                }
+                for i in images
+            ],
+        )[1],
+    )
+
+    ingest.store_images(7, "決算.pdf", [_image("1ページ目"), _image("2ページ目")])
+
+    assert indexed == [["2ページ目"]]  # 保存できた1枚だけが索引作成にかかる
 
 
 def test_store_images_does_nothing_without_s3(monkeypatch):

@@ -352,6 +352,12 @@ class EvalReport(BaseModel):
     params: Optional[Dict[str, Dict[str, float]]] = Field(
         default=None, description="使った数値パラメータ（手法ごと。null/空=既定）"
     )
+    # 常にサーバー側が設定値を入れる（Optional にしない）。既定を置くのは、
+    # このフィールドを持たない呼び出し側がレポートを組み立てられるようにするため。
+    image_index_method: str = Field(
+        default="none",
+        description="画像の索引方式 caption/multimodal/none（取り込み時の設定。A/B比較用の記録）",
+    )
     hit_at_k: float = Field(description="上位k件に正解が入った質問の割合")
     mrr: float = Field(description="正解順位の逆数平均（1位=1.0 / 圏外=0）")
     results: List[EvalResult]

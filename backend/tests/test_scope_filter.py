@@ -158,7 +158,14 @@ def retriever_spy(monkeypatch):
     seen: dict[str, dict] = {}
 
     def make(name):
-        def fake(question, params=None, query_vec=None, project=None, topic=None):
+        def fake(
+            question,
+            params=None,
+            query_vec=None,
+            image_query_vec=None,
+            project=None,
+            topic=None,
+        ):
             seen[name] = {"project": project, "topic": topic}
             return [{"id": 1, "content": "本文", "source": "有給休暇.txt",
                      "cosine_similarity": 0.9, "trgm_similarity": 0.5,

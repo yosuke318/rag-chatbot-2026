@@ -5,7 +5,7 @@
 import psycopg
 from pgvector.psycopg import register_vector
 
-from app.config import DATABASE_URL, EMBED_DIM
+from app.config import DATABASE_URL, EMBED_DIM, MULTIMODAL_EMBED_DIM
 
 
 def get_conn() -> psycopg.Connection:
@@ -109,6 +109,18 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS chunks_image_idx ON chunks (document_id) "
             "WHERE image_path IS NOT NULL;"
+        )
+        # 案B（IMAGE_INDEX_METHOD=multimodal）で画像を直接ベクトル化したもの。
+        # ★embedding とは別の空間★（voyage-multimodal-3 と voyage-3.5）なので
+        # 同じ列に混ぜられない。混ぜるとエラーにならずただ無意味な順位が返る。
+        # NULL = その画像は案Bの索引を持たない（案A・未索引・テキストチャンク）。
+        conn.execute(
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS image_embedding "
+            f"VECTOR({MULTIMODAL_EMBED_DIM});"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS chunks_image_embedding_idx "
+            "ON chunks USING hnsw (image_embedding vector_cosine_ops);"
         )
         # 外部キーの参照側にはインデックスが自動では付かない。無いと
         # スキップ時のチャンク数集計も、documents 削除時の CASCADE も

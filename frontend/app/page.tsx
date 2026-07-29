@@ -66,6 +66,18 @@ const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
       どの文書にも出る語より、珍しい語の一致を高く評価する。
     </>
   ),
+  image: (
+    <>
+      質問と<strong>文書内の画像そのもの</strong>のベクトルがどれだけ近いか。
+      voyage-multimodal-3 が画像とテキストを同じ空間に埋め込むので、
+      言語化を挟まずに図表を直接引ける。
+      <br />
+      <br />
+      当たるのは <code>IMAGE_INDEX_METHOD=multimodal</code> で索引した画像だけ。
+      自動キャプション方式で運用しているときは常に空になり、
+      図表は上の3手法（説明文のチャンク）の側で引っかかる。
+    </>
+  ),
 };
 
 // UI内部だけで使う型（APIには存在しない）

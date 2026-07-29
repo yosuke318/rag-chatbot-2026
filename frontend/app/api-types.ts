@@ -744,6 +744,12 @@ export interface components {
                 };
             } | null;
             /**
+             * Image Index Method
+             * @description 画像の索引方式 caption/multimodal/none（取り込み時の設定。A/B比較用の記録）
+             * @default none
+             */
+            image_index_method: string;
+            /**
              * Hit At K
              * @description 上位k件に正解が入った質問の割合
              */

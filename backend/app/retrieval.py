@@ -6,6 +6,12 @@
   3. RRF で 2つのランキングを融合 → 上位 TOP_K 件 -> reciprocal_rank_fusion と _rrf_scores
   4. リランク で最終並べ替え -> rerank_candidates（USE_RERANK 有効時のみ）
 
+文書内の図表（5-2）は取り込み方で当たり方が変わる:
+  - 案A（自動キャプション）… 画像の説明文が普通のチャンクとして入るので、上の
+    1〜3 がそのまま効く。専用の手法は要らない。
+  - 案B（マルチモーダル埋め込み）… 画像は別の空間のベクトルなので、専用の
+    image_search を RRF にもう1本足して比較する。
+
 なぜ2種類混ぜるか:
   - ベクトル検索は「意味」に強いが、型番・固有名詞など"字面そのもの"の一致に弱い。
   - 字面検索は逆。「有給」という語がそのまま入っている文書を確実に拾う。
@@ -25,7 +31,12 @@ from app.config import (
 )
 from app.db import get_conn
 from app.keywords import extract_nouns, noun_text
-from app.llm import embed_query, rank_by_relevance, voyage_rerank
+from app.llm import (
+    embed_multimodal_queries,
+    embed_query,
+    rank_by_relevance,
+    voyage_rerank,
+)
 
 CANDIDATES = 20  # 各検索が融合前に返す候補数
 RRF_K = 60       # RRFの平滑化定数（順位差をなだらかにする）
@@ -62,6 +73,7 @@ def vector_search(
     k: int = CANDIDATES,
     params: dict | None = None,
     query_vec: list[float] | None = None,
+    image_query_vec: list[float] | None = None,  # 使わない（image_search 専用）
     project: str | None = None,
     topic: str | None = None,
 ) -> list[dict]:
@@ -108,11 +120,64 @@ def vector_search(
     ]
 
 
+def image_search(
+    question: str,
+    k: int = CANDIDATES,
+    params: dict | None = None,
+    query_vec: list[float] | None = None,  # 使わない（空間が違う。下記）
+    image_query_vec: list[float] | None = None,
+    project: str | None = None,
+    topic: str | None = None,
+) -> list[dict]:
+    """画像ベクトル（案B: voyage-multimodal-3）での近傍探索。上位k件。
+
+    ★query_vec を使わない★のがこの手法の要点。vector_search が使う質問ベクトルは
+    voyage-3.5 の空間、画像は voyage-multimodal-3 の空間で、次元は同じ1024でも
+    まったく別物。取り違えてもSQLはエラーにならず、ただ無意味な順位が返るだけなので、
+    ここでは受け取った query_vec を明示的に無視し、専用の image_query_vec を使う。
+
+    image_embedding を持つのは IMAGE_INDEX_METHOD=multimodal で取り込んだ画像
+    チャンクだけ。案A（キャプション）で運用しているときこの手法は常に空を返し、
+    RRF は残りの手法だけで決まる（lexical_search が閾値未満で空を返すのと同じ）。
+
+    image_query_vec: 質問のマルチモーダルベクトルを外から渡す（未指定なら呼ぶ）。
+      vector_search の query_vec と同じ理由 ＝ 評価で質問ごとに1リクエスト
+      投げると Voyage の分間上限に当たるため、eval は全問まとめて渡す。
+    """
+    if image_query_vec is None:
+        image_query_vec = embed_multimodal_queries([question])[0]
+    scope, scope_values = _scope_sql(project, topic)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT c.id, c.content, d.source,
+                   c.image_embedding <=> %s::vector AS cosine_distance
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            WHERE c.image_embedding IS NOT NULL{scope}
+            ORDER BY c.image_embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (image_query_vec, *scope_values, image_query_vec, k),
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "content": r[1],
+            "source": r[2],
+            "cosine_distance": float(r[3]),
+            "cosine_similarity": 1.0 - float(r[3]),
+        }
+        for r in rows
+    ]
+
+
 def lexical_search(
     question: str,
     k: int = CANDIDATES,
     params: dict | None = None,
     query_vec: list[float] | None = None,  # 使わない（レジストリの引数を揃えるため）
+    image_query_vec: list[float] | None = None,  # 同上
     project: str | None = None,
     topic: str | None = None,
 ) -> list[dict]:
@@ -167,6 +232,7 @@ def bm25_search(
     k: int = CANDIDATES,
     params: dict | None = None,
     query_vec: list[float] | None = None,  # 使わない（レジストリの引数を揃えるため）
+    image_query_vec: list[float] | None = None,  # 同上
     project: str | None = None,
     topic: str | None = None,
 ) -> list[dict]:
@@ -217,11 +283,12 @@ def bm25_search(
                        ) AS nouns
                 FROM chunks c
                 JOIN documents d ON d.id = c.document_id
-                -- 画像チャンク(image_path あり)は本文語を持たないので★コーパスから
-                -- 除く★。含めると語数0の行が N と avgdl を動かし、画像を1枚
-                -- 取り込んだだけで既存文書のBM25スコアが変わってしまう。
-                -- 5-2 で画像に言語化テキストが付いたら、その時点で入れ直す。
-                WHERE c.image_path IS NULL{scope}
+                -- ★語を持たない画像チャンクはコーパスから除く★
+                -- 含めると語数0の行が N と avgdl を動かし、画像を1枚取り込んだ
+                -- だけで既存文書のBM25スコアが変わってしまう。
+                -- 自動キャプション(案A)が付いた画像は content_nouns を持つので
+                -- 通常のチャンクと同じ資格でコーパスに入る。
+                WHERE (c.image_path IS NULL OR c.content_nouns IS NOT NULL){scope}
             ),
             -- |D| : 各文書の語数
             lens AS (
@@ -387,6 +454,7 @@ RETRIEVERS = {
     "vector": vector_search,
     "trgm": lexical_search,
     "bm25": bm25_search,
+    "image": image_search,
 }
 
 # 各手法の「生スコア」がどのキーに入っているか
@@ -394,12 +462,14 @@ METRIC_KEY = {
     "vector": "cosine_similarity",
     "trgm": "trgm_similarity",
     "bm25": "bm25_score",
+    "image": "cosine_similarity",
 }
 
 RETRIEVER_META = {
     "vector": {"label": "ベクトル検索（意味）", "metric_label": "cos類似度"},
     "trgm": {"label": "字面検索（名詞トライグラム）", "metric_label": "字面類似度"},
     "bm25": {"label": "BM25全文検索（名詞）", "metric_label": "BM25スコア"},
+    "image": {"label": "画像ベクトル検索（マルチモーダル）", "metric_label": "cos類似度"},
 }
 
 
@@ -407,6 +477,7 @@ RETRIEVER_META = {
 # UIのフォームはこの定義から生成する（画面側に定数をハードコードしない）。
 PARAM_SPECS: dict[str, list[dict]] = {
     "vector": [],  # コサイン類似度に調整可能な定数はない
+    "image": [],   # 同上（画像ベクトルも距離そのもので順位を決める）
     "trgm": [
         {
             "name": "min_similarity",
@@ -506,6 +577,7 @@ def hybrid_search(
     params: dict[str, dict] | None = None,
     rrf_k: int | None = None,
     query_vec: list[float] | None = None,
+    image_query_vec: list[float] | None = None,
     rerank_method: str | None = None,
     rerank_retry_waits: list[int] | None = None,
     project: str | None = None,
@@ -534,6 +606,7 @@ def hybrid_search(
                 question,
                 params=p.get(n),
                 query_vec=query_vec,
+                image_query_vec=image_query_vec,
                 project=project,
                 topic=topic,
             )
@@ -567,6 +640,7 @@ def search_stages(
     rrf_k: int | None = None,
     show: int = 5,
     query_vec: list[float] | None = None,
+    image_query_vec: list[float] | None = None,
     project: str | None = None,
     topic: str | None = None,
 ) -> dict:
@@ -590,6 +664,7 @@ def search_stages(
             question,
             params=effective[n],
             query_vec=query_vec,
+            image_query_vec=image_query_vec,
             project=project,
             topic=topic,
         )
