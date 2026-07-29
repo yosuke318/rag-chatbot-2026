@@ -63,6 +63,12 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS documents_source_idx ON documents (source);"
         )
+        # 検索の区分絞り込み（retrieval._scope_sql の WHERE d.project/d.topic）用。
+        # project だけの絞り込みでも先頭列として効くので複合1本で足りる。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS documents_scope_idx "
+            "ON documents (project, topic);"
+        )
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS chunks (

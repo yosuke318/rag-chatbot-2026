@@ -27,6 +27,13 @@ class ChatRequest(BaseModel):
         default=None,
         description="続きを話す会話のID。null=新しい会話を始める（IDは応答に入る）",
     )
+    # 回答の根拠を「この区分の文書だけ」に限る。未指定＝全文書から探す。
+    project: Optional[str] = Field(
+        default=None, description="プロジェクト（任意。指定するとその区分の文書だけを根拠にする）"
+    )
+    topic: Optional[str] = Field(
+        default=None, description="トピック（任意。指定するとその区分の文書だけを根拠にする）"
+    )
 
 
 class FeedbackRequest(BaseModel):

@@ -145,7 +145,7 @@ def stubs(monkeypatch):
     saved: list[tuple] = []
     seen: dict = {}
 
-    monkeypatch.setattr(main_module, "hybrid_search", lambda q: HITS)
+    monkeypatch.setattr(main_module, "hybrid_search", lambda q, **kw: HITS)
     monkeypatch.setattr(storage, "file_url", lambda source: None)
     monkeypatch.setattr(conversations, "resolve", lambda cid, title=None: cid or 5)
     monkeypatch.setattr(

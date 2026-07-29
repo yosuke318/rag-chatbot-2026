@@ -44,7 +44,7 @@ def chat(client, monkeypatch):
         seen["history"] = list(history or [])
         return "入社6か月で10日付与されます。[1] 翌年度への繰り越しも可能です。[2]"
 
-    monkeypatch.setattr(main_module, "hybrid_search", lambda q: HITS)
+    monkeypatch.setattr(main_module, "hybrid_search", lambda q, **kw: HITS)
     monkeypatch.setattr(main_module, "generate_answer", fake_generate)
     monkeypatch.setattr(storage, "file_url", lambda source: None)
     # 会話履歴(DB)はここでは関心外なので素通しにする（本体は test_conversations.py）
@@ -87,7 +87,7 @@ def test_citation_numbers_match_the_generated_context_order(chat):
 
 def test_citation_preview_is_truncated(chat, monkeypatch):
     long_hit = [{"id": 1, "content": "あ" * 500, "source": "長文.txt"}]
-    monkeypatch.setattr(main_module, "hybrid_search", lambda q: long_hit)
+    monkeypatch.setattr(main_module, "hybrid_search", lambda q, **kw: long_hit)
 
     res, _ = chat()
 

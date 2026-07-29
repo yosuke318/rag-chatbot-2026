@@ -428,6 +428,8 @@ def search(
     trgm_min_similarity: Optional[float] = None,
     bm25_k1: Optional[float] = None,
     bm25_b: Optional[float] = None,
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
 ):
     """検索の各段階を返す。
 
@@ -438,6 +440,8 @@ def search(
     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
     - GET /search?q=...&bm25_k1=2.0&bm25_b=0.3&rrf_k=10 … 定数を変えて挙動を比較
       （指定しなかった定数は既定値が使われる）
+    - GET /search?q=...&project=社内規程&topic=労務 … その区分の文書だけを検索
+      （指定しなかった軸は絞り込まない。BM25の統計も絞った範囲で計算される）
 
     各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
     """
@@ -453,7 +457,13 @@ def search(
         r: {k: v for k, v in vals.items() if v is not None} for r, vals in raw.items()
     }
     return search_stages(
-        q, top_n=top_n, retrievers=names, params=params, rrf_k=rrf_k
+        q,
+        top_n=top_n,
+        retrievers=names,
+        params=params,
+        rrf_k=rrf_k,
+        project=_blank_to_none(project),
+        topic=_blank_to_none(topic),
     )
 
 
@@ -547,10 +557,16 @@ def _prepare_answer(req: ChatRequest) -> dict:
     検索エラーは通常の例外ハンドラで拾える（＝ストリームを開く前に失敗できる）。
 
     ★履歴を読むのは今回の質問を保存する前★。自分の質問が履歴に混ざらないようにする。
+
+    project / topic を指定すると、その区分の文書だけを根拠にして答える。
     """
     conversation_id = conversations.resolve(req.conversation_id, title=req.question)
     history = conversations.load_history(conversation_id)
-    hits = hybrid_search(req.question)
+    hits = hybrid_search(
+        req.question,
+        project=_blank_to_none(req.project),
+        topic=_blank_to_none(req.topic),
+    )
     conversations.add_message(conversation_id, conversations.USER, req.question)
     return {
         "conversation_id": conversation_id,
