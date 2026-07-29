@@ -331,11 +331,20 @@ async def record_api_usage_status(request: Request, call_next):
 
     受付の記録は認証の時点で入れている（レート制限がその件数を数えるため）。
     ステータスだけは応答が決まるまで分からないので、ここで後から埋める。
+
+    ★書き戻しの失敗は握りつぶす★
+      利用ログは補助情報で、応答そのものは既に出来上がっている。ここで例外を
+      通すと、DBの一時障害だけで本来成功していた /v1 の応答が 500 に化ける。
+      課金・レート制限に効く「受付の記録」は認証時に済んでいるので、
+      ステータス欄が NULL のまま残ってもその2つは壊れない。
     """
     response = await call_next(request)
     usage_id = getattr(request.state, "usage_id", None)
     if usage_id is not None:
-        apikeys.set_status(usage_id, response.status_code)
+        try:
+            apikeys.set_status(usage_id, response.status_code)
+        except Exception:
+            logger.exception("利用ログのステータス書き戻しに失敗（応答はそのまま返す）")
     return response
 
 

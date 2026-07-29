@@ -228,6 +228,30 @@ def test_request_is_logged_with_path_and_status(client, authed):
     assert authed["statuses"] == [(100, 200)]  # 応答後にステータスを書き戻す
 
 
+def test_status_writeback_failure_does_not_break_the_response(client, monkeypatch):
+    """★利用ログの書き戻しに失敗しても応答は壊さない★（PR #9 レビュー指摘）。
+
+    ログは補助情報で、応答はもう出来上がっている。ここで例外を通すと、DBの
+    一時障害だけで成功していた /v1 の応答が 500 に化ける。
+    """
+    monkeypatch.setattr(apikeys, "lookup", lambda t: KEY)
+    monkeypatch.setattr(apikeys, "count_recent", lambda key_id: 0)
+    monkeypatch.setattr(apikeys, "log_request", lambda k, p: 100)
+
+    def boom(usage_id, status):
+        raise RuntimeError("DBが一時的に落ちている")
+
+    monkeypatch.setattr(apikeys, "set_status", boom)
+
+    empty = {"question": "q", "retrievers": [], "available_retrievers": [],
+             "applied_params": {"rrf_k": 60, "retrievers": {}},
+             "lexical_min_similarity": 0.0, "stages": [], "fused": []}
+    with patch.object(main_module, "search_stages", return_value=empty):
+        res = client.get("/v1/search?q=有給", headers=AUTH)
+
+    assert res.status_code == 200
+
+
 def test_usage_is_not_recorded_for_internal_endpoints(client, authed):
     """既存の /search（画面用）は認証も課金対象の記録もしない（据え置き）。"""
     empty = {"question": "q", "retrievers": [], "available_retrievers": [],

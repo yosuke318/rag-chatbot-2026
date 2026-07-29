@@ -392,8 +392,11 @@ export default function Home() {
   const [verifyReport, setVerifyReport] = useState<VerifyReport | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState("");
-  // その区分に何件保管されているか（検証は質問数だけ検索するので先に見せる）
+  // その区分に何件保管されているか（検証は質問数だけ検索するので先に見せる）。
+  // 件数が変わるのは「②で検索したとき」だけなので、そこで savedVersion を上げて
+  // 取り直す。検証(/verify)は件数を変えないので、その結果には反応させない。
   const [savedCount, setSavedCount] = useState<number | null>(null);
+  const [savedVersion, setSavedVersion] = useState(0);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -409,7 +412,7 @@ export default function Home() {
     return () => {
       current = false;
     };
-  }, [evalProject, evalTopic, scopeVersion, verifyReport]);
+  }, [evalProject, evalTopic, savedVersion]);
 
   async function runVerify() {
     if (verifying) return;
@@ -667,6 +670,8 @@ export default function Home() {
         return;
       }
       setStages(await res.json());
+      // 検索が通ると質問が保管されるので、④の件数を取り直す
+      setSavedVersion((v) => v + 1);
     } catch (e) {
       setStages(null);
       setSearchError(`通信に失敗しました: ${String(e)}`);
