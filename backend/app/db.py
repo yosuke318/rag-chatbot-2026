@@ -278,6 +278,18 @@ def init_db() -> None:
             );
             """
         )
+        # 正解を「どの種類のチャンクで引けたら正解か」まで下ろす軸（5-2のA/B比較用）。
+        #   'any'（既定） … 文書が上位に来れば正解（従来どおり）
+        #   'text'        … 本文チャンクで引けたときだけ正解
+        #   'image'       … ★画像チャンクで引けたときだけ正解★
+        # これが無いと、図表の索引方式を変えても「同じ文書が1位」で同点になり、
+        # 案A/案Bの差が数値に出ない（文書名だけが正解ラベルだったときの限界）。
+        # NOT NULL + DEFAULT にするのは、NULL に「未指定」以上の意味が無く、
+        # 既存行の意味（文書単位の判定）がそのまま 'any' に対応するため。
+        conn.execute(
+            "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
+            "expected_kind TEXT NOT NULL DEFAULT 'any';"
+        )
         # 既存DB向けの冪等マイグレーション: 会社・部署の2軸は当初の実装で、
         # 本来の設計軸は project/topic。データを保ったまま改名する。
         conn.execute(

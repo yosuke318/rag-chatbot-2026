@@ -16,7 +16,7 @@ from app import apikeys, conversations, saved_questions, storage
 from app.config import IMAGE_INDEX_METHOD, RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
 from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
-from app.eval import evaluate, load_questions
+from app.eval import EXPECTED_KINDS, evaluate, load_questions
 from app.ingest import (
     IMAGE_INDEX_METHODS,
     UnsupportedFileType,
@@ -58,6 +58,7 @@ from app.schemas import (
     TopicsResponse,
     VerifyReport,
 )
+from app.seed import RETRY_WAITS
 
 
 @asynccontextmanager
@@ -738,6 +739,10 @@ def reindex_images_endpoint(method: Optional[str] = None):
     あるので、ファイルを上げ直さずここで差し替えられる。
 
     method 省略時は現在の設定(IMAGE_INDEX_METHOD)。手順は app.eval のドキュメント参照。
+
+    ★429は待って再試行する★（他のWeb経路と違う扱い）。管理用のバッチ操作なので
+    多少待たせてよく、待たずに失敗すると「索引の無い画像」が残って、以降の検索・
+    評価が静かに壊れるため。戻り値の indexed が images と一致しているかを必ず見ること。
     """
     if method is not None and method not in IMAGE_INDEX_METHODS:
         return _error(
@@ -747,7 +752,10 @@ def reindex_images_endpoint(method: Optional[str] = None):
             f"利用可能: {', '.join(IMAGE_INDEX_METHODS)}",
             "",
         )
-    return {"method": method or IMAGE_INDEX_METHOD, **reindex_images(method)}
+    return {
+        "method": method or IMAGE_INDEX_METHOD,
+        **reindex_images(method, retry_waits=RETRY_WAITS),
+    }
 
 
 CITATION_PREVIEW_CHARS = 200  # 引用に載せる該当箇所の長さ（検索の内訳より少し長め）
@@ -964,19 +972,35 @@ def add_eval_question(req: EvalQuestionRequest):
             "question と expected_source の両方を入力してください。",
             "",
         )
+    if req.expected_kind not in EXPECTED_KINDS:
+        return _error(
+            400,
+            "invalid_eval_question",
+            f"未知の正解種別: {req.expected_kind}",
+            f"利用可能: {', '.join(EXPECTED_KINDS)}",
+            "",
+        )
     project = _blank_to_none(req.project)
     topic = _blank_to_none(req.topic)
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO eval_questions "
-            "(project, topic, question, expected_source, note) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (project, topic, req.question, req.expected_source, req.note),
+            "(project, topic, question, expected_source, expected_kind, note) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                project,
+                topic,
+                req.question,
+                req.expected_source,
+                req.expected_kind,
+                req.note,
+            ),
         ).fetchone()[0]
     return {
         "id": new_id,
         "question": req.question,
         "expected_source": req.expected_source,
+        "expected_kind": req.expected_kind,
         "project": project,
         "topic": topic,
         "note": req.note,
@@ -1069,8 +1093,8 @@ def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = No
 
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT id, question, expected_source, project, topic, note "
-            f"FROM eval_questions {where} ORDER BY id",
+            f"SELECT id, question, expected_source, project, topic, note, "
+            f"expected_kind FROM eval_questions {where} ORDER BY id",
             params,
         ).fetchall()
     return {
@@ -1079,6 +1103,7 @@ def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = No
                 "id": r[0],
                 "question": r[1],
                 "expected_source": r[2],
+                "expected_kind": r[6],
                 "project": r[3],
                 "topic": r[4],
                 "note": r[5],

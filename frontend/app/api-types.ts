@@ -106,6 +106,10 @@ export interface paths {
          *     そのまま S3 に保存する（storage.save_bytes）。抽出テキストを原本として
          *     保存すると原本ダウンロードが壊れるため、取り込みは store_original=False にし、
          *     原本の保存はここで明示的に行う。
+         *
+         *     加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する（5-1）。
+         *     画像を持つのは原本バイナリがあるこの経路だけなので、/ingest（テキスト貼り付け）
+         *     には無い処理になる。
          */
         post: operations["ingest_file_ingest_file_post"];
         delete?: never;
@@ -261,6 +265,36 @@ export interface paths {
          *       の移行用。
          */
         post: operations["backfill_files_admin_backfill_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/reindex-images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reindex Images Endpoint
+         * @description S3の原本画像から、画像チャンクの索引だけを作り直す（5-2のA/B比較用）。
+         *
+         *     画像の索引方式（自動キャプション / マルチモーダル埋め込み）は取り込み時に
+         *     決まるため、方式を変えて比べるには索引を作り直す必要がある。原本画像はS3に
+         *     あるので、ファイルを上げ直さずここで差し替えられる。
+         *
+         *     method 省略時は現在の設定(IMAGE_INDEX_METHOD)。手順は app.eval のドキュメント参照。
+         *
+         *     ★429は待って再試行する★（他のWeb経路と違う扱い）。管理用のバッチ操作なので
+         *     多少待たせてよく、待たずに失敗すると「索引の無い画像」が残って、以降の検索・
+         *     評価が静かに壊れるため。戻り値の indexed が images と一致しているかを必ず見ること。
+         */
+        post: operations["reindex_images_endpoint_admin_reindex_images_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -656,6 +690,12 @@ export interface components {
             question: string;
             /** Expected Source */
             expected_source: string;
+            /**
+             * Expected Kind
+             * @description 正解と認めるチャンクの種類 any/text/image
+             * @default any
+             */
+            expected_kind: string;
             /** Project */
             project?: string | null;
             /** Topic */
@@ -678,6 +718,12 @@ export interface components {
              * @description 正解の文書名（この文書が上位に来れば正解）
              */
             expected_source: string;
+            /**
+             * Expected Kind
+             * @description 正解と認めるチャンクの種類 any/text/image（既定 any=文書単位）
+             * @default any
+             */
+            expected_kind: string;
             /**
              * Project
              * @description プロジェクト（未指定は共通）
@@ -759,6 +805,13 @@ export interface components {
              * @description 正解順位の逆数平均（1位=1.0 / 圏外=0）
              */
             mrr: number;
+            /**
+             * By Kind
+             * @description 正解の種類(any/text/image)ごとの内訳。図表の効果は image の行で見る
+             */
+            by_kind?: {
+                [key: string]: components["schemas"]["KindSummary"];
+            };
             /** Results */
             results: components["schemas"]["EvalResult"][];
         };
@@ -775,6 +828,12 @@ export interface components {
              */
             expected_source: string;
             /**
+             * Expected Kind
+             * @description 正解と認めたチャンクの種類 any/text/image
+             * @default any
+             */
+            expected_kind: string;
+            /**
              * Hit
              * @description 上位k件に正解が入ったか
              */
@@ -785,10 +844,21 @@ export interface components {
              */
             rank: number | null;
             /**
+             * Reciprocal Rank
+             * @description この1問のMRR寄与（1位=1.0 / 圏外=0）。A/B比較で問ごとに対にするのに使う
+             * @default 0
+             */
+            reciprocal_rank: number;
+            /**
              * Retrieved
              * @description 実際に上位で引いた文書名の並び
              */
             retrieved: string[];
+            /**
+             * Retrieved Kinds
+             * @description retrieved と同じ並びの種類（text/image）。同名文書の本文と画像を見分ける
+             */
+            retrieved_kinds?: string[];
         };
         /**
          * FeedbackRequest
@@ -916,6 +986,24 @@ export interface components {
              * @default 0
              */
             images_stored: number;
+        };
+        /**
+         * KindSummary
+         * @description 正解の種類（本文 / 画像）ごとの成績。
+         *
+         *     全体平均だけでは図表の検索を評価できない。図表根拠の設問が数問しか無いと、
+         *     本文根拠の設問の平均にかき消されて索引方式の差が見えなくなるため。
+         */
+        KindSummary: {
+            /**
+             * N
+             * @description その種類の設問数
+             */
+            n: number;
+            /** Hit At K */
+            hit_at_k: number;
+            /** Mrr */
+            mrr: number;
         };
         /**
          * ParamSpec
@@ -1734,6 +1822,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    reindex_images_endpoint_admin_reindex_images_post: {
+        parameters: {
+            query?: {
+                method?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

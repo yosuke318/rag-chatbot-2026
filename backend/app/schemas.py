@@ -81,6 +81,12 @@ class EvalQuestionRequest(BaseModel):
 
     question: str = Field(description="評価する質問")
     expected_source: str = Field(description="正解の文書名（この文書が上位に来れば正解）")
+    # 省略可（既定 'any' = 従来どおり文書単位の判定）。図表根拠の設問だけ
+    # 'image' を指定すると「画像チャンクで引けたときだけ正解」になる。
+    expected_kind: str = Field(
+        default="any",
+        description="正解と認めるチャンクの種類 any/text/image（既定 any=文書単位）",
+    )
     project: Optional[str] = Field(default=None, description="プロジェクト（未指定は共通）")
     topic: Optional[str] = Field(default=None, description="トピック（未指定は共通）")
     note: Optional[str] = Field(default=None, description="何を確かめる質問かのメモ（任意）")
@@ -275,6 +281,9 @@ class EvalQuestion(BaseModel):
     id: int
     question: str
     expected_source: str
+    expected_kind: str = Field(
+        default="any", description="正解と認めるチャンクの種類 any/text/image"
+    )
     project: Optional[str] = None
     topic: Optional[str] = None
     note: Optional[str] = None
@@ -332,9 +341,32 @@ class EvalResult(BaseModel):
 
     question: str
     expected_source: str = Field(description="正解の文書名")
+    expected_kind: str = Field(
+        default="any", description="正解と認めたチャンクの種類 any/text/image"
+    )
     hit: bool = Field(description="上位k件に正解が入ったか")
     rank: Optional[int] = Field(description="正解の順位（0始まり）。null=圏外")
+    reciprocal_rank: float = Field(
+        default=0.0,
+        description="この1問のMRR寄与（1位=1.0 / 圏外=0）。A/B比較で問ごとに対にするのに使う",
+    )
     retrieved: List[str] = Field(description="実際に上位で引いた文書名の並び")
+    retrieved_kinds: List[str] = Field(
+        default_factory=list,
+        description="retrieved と同じ並びの種類（text/image）。同名文書の本文と画像を見分ける",
+    )
+
+
+class KindSummary(BaseModel):
+    """正解の種類（本文 / 画像）ごとの成績。
+
+    全体平均だけでは図表の検索を評価できない。図表根拠の設問が数問しか無いと、
+    本文根拠の設問の平均にかき消されて索引方式の差が見えなくなるため。
+    """
+
+    n: int = Field(description="その種類の設問数")
+    hit_at_k: float
+    mrr: float
 
 
 class EvalReport(BaseModel):
@@ -360,6 +392,10 @@ class EvalReport(BaseModel):
     )
     hit_at_k: float = Field(description="上位k件に正解が入った質問の割合")
     mrr: float = Field(description="正解順位の逆数平均（1位=1.0 / 圏外=0）")
+    by_kind: Dict[str, KindSummary] = Field(
+        default_factory=dict,
+        description="正解の種類(any/text/image)ごとの内訳。図表の効果は image の行で見る",
+    )
     results: List[EvalResult]
 
 

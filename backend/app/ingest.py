@@ -118,7 +118,10 @@ def _image_placeholder(label: str) -> str:
 
 
 def build_image_index(
-    source: str, images: list[parsers.ExtractedImage], method: str | None = None
+    source: str,
+    images: list[parsers.ExtractedImage],
+    method: str | None = None,
+    retry_waits: list[int] | None = None,
 ) -> list[dict]:
     """画像を「テキストの質問で引ける」形にする（5-2）。images と同じ長さを返す。
 
@@ -135,6 +138,11 @@ def build_image_index(
     ★失敗しても取り込みを止めない★。APIキー未設定・レート制限・APIエラーは
     すべて「索引なし（＝検索に出ない画像）」に落として警告ログにとどめる。
     図が引けないのは困るが、そのために文書登録ごと失敗させる方がもっと困る。
+
+    retry_waits: 埋め込みAPIが429を返したときに待つ秒数の並び（None=待たない）。
+      ★評価では必ず渡すこと★。ここが429で失敗すると索引なしの画像が並び、
+      「その方式では図が引けなかった」という実測値と区別が付かない数字が出る
+      （実際に踏んだ。compare_image_index が indexed 件数を検査するのはこのため）。
     """
     resolved = (method or IMAGE_INDEX_METHOD).lower()
     # context には★常にラベルを入れる★（説明文が付いたかどうかに関わらず）。
@@ -165,7 +173,9 @@ def build_image_index(
 
     try:
         if resolved == "multimodal":
-            vectors = embed_images([img.data for img in images])
+            vectors = embed_images(
+                [img.data for img in images], retry_waits=retry_waits
+            )
             for row, vec in zip(blank, vectors):
                 row["image_embedding"] = vec
             return blank
@@ -184,6 +194,7 @@ def build_image_index(
         embeddings = embed_texts(
             [_embed_source(images[i].label, captions[i]) for i in indexable],
             input_type="document",
+            retry_waits=retry_waits,
         )
         for i, vec in zip(indexable, embeddings):
             caption = captions[i].strip()
@@ -276,8 +287,22 @@ def store_images(
     return len(stored)
 
 
-def reindex_images(method: str | None = None) -> dict:
-    """既存の画像チャンクの索引だけを作り直す。{"documents", "images"} を返す。
+def _indexed_count(index: list[dict]) -> int:
+    """索引が実際に付いた画像の枚数（どちらかのベクトルを持つ行）。
+
+    ★0件は「引けない画像が並んだ」ということ★。方式の実力ではなく
+    APIの失敗でもこうなるので、呼び出し側が区別できるよう件数を返す。
+    """
+    return sum(
+        1 for row in index if row["embedding"] or row["image_embedding"] is not None
+    )
+
+
+def reindex_images(
+    method: str | None = None, retry_waits: list[int] | None = None
+) -> dict:
+    """既存の画像チャンクの索引だけを作り直す。
+    {"documents", "images", "indexed"} を返す。
 
     ★案A/案Bの比較(5-2)を回すための道具★。索引方式は取り込み時に決まるので、
     素直にやると方式を変えるたびに全ファイルを上げ直すことになる。原本画像は
@@ -286,6 +311,10 @@ def reindex_images(method: str | None = None) -> dict:
 
     method を省略すると現在の設定(IMAGE_INDEX_METHOD)。
     S3から取れなかった画像は飛ばす（その行は前の索引のまま残る）。
+
+    indexed は★実際に索引が付いた枚数★。images と食い違っていたら、その分は
+    レート制限やAPIエラーで索引を作れていない ＝ 検索に出ない。評価の前に
+    ここを見ないと「その方式では引けなかった」という結論を誤って出す。
     """
     with get_conn() as conn:
         rows = conn.execute(
@@ -303,6 +332,7 @@ def reindex_images(method: str | None = None) -> dict:
 
     documents = 0
     updated = 0
+    indexed = 0
     for source, items in by_source.items():
         fetched: list[tuple[int, parsers.ExtractedImage]] = []
         for chunk_id, image_path, label in items:
@@ -330,7 +360,9 @@ def reindex_images(method: str | None = None) -> dict:
         if not fetched:
             continue
 
-        index = build_image_index(source, [img for _, img in fetched], method)
+        index = build_image_index(
+            source, [img for _, img in fetched], method, retry_waits
+        )
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.executemany(
@@ -351,8 +383,9 @@ def reindex_images(method: str | None = None) -> dict:
                 )
         documents += 1
         updated += len(fetched)
+        indexed += _indexed_count(index)
 
-    return {"documents": documents, "images": updated}
+    return {"documents": documents, "images": updated, "indexed": indexed}
 
 
 def build_contexts(

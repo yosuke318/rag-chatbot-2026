@@ -25,6 +25,7 @@ tests/            # 単体テスト（DB・外部APIを使わない純ロジッ�
 ├── test_parsers.py     # PDF/XLSX/PPTX のテキスト抽出
 ├── test_images.py      # 文書内画像の抽出・S3保存・画像チャンク登録
 ├── test_image_index.py # 画像の検索対象化（キャプション / マルチモーダル埋め込み）
+├── test_eval_kinds.py  # チャンク種別の正解判定と A/B の有意差検定
 ├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
 ├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
 ├── test_compare.py     # contextual有無のA/B測定（比較の公平性）

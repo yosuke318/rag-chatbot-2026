@@ -239,7 +239,7 @@ def test_reindex_reads_originals_from_s3_and_rewrites_the_index(monkeypatch, no_
 
     result = ingest.reindex_images(method="multimodal")
 
-    assert result == {"documents": 1, "images": 2}
+    assert result == {"documents": 1, "images": 2, "indexed": 2}
     assert no_api["embed_images"]  # 指定した方式で作り直している
     sql, rows = conn.updates[0]
     assert sql.strip().upper().startswith("UPDATE")
@@ -263,15 +263,53 @@ def test_reindex_skips_images_missing_from_s3(monkeypatch, no_api):
 
     result = ingest.reindex_images(method="caption")
 
-    assert result == {"documents": 1, "images": 1}
+    assert result == {"documents": 1, "images": 1, "indexed": 1}
     assert [r[-1] for r in conn.updates[0][1]] == [12]
+
+
+def test_reindex_counts_only_images_that_actually_got_an_index(monkeypatch, no_api):
+    """★索引を作れなかった枚数が分かること★
+
+    レート制限で索引作成が失敗すると、その方式は「図を引けない」ように見える。
+    実力差なのかAPIの失敗なのかを呼び出し側が区別できないと、A/B比較の結論を
+    間違える（実際に踏んだ）。
+    """
+    conn = _FakeConn([(11, "images/決算.pdf/0001.png", "1ページ目", "決算.pdf")])
+    monkeypatch.setattr(ingest, "get_conn", conn)
+    monkeypatch.setattr(ingest.storage, "get_object", lambda key: (b"ok", "image/png"))
+    monkeypatch.setattr(
+        ingest,
+        "embed_images",
+        lambda datas, retry_waits=None: (_ for _ in ()).throw(RuntimeError("429")),
+    )
+
+    result = ingest.reindex_images(method="multimodal")
+
+    assert result == {"documents": 1, "images": 1, "indexed": 0}
+
+
+def test_reindex_passes_retry_waits_to_the_embedding_api(monkeypatch, no_api):
+    """作り直しは待ってでも完走させる（途中で諦めると索引なしの画像が残る）。"""
+    conn = _FakeConn([(11, "images/決算.pdf/0001.png", "1ページ目", "決算.pdf")])
+    monkeypatch.setattr(ingest, "get_conn", conn)
+    monkeypatch.setattr(ingest.storage, "get_object", lambda key: (b"ok", "image/png"))
+    seen: list = []
+    monkeypatch.setattr(
+        ingest,
+        "embed_images",
+        lambda datas, retry_waits=None: (seen.append(retry_waits), [[0.1]])[1],
+    )
+
+    ingest.reindex_images(method="multimodal", retry_waits=[20, 40])
+
+    assert seen == [[20, 40]]
 
 
 def test_reindex_does_nothing_without_image_chunks(monkeypatch, no_api):
     conn = _FakeConn([])
     monkeypatch.setattr(ingest, "get_conn", conn)
 
-    assert ingest.reindex_images() == {"documents": 0, "images": 0}
+    assert ingest.reindex_images() == {"documents": 0, "images": 0, "indexed": 0}
     assert conn.updates == []
 
 
@@ -343,7 +381,7 @@ def test_image_search_uses_the_multimodal_vector_not_the_text_one(monkeypatch):
     取り違えてもSQLはエラーにならず（どちらも1024次元）、ただ無意味な順位が
     返るだけなので、テストで固定しておく。
     """
-    spy = _SqlSpy([(1, "[画像] 1ページ目", "決算.pdf", 0.2)])
+    spy = _SqlSpy([(1, "[画像] 1ページ目", "決算.pdf", "images/決算.pdf/0001.png", 0.2)])
     monkeypatch.setattr(retrieval, "get_conn", spy)
     monkeypatch.setattr(
         retrieval, "embed_multimodal_queries", lambda texts: [["should-not-be-used"]]
@@ -357,6 +395,8 @@ def test_image_search_uses_the_multimodal_vector_not_the_text_one(monkeypatch):
     assert "image_embedding IS NOT NULL" in sql
     assert params[0] == [0.5] and params[-2] == [0.5]  # 使うのは image_query_vec だけ
     assert hits[0]["cosine_similarity"] == pytest.approx(0.8)
+    # 5-2の評価と5-3の回答生成が「これは画像チャンクだ」と判定する手がかり
+    assert hits[0]["image_path"] == "images/決算.pdf/0001.png"
 
 
 def test_image_search_embeds_the_question_when_not_given(monkeypatch):

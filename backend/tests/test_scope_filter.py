@@ -45,7 +45,9 @@ class FakeConn:
 def sql_spy(monkeypatch):
     """検索関数が投げたSQLを記録する。戻り値は (sql, params) のリスト。"""
     calls: list = []
-    rows = [(1, "本文", "有給休暇.txt", 0.1)]
+    # 列の並びは (id, content, source, image_path, 指標)。image_path は
+    # 「本文チャンクか画像チャンクか」を評価側が見分けるために足したもの。
+    rows = [(1, "本文", "有給休暇.txt", None, 0.1)]
     monkeypatch.setattr(retrieval, "get_conn", lambda: FakeConn(calls, rows))
     monkeypatch.setattr(retrieval, "embed_query", lambda q: [0.1, 0.2, 0.3])
     return calls
