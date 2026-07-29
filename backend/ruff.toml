@@ -1,0 +1,41 @@
+# Python の lint 設定（ruff）。`task lint` / `task fmt` から使う。
+# flake8 + isort 相当を1つのツールで済ませる（速く、追加依存も1つで済むため）。
+
+# 88(black既定)だと日本語コメントの折り返しが増えて可読性が落ちるため100にした。
+# ruff は文字数で数えるので、日本語1文字は1として扱われる。
+line-length = 100
+
+# 生成物・依存は対象外。api-types.ts と同じで、直す先はここではない。
+exclude = [".venv", "venv", "__pycache__", ".git"]
+
+[lint]
+select = [
+    "E",   # pycodestyle エラー（インデント・空白・行長）
+    "F",   # pyflakes（未使用import・未定義名など、実バグに繋がるもの）
+    "W",   # pycodestyle 警告（行末の空白など）
+    "I",   # isort（import の並び順）
+    "B",   # flake8-bugbear（引っかかりやすい書き方の罠）
+]
+
+# UP（pyupgrade）は入れていない。`Optional[str]` → `str | None` の一括書き換えが
+# 64箇所走るが、schemas.py の Optional は「任意フィールド」を明示する意図で
+# 揃えてあるもので、書き換えても情報が増えない（.claude/skills/explicit-optionality 参照）。
+ignore = [
+    # B008: 引数の既定値で関数を呼ぶな。FastAPI の `Depends(...)` / `Form(...)` は
+    #       まさにその書き方が正なので、ここで弾くと本来の書き方ができない。
+    "B008",
+    # B905: zip に strict= を付けろ。付けると長さ違いが例外になる＝実行時の挙動が
+    #       変わる。今の呼び出しは長さを揃えてから渡している（eval/verify）ので、
+    #       挙動を変える変更をlintの都合で入れない。
+    "B905",
+]
+
+# E402（import がファイル先頭にない）はテストで意図的に使っている。
+# psycopg 等が入っていない環境を importorskip で先に弾いてから app を import する
+# 必要があり、順序を入れ替えるとテストが収集時に落ちる（# noqa: E402 で個別に
+# 抑止済みだが、conftest 経由の環境変数設定も同じ形なのでここでも許す）。
+[lint.per-file-ignores]
+"tests/*" = ["E402"]
+
+[lint.isort]
+known-first-party = ["app"]

@@ -24,7 +24,10 @@ from app.config import CHUNK_MAX_CHARS, CHUNK_MIN_CHARS, CHUNK_OVERLAP
 
 @dataclass
 class Chunk:
-    """1チャンク。text=本文、heading=その位置の見出し階層（「第2章 休暇 > 第5条 年次有給休暇」）。"""
+    """1チャンク。
+
+    text=本文、heading=その位置の見出し階層（「第2章 休暇 > 第5条 年次有給休暇」）。
+    """
 
     text: str
     heading: str = ""

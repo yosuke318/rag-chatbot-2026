@@ -6,10 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "next lint --dir app --dir tests",
     "test": "vitest run",
     "gen:types": "openapi-typescript http://localhost:8000/openapi.json -o app/api-types.ts",
-    "screenshot": "node scripts/screenshot.mjs"
+    "screenshot": "node scripts/screenshot.mjs",
+    "lint:fix": "next lint --dir app --dir tests --fix"
   },
   "dependencies": {
     "next": "^14.2.35",
@@ -20,6 +21,8 @@
     "@types/node": "20.14.0",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.35",
     "openapi-typescript": "^7.13.0",
     "puppeteer-core": "^25.3.0",
     "typescript": "5.4.5",

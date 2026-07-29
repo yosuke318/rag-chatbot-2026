@@ -17,7 +17,8 @@ pytest.importorskip("psycopg")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import conversations, llm, main as main_module, storage  # noqa: E402
+from app import conversations, llm, storage  # noqa: E402
+from app import main as main_module
 
 HITS = [{"id": 1, "content": "第5条 有給は10日付与する。", "source": "有給休暇.txt"}]
 
@@ -79,21 +80,25 @@ def test_load_history_with_zero_limit_skips_db(monkeypatch):
 
 
 def test_resolve_creates_conversation_when_id_is_missing(monkeypatch):
-    monkeypatch.setattr(conversations, "create", lambda title=None: 42)
-    monkeypatch.setattr(conversations, "exists", lambda cid: pytest.fail("見に行かない"))
+    monkeypatch.setattr(conversations, "create", lambda title=None, api_key_id=None: 42)
+    monkeypatch.setattr(
+        conversations, "owned_by", lambda cid, key: pytest.fail("見に行かない")
+    )
     assert conversations.resolve(None, title="有給は?") == 42
 
 
 def test_resolve_keeps_existing_id(monkeypatch):
-    monkeypatch.setattr(conversations, "exists", lambda cid: True)
+    monkeypatch.setattr(conversations, "owned_by", lambda cid, key: True)
     assert conversations.resolve(9) == 9
 
 
 def test_resolve_rejects_unknown_id(monkeypatch):
     """存在しないIDは黙って新規作成しない（履歴が繋がらない事故に気づけるように）。"""
-    monkeypatch.setattr(conversations, "exists", lambda cid: False)
+    monkeypatch.setattr(conversations, "owned_by", lambda cid, key: False)
     monkeypatch.setattr(
-        conversations, "create", lambda title=None: pytest.fail("作ってはいけない")
+        conversations,
+        "create",
+        lambda title=None, api_key_id=None: pytest.fail("作ってはいけない"),
     )
     with pytest.raises(conversations.UnknownConversation):
         conversations.resolve(999)
@@ -107,7 +112,10 @@ def test_strip_citations_removes_markers():
 
 
 def test_history_is_placed_before_the_current_question():
-    history = [{"role": "user", "content": "有給は?"}, {"role": "assistant", "content": "10日です [1]。"}]
+    history = [
+        {"role": "user", "content": "有給は?"},
+        {"role": "assistant", "content": "10日です [1]。"},
+    ]
     messages = llm._answer_messages("その上限は?", ["文脈A"], history)
 
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]
@@ -145,9 +153,11 @@ def stubs(monkeypatch):
     saved: list[tuple] = []
     seen: dict = {}
 
-    monkeypatch.setattr(main_module, "hybrid_search", lambda q: HITS)
+    monkeypatch.setattr(main_module, "hybrid_search", lambda q, **kw: HITS)
     monkeypatch.setattr(storage, "file_url", lambda source: None)
-    monkeypatch.setattr(conversations, "resolve", lambda cid, title=None: cid or 5)
+    monkeypatch.setattr(
+        conversations, "resolve", lambda cid, title=None, api_key_id=None: cid or 5
+    )
     monkeypatch.setattr(
         conversations,
         "load_history",
@@ -214,7 +224,7 @@ def test_history_is_read_before_saving_the_new_question(client, monkeypatch, stu
 
 
 def test_unknown_conversation_returns_404(client, stubs, monkeypatch):
-    def boom(cid, title=None):
+    def boom(cid, title=None, api_key_id=None):
         raise conversations.UnknownConversation("会話が見つかりません: 999")
 
     monkeypatch.setattr(conversations, "resolve", boom)

@@ -3,27 +3,27 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import urllib.parse
-
 import anthropic
 import voyageai.error
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from app import apikeys, conversations, saved_questions, storage
+from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
+from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
 from app.ingest import UnsupportedFileType, extract_text, ingest_text
-from app import conversations, storage
-from app.conversations import UnknownConversation
 from app.llm import MissingAPIKey, generate_answer, stream_answer
-from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
 from app.retrieval import (
+    FUSION_PARAM_SPECS,
     UnknownReranker,
     UnknownRetriever,
     hybrid_search,
-    FUSION_PARAM_SPECS,
     preview,
     retriever_infos,
     search_stages,
@@ -41,8 +41,15 @@ from app.schemas import (
     HealthResponse,
     IngestRequest,
     IngestResponse,
+    ProjectsResponse,
+    PublicChatRequest,
     RetrieversResponse,
+    SavedQuestionRequest,
+    SavedQuestionResponse,
+    SavedQuestionsResponse,
     SearchResponse,
+    TopicsResponse,
+    VerifyReport,
 )
 
 
@@ -293,6 +300,141 @@ _ERRORS = {
 }
 
 
+@app.exception_handler(apikeys.ApiKeyError)
+async def invalid_api_key(request: Request, exc: Exception):
+    """公開API(/v1)の認証失敗。どのキーが無効かは返さない（探索の手掛かりを与えない）。"""
+    return _error(
+        401,
+        "invalid_api_key",
+        "APIキーが無効です。",
+        "Authorization: Bearer <APIキー> を付けてください。"
+        "キーの発行は `python -m app.apikeys --create` です。",
+        str(exc),
+    )
+
+
+@app.exception_handler(apikeys.RateLimitExceeded)
+async def api_rate_limited(request: Request, exc: apikeys.RateLimitExceeded):
+    return _error(
+        429,
+        "api_rate_limit",
+        "このAPIキーのレート制限に達しました。少し待ってから再試行してください。",
+        f"上限は {exc.limit} リクエスト/分です。",
+        str(exc),
+    )
+
+
+@app.middleware("http")
+async def record_api_usage_status(request: Request, call_next):
+    """公開APIの利用ログに、応答のHTTPステータスを書き戻す。
+
+    受付の記録は認証の時点で入れている（レート制限がその件数を数えるため）。
+    ステータスだけは応答が決まるまで分からないので、ここで後から埋める。
+
+    ★書き戻しの失敗は握りつぶす★
+      利用ログは補助情報で、応答そのものは既に出来上がっている。ここで例外を
+      通すと、DBの一時障害だけで本来成功していた /v1 の応答が 500 に化ける。
+      課金・レート制限に効く「受付の記録」は認証時に済んでいるので、
+      ステータス欄が NULL のまま残ってもその2つは壊れない。
+    """
+    response = await call_next(request)
+    usage_id = getattr(request.state, "usage_id", None)
+    if usage_id is not None:
+        try:
+            apikeys.set_status(usage_id, response.status_code)
+        except Exception:
+            logger.exception("利用ログのステータス書き戻しに失敗（応答はそのまま返す）")
+    return response
+
+
+def require_api_key(request: Request) -> apikeys.ApiKey:
+    """/v1 の入口。認証・レート制限・利用ログをまとめて行う。
+
+    ★リクエストに project を書かせない★
+      テナントの境界はキー側にあるので、クエリで project を渡されたら
+      黙って無視せず 400 で弾く。無視すると「絞ったつもりで全体を見ている」
+      と誤解したまま使われうる（本文側は PublicChatRequest が extra="forbid"）。
+    """
+    if "project" in request.query_params:
+        raise ProjectNotAllowed()
+    key, usage_id = apikeys.authenticate(
+        request.headers.get("authorization"), request.url.path
+    )
+    # 応答時にステータスを書き戻すため、この行IDをミドルウェアへ渡す
+    request.state.usage_id = usage_id
+    return key
+
+
+class ProjectNotAllowed(ValueError):
+    """/v1 で project を指定しようとした（テナントはキー側で決まる）。"""
+
+
+@app.exception_handler(ProjectNotAllowed)
+async def project_not_allowed(request: Request, exc: Exception):
+    return _error(
+        400,
+        "project_not_allowed",
+        "project は指定できません。",
+        "検索対象のプロジェクトはAPIキーに紐づいています。"
+        "さらに絞るときは topic を使ってください。",
+        "",
+    )
+
+
+# 公開API。既存の /ingest・/search・/chat は据え置きで、公開する面だけを
+# /v1 で包む（内部の実験用パラメータを外に出さないため、引数も絞ってある）。
+v1 = APIRouter(
+    prefix="/v1",
+    tags=["public"],
+    dependencies=[Depends(require_api_key)],  # ルータ配下は全て認証必須
+    responses={
+        400: {"model": ErrorResponse, "description": "入力不正"},
+        401: {"model": ErrorResponse, "description": "APIキーが無効"},
+        429: {"model": ErrorResponse, "description": "レート制限"},
+        502: {"model": ErrorResponse, "description": "外部API呼び出し失敗"},
+    },
+)
+
+
+@v1.get("/search", response_model=SearchResponse)
+def v1_search(
+    q: str,
+    top_n: int = 4,
+    topic: Optional[str] = None,
+    key: apikeys.ApiKey = Depends(require_api_key),
+):
+    """このキーのプロジェクトの文書だけを検索する。
+
+    検索手法や数値パラメータ（retrievers / rrf_k / bm25_k1 …）は公開しない。
+    あれは挙動を観察するための実験用ノブで、外部に出すと結果の再現性を
+    こちらで保証できなくなるため、既定の構成で固定して返す。
+    """
+    return search_stages(
+        q, top_n=top_n, project=key.project, topic=_blank_to_none(topic)
+    )
+
+
+@v1.post("/chat", response_model=ChatResponse)
+def v1_chat(req: PublicChatRequest, key: apikeys.ApiKey = Depends(require_api_key)):
+    """このキーのプロジェクトの文書だけを根拠に回答する。
+
+    ★project はリクエストから受け取らず、キーの値を使う★
+    conversation_id は自分のキーで始めた会話しか続けられない（他は404）。
+    """
+    return _answer(
+        ChatRequest(
+            question=req.question,
+            conversation_id=req.conversation_id,
+            project=key.project,
+            topic=req.topic,
+        ),
+        api_key_id=key.id,
+    )
+
+
+app.include_router(v1)
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health():
     return {"status": "ok"}
@@ -419,6 +561,46 @@ def retrievers_list():
     }
 
 
+@app.get("/projects", response_model=ProjectsResponse)
+def list_projects():
+    """登録済みのプロジェクト名の一覧。UIの区分セレクタを埋めるのに使う。
+
+    ★文書(documents)と評価用質問(eval_questions)の和集合★を返す。
+    文書だけを見ると「質問は登録したがまだ文書が無いプロジェクト」が
+    セレクタに出てこず、④の評価対象として選べなくなるため。
+    NULL（＝どこにも属さない共通）は選択肢にならないので除く。
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT project FROM documents WHERE project IS NOT NULL "
+            "UNION "
+            "SELECT project FROM eval_questions WHERE project IS NOT NULL "
+            "ORDER BY 1"
+        ).fetchall()
+    return {"projects": [r[0] for r in rows]}
+
+
+@app.get("/topics", response_model=TopicsResponse)
+def list_topics(project: Optional[str] = None):
+    """登録済みのトピック名の一覧。project を付けるとその配下だけに絞る。
+
+    UIは「プロジェクトを選ぶ → そのトピックだけが候補になる」という順で使う。
+    project 未指定なら全プロジェクトのトピックを返す（絞り込みなし）。
+    """
+    project = _blank_to_none(project)
+    scope = "" if project is None else " AND project = %s"
+    params = [] if project is None else [project, project]
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT topic FROM documents WHERE topic IS NOT NULL{scope} "
+            "UNION "
+            f"SELECT topic FROM eval_questions WHERE topic IS NOT NULL{scope} "
+            "ORDER BY 1",
+            params,
+        ).fetchall()
+    return {"topics": [r[0] for r in rows]}
+
+
 @app.get("/search", response_model=SearchResponse, responses=_ERRORS)
 def search(
     q: str,
@@ -428,6 +610,8 @@ def search(
     trgm_min_similarity: Optional[float] = None,
     bm25_k1: Optional[float] = None,
     bm25_b: Optional[float] = None,
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
 ):
     """検索の各段階を返す。
 
@@ -438,6 +622,8 @@ def search(
     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
     - GET /search?q=...&bm25_k1=2.0&bm25_b=0.3&rrf_k=10 … 定数を変えて挙動を比較
       （指定しなかった定数は既定値が使われる）
+    - GET /search?q=...&project=社内規程&topic=労務 … その区分の文書だけを検索
+      （指定しなかった軸は絞り込まない。BM25の統計も絞った範囲で計算される）
 
     各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
     """
@@ -452,9 +638,22 @@ def search(
     params = {
         r: {k: v for k, v in vals.items() if v is not None} for r, vals in raw.items()
     }
-    return search_stages(
-        q, top_n=top_n, retrievers=names, params=params, rrf_k=rrf_k
+    project = _blank_to_none(project)
+    topic = _blank_to_none(topic)
+    stages = search_stages(
+        q,
+        top_n=top_n,
+        retrievers=names,
+        params=params,
+        rrf_k=rrf_k,
+        project=project,
+        topic=topic,
     )
+    # ★検索が成功してから保管する★（④でまとめて検証するための質問集になる）。
+    # 失敗した検索（キー未設定・手法名のtypo等）は保管しない: 例外で先に抜けるため
+    # ここまで来ない。同じ区分の同じ質問は重ならない（saved_questions.save）。
+    saved_questions.save(q, project, topic)
+    return stages
 
 
 @app.get("/files/{source:path}", responses=_ERRORS)
@@ -540,17 +739,27 @@ def _citations(hits: list[dict]) -> list[dict]:
     return citations
 
 
-def _prepare_answer(req: ChatRequest) -> dict:
+def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
     """回答生成の手前まで（会話の確定・検索・引用の組み立て・履歴の読み出し）。
 
     /chat と /chat/stream で共通。ここまでは生成APIを呼ばないので、キー未設定や
     検索エラーは通常の例外ハンドラで拾える（＝ストリームを開く前に失敗できる）。
 
     ★履歴を読むのは今回の質問を保存する前★。自分の質問が履歴に混ざらないようにする。
+
+    project / topic を指定すると、その区分の文書だけを根拠にして答える。
+    api_key_id: 公開API(/v1)から来た場合の発行キー。会話の持ち主として記録し、
+      続きの質問も同じキーのものだけを許す（他テナントの履歴を読ませない）。
     """
-    conversation_id = conversations.resolve(req.conversation_id, title=req.question)
+    conversation_id = conversations.resolve(
+        req.conversation_id, title=req.question, api_key_id=api_key_id
+    )
     history = conversations.load_history(conversation_id)
-    hits = hybrid_search(req.question)
+    hits = hybrid_search(
+        req.question,
+        project=_blank_to_none(req.project),
+        topic=_blank_to_none(req.topic),
+    )
     conversations.add_message(conversation_id, conversations.USER, req.question)
     return {
         "conversation_id": conversation_id,
@@ -573,9 +782,18 @@ def chat(req: ChatRequest):
     conversation_id を渡すと直近の履歴を踏まえて答える（未指定なら新しい会話）。
     逐次表示したい場合は /chat/stream を使う。
     """
+    return _answer(req)
+
+
+def _answer(req: ChatRequest, api_key_id: Optional[int] = None):
+    """検索 → 生成 → 履歴保存。/chat と /v1/chat で共通の本体。
+
+    違いは「誰の会話か（api_key_id）」と「どの区分を見るか（req.project）」だけで、
+    検索も生成もまったく同じものを通る（公開APIのためにコアを分岐させない）。
+    """
     if (invalid := _reject_empty_question(req)) is not None:
         return invalid
-    prepared = _prepare_answer(req)
+    prepared = _prepare_answer(req, api_key_id=api_key_id)
     answer = generate_answer(req.question, prepared["contexts"], prepared["history"])
     conversations.add_message(
         prepared["conversation_id"],
@@ -724,6 +942,72 @@ def add_eval_question(req: EvalQuestionRequest):
         "topic": topic,
         "note": req.note,
     }
+
+
+@app.post(
+    "/saved-questions",
+    response_model=SavedQuestionResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def add_saved_question(req: SavedQuestionRequest):
+    """質問を保管する（正解ラベル不要）。②の検索時は自動で保管される。
+
+    既に同じ区分に同じ質問があれば saved=false を返す。これはエラーではなく
+    「重ねなかった」という結果なので 200 のまま返す。
+    """
+    if not req.question.strip():
+        return _error(
+            400,
+            "invalid_saved_question",
+            "質問は必須です。",
+            "question を入力してください。",
+            "",
+        )
+    project = _blank_to_none(req.project)
+    topic = _blank_to_none(req.topic)
+    saved = saved_questions.save(req.question, project, topic)
+    return {
+        "saved": saved,
+        "question": req.question.strip(),
+        "project": project,
+        "topic": topic,
+    }
+
+
+@app.get("/saved-questions", response_model=SavedQuestionsResponse)
+def list_saved_questions(project: Optional[str] = None, topic: Optional[str] = None):
+    """保管済みの質問を返す。project/topic で絞り込める（未指定の軸は絞らない）。
+
+    UIは検証を走らせる前に「この区分に何件あるか」を出すのに使う
+    （/verify は質問数だけ検索するので、先に件数が見えた方が押しやすい）。
+    """
+    return {
+        "questions": saved_questions.load(
+            _blank_to_none(project), _blank_to_none(topic)
+        )
+    }
+
+
+@app.get("/verify", response_model=VerifyReport, responses=_ERRORS)
+def verify_saved_questions(
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
+    top_k: int = 4,
+):
+    """保管済みの質問すべてを検索し、各質問の上位k件（RRF）をまとめて返す。
+
+    ★質問の絞り込みと検索スコープの両方に同じ project/topic が効く★
+    「その区分の質問を、その区分の文書に対して引く」を揃えるため。
+
+    正解ラベルを持たないので採点はしない（○×やHit@kは出ない）。
+    「今の設定でこの質問集を引くと何が上位に来るか」を並べて見るための機能で、
+    数値で良し悪しを判定したいときは正解ラベル付きの /eval を使う。
+    """
+    return saved_questions.verify(
+        project=_blank_to_none(project),
+        topic=_blank_to_none(topic),
+        top_k=top_k,
+    )
 
 
 @app.get("/eval-questions", response_model=EvalQuestionsResponse)

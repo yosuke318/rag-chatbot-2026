@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 
+from app import parsers, storage
 from app.chunking import Chunk, split_chunks
 from app.config import (
     CHUNK_MAX_CHARS,
@@ -23,7 +24,6 @@ from app.config import (
 from app.db import get_conn
 from app.keywords import noun_text
 from app.llm import embed_texts, generate_chunk_contexts
-from app import parsers, storage
 
 
 class UnsupportedFileType(Exception):

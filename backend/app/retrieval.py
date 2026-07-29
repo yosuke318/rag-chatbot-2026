@@ -31,11 +31,39 @@ CANDIDATES = 20  # 各検索が融合前に返す候補数
 RRF_K = 60       # RRFの平滑化定数（順位差をなだらかにする）
 
 
+def _scope_sql(
+    project: str | None, topic: str | None, alias: str = "d"
+) -> tuple[str, list]:
+    """project / topic の絞り込みを「AND句の断片」と埋め込み値にする。
+
+    指定しなかった軸は絞り込まない（project だけ指定ならトピックは問わず全部）。
+    NULL は「どこにも属さない共通文書」の意味なので `= %s` で拾えない値であり、
+    未指定＝条件を作らない、で扱いを揃えている（空文字はAPI境界で None に
+    正規化済み。app.main._blank_to_none 参照）。
+
+    pgvector の HNSW は「近傍を探してから絞る」ため、区分が細かく1区分の割合が
+    小さいと候補が不足しうる。個人利用の規模では実害が無いのでそのままにし、
+    必要になったら pgvector 0.8+ の iterative scan か区分別の部分インデックスで
+    対処する。
+    """
+    clauses: list[str] = []
+    values: list = []
+    if project is not None:
+        clauses.append(f" AND {alias}.project = %s")
+        values.append(project)
+    if topic is not None:
+        clauses.append(f" AND {alias}.topic = %s")
+        values.append(topic)
+    return "".join(clauses), values
+
+
 def vector_search(
     question: str,
     k: int = CANDIDATES,
     params: dict | None = None,
     query_vec: list[float] | None = None,
+    project: str | None = None,
+    topic: str | None = None,
 ) -> list[dict]:
     """意味の近さ（コサイン距離）で上位k件。
 
@@ -49,21 +77,24 @@ def vector_search(
       評価(eval)のように質問が何件も分かっているときは、呼び出し側で全件を
       1回の embed にまとめてからここへ渡す。1問1リクエストだと埋め込みAPIの
       分間リクエスト上限（Voyage 無料枠は 3 RPM）に4問目で当たるため。
+
+    project / topic: 指定するとその区分の文書だけを検索対象にする（_scope_sql）。
     """
     if query_vec is None:
         query_vec = embed_query(question)
+    scope, scope_values = _scope_sql(project, topic)
     with get_conn() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT c.id, c.content, d.source,
                    c.embedding <=> %s::vector AS cosine_distance
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
-            WHERE c.embedding IS NOT NULL
+            WHERE c.embedding IS NOT NULL{scope}
             ORDER BY c.embedding <=> %s::vector
             LIMIT %s
             """,
-            (query_vec, query_vec, k),
+            (query_vec, *scope_values, query_vec, k),
         ).fetchall()
     return [
         {
@@ -82,6 +113,8 @@ def lexical_search(
     k: int = CANDIDATES,
     params: dict | None = None,
     query_vec: list[float] | None = None,  # 使わない（レジストリの引数を揃えるため）
+    project: str | None = None,
+    topic: str | None = None,
 ) -> list[dict]:
     """字面の一致（トライグラム類似度）で上位k件。閾値未満は返さない。
 
@@ -104,18 +137,19 @@ def lexical_search(
     if not query_nouns:  # 名詞が1つも無い質問は字面検索を行わない
         return []
 
+    scope, scope_values = _scope_sql(project, topic)
     with get_conn() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT c.id, c.content, d.source,
                    similarity(COALESCE(c.content_nouns, ''), %s) AS trgm_similarity
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
-            WHERE similarity(COALESCE(c.content_nouns, ''), %s) >= %s
+            WHERE similarity(COALESCE(c.content_nouns, ''), %s) >= %s{scope}
             ORDER BY similarity(COALESCE(c.content_nouns, ''), %s) DESC
             LIMIT %s
             """,
-            (query_nouns, query_nouns, min_similarity, query_nouns, k),
+            (query_nouns, query_nouns, min_similarity, *scope_values, query_nouns, k),
         ).fetchall()
     return [
         {
@@ -133,6 +167,8 @@ def bm25_search(
     k: int = CANDIDATES,
     params: dict | None = None,
     query_vec: list[float] | None = None,  # 使わない（レジストリの引数を揃えるため）
+    project: str | None = None,
+    topic: str | None = None,
 ) -> list[dict]:
     """BM25 で上位k件。名詞列(content_nouns)を単語列とみなして計算する。
 
@@ -148,6 +184,11 @@ def bm25_search(
 
     ※ PostgreSQLの ts_rank は IDF を持たないため使わず、式をそのままSQLで書いている。
       毎回コーパス統計を計算するので大規模では重い（本番は事前集計テーブルにする）。
+
+    project / topic: 指定するとその区分の文書だけを検索対象にする。★絞り込みは
+      統計を作る doc CTE に掛ける★ので、N・avgdl・IDF もその区分の中で計算される
+      （他プロジェクトの文書数や語の分布が IDF を歪めない）。最後だけ絞ると
+      「他区分を含めたコーパスで付けたスコア」を並べ替えることになってしまう。
     """
     p = params or {}
     k1 = p.get("k1", BM25_K1)
@@ -157,21 +198,26 @@ def bm25_search(
     if not terms:
         return []
 
+    scope, scope_values = _scope_sql(project, topic)
     with get_conn() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH
             -- 質問の名詞（重複除去）
             q AS (
                 SELECT DISTINCT term FROM unnest(%s::text[]) AS term
             ),
-            -- 各チャンクの名詞を配列に。空文字は NULL にして語数0扱いにする
+            -- 各チャンクの名詞を配列に。空文字は NULL にして語数0扱いにする。
+            -- documents を JOIN するのは区分で絞るため（chunks.document_id は
+            -- NOT NULL + 外部キーなので、絞らないときの件数は変わらない）。
             doc AS (
                 SELECT c.id,
                        string_to_array(
                            NULLIF(TRIM(COALESCE(c.content_nouns, '')), ''), ' '
                        ) AS nouns
                 FROM chunks c
+                JOIN documents d ON d.id = c.document_id
+                WHERE TRUE{scope}
             ),
             -- |D| : 各文書の語数
             lens AS (
@@ -219,7 +265,7 @@ def bm25_search(
             ORDER BY sc.bm25 DESC
             LIMIT %s
             """,
-            (terms, k1, k1, b, b, k),
+            (terms, *scope_values, k1, k1, b, b, k),
         ).fetchall()
 
     return [
@@ -458,6 +504,8 @@ def hybrid_search(
     query_vec: list[float] | None = None,
     rerank_method: str | None = None,
     rerank_retry_waits: list[int] | None = None,
+    project: str | None = None,
+    topic: str | None = None,
 ) -> list[dict]:
     """指定した検索手法を RRF で融合。rerank=True ならリランクで再並べ替え。
 
@@ -465,6 +513,8 @@ def hybrid_search(
     reciprocal_rank_fusion は可変長リストを受けるので変更不要。
     rerank を省略すると設定(USE_RERANK)に、rerank_method を省略すると
     設定(RERANK_METHOD)に従う。
+
+    project / topic は各手法へそのまま渡る（未指定＝絞り込まない）。
     """
     if rerank is None:
         rerank = USE_RERANK
@@ -476,7 +526,13 @@ def hybrid_search(
     p = params or {}
     fused = reciprocal_rank_fusion(
         [
-            RETRIEVERS[n](question, params=p.get(n), query_vec=query_vec)
+            RETRIEVERS[n](
+                question,
+                params=p.get(n),
+                query_vec=query_vec,
+                project=project,
+                topic=topic,
+            )
             for n in names
         ],
         k=rrf_k if rrf_k is not None else RRF_K,
@@ -507,6 +563,8 @@ def search_stages(
     rrf_k: int | None = None,
     show: int = 5,
     query_vec: list[float] | None = None,
+    project: str | None = None,
+    topic: str | None = None,
 ) -> dict:
     """検索の各段階を返す（学習・デバッグ用）。
 
@@ -524,7 +582,13 @@ def search_stages(
     effective_rrf_k = int(rrf_k if rrf_k is not None else RRF_K)
 
     lists = [
-        RETRIEVERS[n](question, params=effective[n], query_vec=query_vec)
+        RETRIEVERS[n](
+            question,
+            params=effective[n],
+            query_vec=query_vec,
+            project=project,
+            topic=topic,
+        )
         for n in names
     ]
     scored = _rrf_scores(lists, k=effective_rrf_k)

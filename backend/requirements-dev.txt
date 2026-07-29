@@ -3,3 +3,5 @@
 # もしくは Taskfile の `task test` から使う。
 -r requirements.txt
 pytest
+# lint（flake8 + isort 相当）。設定は backend/ruff.toml。`task lint` / `task fmt` から使う
+ruff

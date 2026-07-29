@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, ConfigDict, Field
 
 # --- リクエスト ---------------------------------------------------------------
 
@@ -27,6 +26,35 @@ class ChatRequest(BaseModel):
         default=None,
         description="続きを話す会話のID。null=新しい会話を始める（IDは応答に入る）",
     )
+    # 回答の根拠を「この区分の文書だけ」に限る。未指定＝全文書から探す。
+    project: Optional[str] = Field(
+        default=None, description="プロジェクト（任意。指定するとその区分の文書だけを根拠にする）"
+    )
+    topic: Optional[str] = Field(
+        default=None, description="トピック（任意。指定するとその区分の文書だけを根拠にする）"
+    )
+
+
+class PublicChatRequest(BaseModel):
+    """公開API(/v1/chat)の入力。
+
+    ★project を持たない★ 検索範囲はAPIキーに紐づくプロジェクトで決まり、
+    リクエストからは指定させない（指定できると分離が破れる）。
+    余計なキーは黙って無視せず弾く（extra="forbid"）: project を送って
+    「効いているつもり」になるのが一番危ないため、その場で気づけるようにする。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(description="質問文")
+    conversation_id: Optional[int] = Field(
+        default=None,
+        description="続きを話す会話のID。null=新しい会話（★自分のキーで始めた会話のみ継続可）",
+    )
+    topic: Optional[str] = Field(
+        default=None,
+        description="トピック（任意）。キーのプロジェクト内をさらに絞る",
+    )
 
 
 class FeedbackRequest(BaseModel):
@@ -37,6 +65,15 @@ class FeedbackRequest(BaseModel):
     rating: int = Field(description="+1 = 👍 / -1 = 👎")
     sources: List[str] = Field(default_factory=list, description="回答の根拠に使った出典")
     comment: Optional[str] = Field(default=None, description="自由記述（任意）")
+
+
+class SavedQuestionRequest(BaseModel):
+    """保管する質問1件（正解ラベルなし）。②の検索時は自動で保管されるので、
+    これは「検索せずに質問だけ足したい」場合の入口。"""
+
+    question: str = Field(description="保管する質問")
+    project: Optional[str] = Field(default=None, description="プロジェクト（任意）")
+    topic: Optional[str] = Field(default=None, description="トピック（任意）")
 
 
 class EvalQuestionRequest(BaseModel):
@@ -153,6 +190,22 @@ class RetrieversResponse(BaseModel):
     fusion_params: List[ParamSpec] = Field(description="融合そのもののパラメータ（RRF k）")
 
 
+class ProjectsResponse(BaseModel):
+    """登録済みのプロジェクト一覧（UIのセレクタ用）。"""
+
+    projects: List[str] = Field(
+        description="文書または評価用質問に付いている project（NULL=共通は含まない）"
+    )
+
+
+class TopicsResponse(BaseModel):
+    """登録済みのトピック一覧（UIのセレクタ用）。"""
+
+    topics: List[str] = Field(
+        description="?project= を付けるとそのプロジェクト配下のトピックだけになる"
+    )
+
+
 class SearchResponse(BaseModel):
     """検索の各段階（Claudeを呼ばない）。
 
@@ -224,6 +277,47 @@ class EvalQuestionsResponse(BaseModel):
     """評価用質問の一覧（会社・部署で絞り込める）。"""
 
     questions: List[EvalQuestion]
+
+
+class SavedQuestion(BaseModel):
+    """②で検索したときに保管された質問1件（正解ラベルは持たない）。"""
+
+    id: int
+    question: str
+    project: Optional[str] = None
+    topic: Optional[str] = None
+
+
+class SavedQuestionsResponse(BaseModel):
+    questions: List[SavedQuestion]
+
+
+class SavedQuestionResponse(BaseModel):
+    """保管の結果。既に同じ質問があれば saved=false（エラーではない）。"""
+
+    saved: bool = Field(description="新しく保管したか。false=同じ区分に同じ質問が既にある")
+    question: str
+    project: Optional[str] = None
+    topic: Optional[str] = None
+
+
+class VerifyResult(BaseModel):
+    """保管質問1件の検証結果。正解ラベルが無いので○×は付かない。"""
+
+    question: str
+    project: Optional[str] = None
+    topic: Optional[str] = None
+    fused: List[FusedHit] = Field(description="RRF融合後の上位k件（②の表と同じ形）")
+
+
+class VerifyReport(BaseModel):
+    """保管質問すべての検証結果。UIの一覧はこれを描画する。"""
+
+    n: int = Field(description="検証した質問数")
+    top_k: int
+    project: Optional[str] = Field(default=None, description="絞り込んだプロジェクト（null=全件）")
+    topic: Optional[str] = Field(default=None, description="絞り込んだトピック（null=全件）")
+    results: List[VerifyResult]
 
 
 class EvalResult(BaseModel):

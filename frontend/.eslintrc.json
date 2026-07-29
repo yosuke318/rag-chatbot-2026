@@ -1,0 +1,4 @@
+{
+  "extends": ["next/core-web-vitals"],
+  "ignorePatterns": ["app/api-types.ts", ".next", "node_modules"]
+}

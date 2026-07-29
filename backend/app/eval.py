@@ -47,10 +47,10 @@ from app.config import TOP_K
 from app.db import get_conn
 from app.llm import embed_texts, generate_answer
 from app.retrieval import RERANKERS, hybrid_search, resolve_retrievers
+
 # 429の待ち時間はseedと同じ設定(SEED_RETRY_WAITS)を使う。バッチ処理の待ち方は
 # 「取り込み」も「評価」も同じでよく、環境変数を2つに増やす理由がないため。
 from app.seed import RETRY_WAITS
-
 
 # --- 初期投入用の質問セット（fixture） ----------------------------------------
 # 質問の正はDB(eval_questions)。ここはあくまで「seed_docs とセットの初期データ」で、
@@ -220,6 +220,12 @@ def evaluate(
             query_vec=query_vec,
             rerank_method=rerank_method,
             rerank_retry_waits=retry_waits,
+            # ★質問と同じ区分の文書だけを対象にする★
+            # 「社内規程の質問」を全プロジェクトの文書から探すと、他プロジェクトの
+            # 文書が上位を埋めて Hit@k が下がる＝その区分の実力を測れない。
+            # 区分なし(NULL)の質問は従来どおり全文書が対象。
+            project=item.get("project"),
+            topic=item.get("topic"),
         )
         rank = _rank_of(hits, item["expected_source"])
         hit = rank is not None and rank < top_k

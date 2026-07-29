@@ -226,6 +226,24 @@ cd frontend
 # TODO
 ```
 
+## 開発コマンド（lint / テスト）
+
+[go-task](https://taskfile.dev) 経由で、FE・BE をまとめて実行する。`task --list` で全一覧。
+
+```bash
+task lint    # FE + BE の lint を確認（CIと同じ内容）
+task fmt     # lint の自動修正（import順の並べ替え・未使用importの削除など）
+task test    # バックエンドの単体テスト（DB・外部API不要）
+task test-front  # フロントの単体テスト + 型チェック
+```
+
+- 片側だけ回したいときは `task lint-back` / `task lint-front`（`fmt` も同様）
+- BE は **ruff**（設定 `backend/ruff.toml`）、FE は **ESLint**（設定 `frontend/.eslintrc.json`）
+- BE 側は使い捨てコンテナで実行するので、ホストに Python 環境は要らない
+- 同じコマンドを GitHub Actions（`.github/workflows/test.yml`）でも PR ごとに回すため、
+  手元で `task lint` が通っていれば CI で lint だけ落ちることはない
+- `task fmt` が直せるのは意味の変わらない範囲だけ。行が長すぎる等は手で直す
+
 ## 開発ロードマップ
 
 - [ ] Terraform: network → database → app → ingest → secrets（plan が通る状態まで）

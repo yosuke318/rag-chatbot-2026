@@ -4,6 +4,53 @@
  */
 
 export interface paths {
+    "/v1/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * V1 Search
+         * @description このキーのプロジェクトの文書だけを検索する。
+         *
+         *     検索手法や数値パラメータ（retrievers / rrf_k / bm25_k1 …）は公開しない。
+         *     あれは挙動を観察するための実験用ノブで、外部に出すと結果の再現性を
+         *     こちらで保証できなくなるため、既定の構成で固定して返す。
+         */
+        get: operations["v1_search_v1_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * V1 Chat
+         * @description このキーのプロジェクトの文書だけを根拠に回答する。
+         *
+         *     ★project はリクエストから受け取らず、キーの値を使う★
+         *     conversation_id は自分のキーで始めた会話しか続けられない（他は404）。
+         */
+        post: operations["v1_chat_v1_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -87,6 +134,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Projects
+         * @description 登録済みのプロジェクト名の一覧。UIの区分セレクタを埋めるのに使う。
+         *
+         *     ★文書(documents)と評価用質問(eval_questions)の和集合★を返す。
+         *     文書だけを見ると「質問は登録したがまだ文書が無いプロジェクト」が
+         *     セレクタに出てこず、④の評価対象として選べなくなるため。
+         *     NULL（＝どこにも属さない共通）は選択肢にならないので除く。
+         */
+        get: operations["list_projects_projects_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/topics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Topics
+         * @description 登録済みのトピック名の一覧。project を付けるとその配下だけに絞る。
+         *
+         *     UIは「プロジェクトを選ぶ → そのトピックだけが候補になる」という順で使う。
+         *     project 未指定なら全プロジェクトのトピックを返す（絞り込みなし）。
+         */
+        get: operations["list_topics_topics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -105,6 +200,8 @@ export interface paths {
          *     - GET /search?q=...&retrievers=vector,trgm,bm25 … 手法を明示指定して比較
          *     - GET /search?q=...&bm25_k1=2.0&bm25_b=0.3&rrf_k=10 … 定数を変えて挙動を比較
          *       （指定しなかった定数は既定値が使われる）
+         *     - GET /search?q=...&project=社内規程&topic=労務 … その区分の文書だけを検索
+         *       （指定しなかった軸は絞り込まない。BM25の統計も絞った範囲で計算される）
          *
          *     各手法の順位・生スコアと、RRF融合後の寄与内訳(contributions)が返る。
          */
@@ -287,6 +384,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/saved-questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Saved Questions
+         * @description 保管済みの質問を返す。project/topic で絞り込める（未指定の軸は絞らない）。
+         *
+         *     UIは検証を走らせる前に「この区分に何件あるか」を出すのに使う
+         *     （/verify は質問数だけ検索するので、先に件数が見えた方が押しやすい）。
+         */
+        get: operations["list_saved_questions_saved_questions_get"];
+        put?: never;
+        /**
+         * Add Saved Question
+         * @description 質問を保管する（正解ラベル不要）。②の検索時は自動で保管される。
+         *
+         *     既に同じ区分に同じ質問があれば saved=false を返す。これはエラーではなく
+         *     「重ねなかった」という結果なので 200 のまま返す。
+         */
+        post: operations["add_saved_question_saved_questions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Verify Saved Questions
+         * @description 保管済みの質問すべてを検索し、各質問の上位k件（RRF）をまとめて返す。
+         *
+         *     ★質問の絞り込みと検索スコープの両方に同じ project/topic が効く★
+         *     「その区分の質問を、その区分の文書に対して引く」を揃えるため。
+         *
+         *     正解ラベルを持たないので採点はしない（○×やHit@kは出ない）。
+         *     「今の設定でこの質問集を引くと何が上位に来るか」を並べて見るための機能で、
+         *     数値で良し悪しを判定したいときは正解ラベル付きの /eval を使う。
+         */
+        get: operations["verify_saved_questions_verify_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/eval": {
         parameters: {
             query?: never;
@@ -368,6 +522,16 @@ export interface components {
              * @description 続きを話す会話のID。null=新しい会話を始める（IDは応答に入る）
              */
             conversation_id?: number | null;
+            /**
+             * Project
+             * @description プロジェクト（任意。指定するとその区分の文書だけを根拠にする）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（任意。指定するとその区分の文書だけを根拠にする）
+             */
+            topic?: string | null;
         };
         /** ChatResponse */
         ChatResponse: {
@@ -762,6 +926,43 @@ export interface components {
             description: string;
         };
         /**
+         * ProjectsResponse
+         * @description 登録済みのプロジェクト一覧（UIのセレクタ用）。
+         */
+        ProjectsResponse: {
+            /**
+             * Projects
+             * @description 文書または評価用質問に付いている project（NULL=共通は含まない）
+             */
+            projects: string[];
+        };
+        /**
+         * PublicChatRequest
+         * @description 公開API(/v1/chat)の入力。
+         *
+         *     ★project を持たない★ 検索範囲はAPIキーに紐づくプロジェクトで決まり、
+         *     リクエストからは指定させない（指定できると分離が破れる）。
+         *     余計なキーは黙って無視せず弾く（extra="forbid"）: project を送って
+         *     「効いているつもり」になるのが一番危ないため、その場で気づけるようにする。
+         */
+        PublicChatRequest: {
+            /**
+             * Question
+             * @description 質問文
+             */
+            question: string;
+            /**
+             * Conversation Id
+             * @description 続きを話す会話のID。null=新しい会話（★自分のキーで始めた会話のみ継続可）
+             */
+            conversation_id?: number | null;
+            /**
+             * Topic
+             * @description トピック（任意）。キーのプロジェクト内をさらに絞る
+             */
+            topic?: string | null;
+        };
+        /**
          * RetrieverInfo
          * @description 選択可能な検索手法（UIの切り替え用）。
          */
@@ -820,6 +1021,64 @@ export interface components {
             fusion_params: components["schemas"]["ParamSpec"][];
         };
         /**
+         * SavedQuestion
+         * @description ②で検索したときに保管された質問1件（正解ラベルは持たない）。
+         */
+        SavedQuestion: {
+            /** Id */
+            id: number;
+            /** Question */
+            question: string;
+            /** Project */
+            project?: string | null;
+            /** Topic */
+            topic?: string | null;
+        };
+        /**
+         * SavedQuestionRequest
+         * @description 保管する質問1件（正解ラベルなし）。②の検索時は自動で保管されるので、
+         *     これは「検索せずに質問だけ足したい」場合の入口。
+         */
+        SavedQuestionRequest: {
+            /**
+             * Question
+             * @description 保管する質問
+             */
+            question: string;
+            /**
+             * Project
+             * @description プロジェクト（任意）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（任意）
+             */
+            topic?: string | null;
+        };
+        /**
+         * SavedQuestionResponse
+         * @description 保管の結果。既に同じ質問があれば saved=false（エラーではない）。
+         */
+        SavedQuestionResponse: {
+            /**
+             * Saved
+             * @description 新しく保管したか。false=同じ区分に同じ質問が既にある
+             */
+            saved: boolean;
+            /** Question */
+            question: string;
+            /** Project */
+            project?: string | null;
+            /** Topic */
+            topic?: string | null;
+        };
+        /** SavedQuestionsResponse */
+        SavedQuestionsResponse: {
+            /** Questions */
+            questions: components["schemas"]["SavedQuestion"][];
+        };
+        /**
          * SearchResponse
          * @description 検索の各段階（Claudeを呼ばない）。
          *
@@ -872,6 +1131,17 @@ export interface components {
             /** Preview */
             preview: string;
         };
+        /**
+         * TopicsResponse
+         * @description 登録済みのトピック一覧（UIのセレクタ用）。
+         */
+        TopicsResponse: {
+            /**
+             * Topics
+             * @description ?project= を付けるとそのプロジェクト配下のトピックだけになる
+             */
+            topics: string[];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -885,6 +1155,48 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /**
+         * VerifyReport
+         * @description 保管質問すべての検証結果。UIの一覧はこれを描画する。
+         */
+        VerifyReport: {
+            /**
+             * N
+             * @description 検証した質問数
+             */
+            n: number;
+            /** Top K */
+            top_k: number;
+            /**
+             * Project
+             * @description 絞り込んだプロジェクト（null=全件）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description 絞り込んだトピック（null=全件）
+             */
+            topic?: string | null;
+            /** Results */
+            results: components["schemas"]["VerifyResult"][];
+        };
+        /**
+         * VerifyResult
+         * @description 保管質問1件の検証結果。正解ラベルが無いので○×は付かない。
+         */
+        VerifyResult: {
+            /** Question */
+            question: string;
+            /** Project */
+            project?: string | null;
+            /** Topic */
+            topic?: string | null;
+            /**
+             * Fused
+             * @description RRF融合後の上位k件（②の表と同じ形）
+             */
+            fused: components["schemas"]["FusedHit"][];
+        };
     };
     responses: never;
     parameters: never;
@@ -894,6 +1206,144 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    v1_search_v1_search_get: {
+        parameters: {
+            query: {
+                q: string;
+                top_n?: number;
+                topic?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description APIキーが無効 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    v1_chat_v1_chat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description APIキーが無効 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     health_health_get: {
         parameters: {
             query?: never;
@@ -1081,6 +1531,57 @@ export interface operations {
             };
         };
     };
+    list_projects_projects_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectsResponse"];
+                };
+            };
+        };
+    };
+    list_topics_topics_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     search_search_get: {
         parameters: {
             query: {
@@ -1091,6 +1592,8 @@ export interface operations {
                 trgm_min_similarity?: number | null;
                 bm25_k1?: number | null;
                 bm25_b?: number | null;
+                project?: string | null;
+                topic?: string | null;
             };
             header?: never;
             path?: never;
@@ -1455,6 +1958,140 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_saved_questions_saved_questions_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                topic?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQuestionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_saved_question_saved_questions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedQuestionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQuestionResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_saved_questions_verify_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                topic?: string | null;
+                top_k?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyReport"];
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

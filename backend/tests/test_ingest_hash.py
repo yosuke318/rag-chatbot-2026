@@ -14,7 +14,10 @@ from app import ingest as ingest_module  # noqa: E402
 from app.config import EMBED_DIM  # noqa: E402
 from app.ingest import content_hash, ingest_text  # noqa: E402
 
-TEXT = "第1条 目的\nこの規程は、従業員の労働条件について定める。\n第2条 適用範囲\n本規程は全従業員に適用する。\n"
+TEXT = (
+    "第1条 目的\nこの規程は、従業員の労働条件について定める。\n"
+    "第2条 適用範囲\n本規程は全従業員に適用する。\n"
+)
 
 
 class _Result:

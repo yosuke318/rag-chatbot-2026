@@ -19,6 +19,9 @@ from app import main as main_module  # noqa: E402
 
 _blank_to_none = main_module._blank_to_none
 
+# 取り込み自体はここでの関心外なので、成功したことにする戻り値
+INGEST_RESULT = {"chunks_created": 1, "replaced": 0, "skipped": False}
+
 
 @pytest.fixture(scope="module")
 def client():
@@ -51,7 +54,7 @@ def test_blank_to_none(value, expected):
 
 def test_ingest_stores_blank_scope_as_null(client):
     """空欄で登録したら空文字ではなく NULL が渡る。"""
-    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0, "skipped": False}) as m:
+    with patch("app.main.ingest_text", return_value=INGEST_RESULT) as m:
         res = client.post(
             "/ingest",
             json={"source": "a.txt", "text": "本文", "project": "  ", "topic": ""},
@@ -62,7 +65,7 @@ def test_ingest_stores_blank_scope_as_null(client):
 
 
 def test_ingest_trims_scope(client):
-    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0, "skipped": False}) as m:
+    with patch("app.main.ingest_text", return_value=INGEST_RESULT) as m:
         client.post(
             "/ingest",
             json={"source": "a.txt", "text": "本文", "project": " 社内規程 ", "topic": " 労務 "},
@@ -72,7 +75,7 @@ def test_ingest_trims_scope(client):
 
 
 def test_ingest_file_stores_blank_scope_as_null(client):
-    with patch("app.main.ingest_text", return_value={"chunks_created": 1, "replaced": 0, "skipped": False}) as m, \
+    with patch("app.main.ingest_text", return_value=INGEST_RESULT) as m, \
          patch("app.storage.save_bytes"):
         res = client.post(
             "/ingest-file",
