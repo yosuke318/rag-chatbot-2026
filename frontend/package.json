@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
     "gen:types": "openapi-typescript http://localhost:8000/openapi.json -o app/api-types.ts",
     "screenshot": "node scripts/screenshot.mjs"
   },
@@ -21,6 +22,7 @@
     "@types/react-dom": "18.3.0",
     "openapi-typescript": "^7.13.0",
     "puppeteer-core": "^25.3.0",
-    "typescript": "5.4.5"
+    "typescript": "5.4.5",
+    "vitest": "^4.1.10"
   }
 }

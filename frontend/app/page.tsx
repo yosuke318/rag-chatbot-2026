@@ -6,8 +6,11 @@ import { Fragment, useEffect, useRef, useState } from "react";
 //   再生成: npm run gen:types （backend が :8000 で起動している状態で）
 //   手書きしないことで、BEの型を変えたらここで型エラーになりズレに気づける。
 import type { components } from "./api-types";
+// 描画から切り離した純ロジック（引用の切り分け・SSEの読み取り）は別ファイル。
+// ストリームの境界やマーカーの対応付けは目視で試しにくいので、単体テストを付けてある。
+import { citationHref, splitAnswer, type Citation } from "./citations";
+import { readSSE } from "./sse";
 
-type Citation = components["schemas"]["Citation"];
 type SearchStages = components["schemas"]["SearchResponse"];
 type ApiError = components["schemas"]["ErrorResponse"];
 type RetrieverInfo = components["schemas"]["RetrieverInfo"];
@@ -103,16 +106,8 @@ function SourceLink({ source }: { source: string }) {
   );
 }
 
-// 根拠(citation)の原本URL。バックエンドは環境で2種類のURLを返す:
-//   "/files/..."（ローカルMinIO。backend中継）→ Next経由のプロキシに載せ替える
-//   "https://..."（実S3の署名URL）→ そのまま開く
-function citationHref(url: string): string {
-  return url.startsWith("/") ? `/api/backend${url}` : url;
-}
-
 // 回答本文の [1] [2] を、対応する根拠へジャンプするボタンに変える。
-// 該当する番号の根拠が無いマーカー（Claudeが番号を書き間違えた場合）は
-// ただの文字として残す＝存在しない根拠へのリンクを作らない。
+// 切り分けの規則（存在しない番号は素の文字のまま残す等）は splitAnswer 側にある。
 function AnswerText({
   text,
   citations,
@@ -122,13 +117,11 @@ function AnswerText({
   citations: Citation[];
   onCite: (n: number) => void;
 }) {
-  const parts = text.split(/(\[\d+\])/g);
   return (
     <>
-      {parts.map((part, i) => {
-        const m = /^\[(\d+)\]$/.exec(part);
-        const cite = m && citations.find((c) => c.n === Number(m[1]));
-        if (!cite) return <Fragment key={i}>{part}</Fragment>;
+      {splitAnswer(text, citations).map((part, i) => {
+        const cite = part.citation;
+        if (!cite) return <Fragment key={i}>{part.text}</Fragment>;
         return (
           <button
             key={i}
@@ -511,18 +504,10 @@ export default function Home() {
 
   /** SSE(text/event-stream)を読み進め、届いたイベントを回答へ反映する。 */
   async function readStream(res: Response) {
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error("ストリームを読み取れませんでした");
-    const decoder = new TextDecoder();
-    let buffer = "";
+    if (!res.body) throw new Error("ストリームを読み取れませんでした");
     let answer = "";
 
-    const handle = (block: string) => {
-      const lines = block.split("\n");
-      const name = lines.find((l) => l.startsWith("event: "))?.slice(7);
-      const raw = lines.find((l) => l.startsWith("data: "))?.slice(6);
-      if (!name || !raw) return;
-      const data = JSON.parse(raw);
+    await readSSE(res.body, (name, data) => {
       if (name === "meta") {
         // 根拠は生成より先に確定するので、本文が届く前に出せる
         setConversationId(data.conversation_id);
@@ -538,22 +523,7 @@ export default function Home() {
           question: undefined, // 失敗した回答は 👍/👎 の対象にしない
         });
       }
-    };
-
-    for (;;) {
-      const { value, done } = await reader.read();
-      // ★読み終わりでも引数なしの decode() を必ず呼ぶ★
-      //   stream:true はマルチバイト文字がチャンク境界で割れたとき、続きが来る前提で
-      //   端数バイトをデコーダ内部に残す。最後にフラッシュしないとその文字が消える
-      //   （日本語は3バイトなので、ちょうど境界に当たると末尾が欠ける）。
-      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-      // SSEのイベント区切りは空行。最後の断片は次のチャンクと繋げる
-      const blocks = buffer.split("\n\n");
-      buffer = blocks.pop() ?? "";
-      blocks.forEach(handle);
-      if (done) break;
-    }
-    if (buffer.trim()) handle(buffer);
+    });
   }
 
   /** 回答に 👍/👎 を送る。楽観的に印を付け、失敗したら戻す。 */
