@@ -108,9 +108,43 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS chunks_content_nouns_trgm_idx "
             "ON chunks USING gin (content_nouns gin_trgm_ops);"
         )
+        # 会話履歴。1件の会話(conversations) に発言(messages) がぶら下がる。
+        # 「その上限は？」のような続きの質問に答えるには、直前のやり取りを
+        # コンテキストに載せる必要があるため（単発の一問一答では答えられない）。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversations (
+                id         BIGSERIAL PRIMARY KEY,
+                -- 一覧表示用の見出し。NULL = 未設定（最初の質問から後で付ける余地）
+                title      TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                id              BIGSERIAL PRIMARY KEY,
+                -- 発言は必ず会話に属する。NULLだと履歴の復元から黙って外れるので NOT NULL。
+                conversation_id BIGINT NOT NULL
+                                REFERENCES conversations(id) ON DELETE CASCADE,
+                role            TEXT NOT NULL,   -- 'user' | 'assistant'
+                content         TEXT NOT NULL,
+                -- 回答の根拠に使った出典。NULL可にせず空配列を既定にする
+                -- （「根拠なし」と「未記録」を区別する必要が無いため）
+                sources         TEXT[] NOT NULL DEFAULT '{}',
+                created_at      TIMESTAMPTZ DEFAULT now()
+            );
+            """
+        )
+        # 履歴の読み出しは「この会話の直近N件」なので、会話ID＋順序で引く
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS messages_conversation_idx "
+            "ON messages (conversation_id, id);"
+        )
         # 回答フィードバック：👍/👎 を貯めて評価(eval)のQA候補に回す。
-        # 会話履歴(conversations)は未実装なので、まずは回答そのものを丸ごと残す
-        # 独立テーブルにする。conversations 実装時に conversation_id を足せばよい。
+        # 会話とは独立に「回答そのもの」を丸ごと残すテーブル（評価用の素材なので、
+        # 会話が消えてもフィードバックは残したい）。
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS feedback (

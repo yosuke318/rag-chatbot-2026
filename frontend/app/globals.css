@@ -241,6 +241,99 @@ button:disabled {
   text-decoration: none;
 }
 
+/* 会話（履歴）の状態表示と、会話を切り替えるボタン */
+.conversation-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.conversation-bar .new-conversation {
+  padding: 2px 10px;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.conversation-bar .new-conversation:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* チャンク単位の根拠（引用）。回答本文の [n] と番号で対応する */
+.citations {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.citations-head {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.citation {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: var(--panel);
+}
+
+/* 回答中の [n] を押した根拠を光らせる（どの文がどのチャンク由来かを見せる） */
+.citation.citation-on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+}
+
+.citation-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.cite-n {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.cite-id {
+  color: var(--muted);
+}
+
+.cite-preview {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+/* 回答本文に埋め込む引用マーカー [n] */
+.cite-mark {
+  font-size: 11px;
+  line-height: 1;
+  vertical-align: super;
+  margin: 0 1px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.cite-mark:hover {
+  border-color: var(--accent);
+}
+
 /* 回答への 👍/👎（フィードバック記録） */
 .feedback {
   display: flex;

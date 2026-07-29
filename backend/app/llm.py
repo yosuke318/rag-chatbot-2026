@@ -6,6 +6,7 @@ Anthropicには埋め込みAPIが無いため、埋め込みだけ別プロバ�
 import logging
 import re
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
@@ -17,6 +18,7 @@ from app.config import (
     CONTEXT_CONCURRENCY,
     CONTEXT_MODEL,
     EMBED_MODEL,
+    RERANK_MODEL,
     VOYAGE_API_KEY,
 )
 
@@ -39,6 +41,26 @@ def _require(key: str | None, name: str) -> None:
         raise MissingAPIKey(name)
 
 
+def _voyage_call(call, retry_waits: list[int] | None):
+    """Voyage APIを1回呼ぶ。429なら retry_waits の秒数だけ待って再試行する。
+
+    retry_waits: レート制限(429)を受けたときに待つ秒数の並び。既定の None は
+      「再試行しない」＝ 429 をそのまま投げる。APIリクエストの処理中に何十秒も
+      待つと利用者を待たせるため、Web経路は既定のまま 429 を即返す
+      （main.py の例外ハンドラ）。待っても困らないバッチ処理（app.seed）だけが
+      待ち時間を渡す。無料枠(3 RPM)は文書を4件以上連続投入すると必ず当たる。
+    """
+    for wait in [*(retry_waits or []), None]:
+        try:
+            return call()
+        except voyageai.error.RateLimitError:
+            if wait is None:  # 待ち時間を使い切った
+                raise
+            logger.warning("Voyage APIのレート制限。%d秒待って再試行します", wait)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
 # ============================================================
 # 埋め込み (Voyage)
 # ============================================================
@@ -51,23 +73,14 @@ def embed_texts(
 ) -> list[list[float]]:
     """テキスト群をベクトル化。input_type は "document" か "query"。
 
-    retry_waits: レート制限(429)を受けたときに待つ秒数の並び。既定の None は
-      「再試行しない」＝ 429 をそのまま投げる。APIリクエストの処理中に何十秒も
-      待つと利用者を待たせるため、Web経路は既定のまま 429 を即返す
-      （main.py の例外ハンドラ）。待っても困らないバッチ処理（app.seed）だけが
-      待ち時間を渡す。無料枠(3 RPM)は文書を4件以上連続投入すると必ず当たる。
+    retry_waits の意味は _voyage_call を参照。
     """
     _require(VOYAGE_API_KEY, "VOYAGE_API_KEY")
-    for wait in [*(retry_waits or []), None]:
-        try:
-            result = _voyage.embed(texts, model=EMBED_MODEL, input_type=input_type)
-            return result.embeddings
-        except voyageai.error.RateLimitError:
-            if wait is None:  # 待ち時間を使い切った
-                raise
-            logger.warning("埋め込みAPIのレート制限。%d秒待って再試行します", wait)
-            time.sleep(wait)
-    raise AssertionError("unreachable")
+    result = _voyage_call(
+        lambda: _voyage.embed(texts, model=EMBED_MODEL, input_type=input_type),
+        retry_waits,
+    )
+    return result.embeddings
 
 
 def embed_query(text: str) -> list[float]:
@@ -179,12 +192,41 @@ def generate_chunk_contexts(document: str, chunks: list[str]) -> list[str]:
 
 
 # ============================================================
-# 検索（Voyageのみ / Claudeは任意のリランクだけ）
+# 検索・リランク
 #   検索そのもの（ベクトル / 字面 / BM25 → RRF）は retrieval.py 側にあり、
 #   必要なAPIは質問のベクトル化に使う Voyage の埋め込みだけ。Claudeは呼ばない。
-#   下の rank_by_relevance は「任意」のLLMリランク（USE_RERANK有効時のみ）で、
-#   これだけは例外的にClaudeを使う。素の検索・検索評価に生成APIは要らない。
+#   下の2つは「任意」のリランク（USE_RERANK有効時のみ）。どちらも
+#   (question, passages) -> 関連順の番号リスト という同じ形で、切り替えて比較できる。
+#     voyage_rerank     … Voyage の専用リランクAPI(rerank-2)。既定。Claude不要
+#     rank_by_relevance … Claudeに番号を並べ替えさせるプロンプト式。比較用
+#   素の検索・検索評価そのものに生成APIは要らない。
 # ============================================================
+
+
+def voyage_rerank(
+    question: str, passages: list[str], retry_waits: list[int] | None = None
+) -> list[int]:
+    """Voyage の専用リランクAPIで並べ替え、関連が高い順の番号リストを返す。
+
+    生成モデルに番号を書かせる（rank_by_relevance）のに比べて:
+      - 安い・速い    … 順位付け専用の小さいモデルで、出力はスコアだけ
+      - 順位が安定する … 生成のゆらぎが無く、同じ入力なら同じ順位
+      - 取りこぼしが無い … 全候補に必ずスコアが付く（番号の書き漏らしが起きない）
+    埋め込みで既にVoyageを使っているので、キーも契約もそのまま流用できる。
+
+    APIは relevance_score の降順で results を返すので、その index を並べるだけ。
+    ※リランクは質問1件につき1リクエスト（埋め込みのようにまとめられない）。
+      無料枠(3 RPM)では評価を回すと4問目で429になるため、retry_waits を渡すか
+      支払い方法の登録で上限を緩和すること。
+    """
+    _require(VOYAGE_API_KEY, "VOYAGE_API_KEY")
+    if not passages:
+        return []
+    result = _voyage_call(
+        lambda: _voyage.rerank(question, passages, model=RERANK_MODEL),
+        retry_waits,
+    )
+    return [r.index for r in result.results]
 
 
 def rank_by_relevance(question: str, passages: list[str]) -> list[int]:
@@ -219,25 +261,111 @@ def rank_by_relevance(question: str, passages: list[str]) -> list[int]:
 # ============================================================
 # 回答生成 (Claude)
 #   検索で拾ったチャンクを根拠に、実際の回答文を作る工程。ここはClaudeが必須。
+#
+#   ★チャンク単位の根拠明示★
+#     コンテキストに [1] [2] … と番号を振って渡し、回答の各文の末尾に
+#     その文の根拠になった番号を書かせる。返ってきた本文の [n] は、
+#     呼び出し側が渡した contexts の n 番目（1始まり）に対応する
+#     ＝ 回答のどの主張がどのチャンク由来かを利用者が自分で検証できる。
+#     出典名だけでは「文書のどこか」までしか分からず、検証の役に立たないため。
 # ============================================================
 
 SYSTEM_PROMPT = (
     "あなたは文書検索アシスタントです。以下のコンテキストだけを根拠に、"
     "日本語で簡潔に回答してください。コンテキストに答えが無い場合は"
     "「資料からは分かりません」と答えてください。"
+    "\n\n各コンテキストには [1] [2] のような番号が付いています。"
+    "回答の各文には、その文の根拠になったコンテキストの番号を文末に [1] の形式で"
+    "必ず付けてください（複数の根拠があれば [1][3] のように並べる）。"
+    "番号は与えられたものだけを使い、存在しない番号を書かないでください。"
+    "根拠が無い文（「資料からは分かりません」など）には番号を付けないでください。"
 )
 
 
-def generate_answer(question: str, contexts: list[str]) -> str:
-    """検索した関連チャンクをコンテキストに与えて回答を生成する。"""
-    _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
-    context_block = "\n\n---\n\n".join(contexts) if contexts else "(該当なし)"
-    user_content = f"# コンテキスト\n{context_block}\n\n# 質問\n{question}"
+def number_contexts(contexts: list[str]) -> str:
+    """コンテキストを [1] [2] … の番号付きブロックにまとめる（1始まり）。
 
+    番号は回答本文の引用マーカー [n] と対応する。回答から根拠チャンクを
+    引き当てる唯一の手がかりなので、並び順は呼び出し側の contexts と必ず一致させる。
+    """
+    if not contexts:
+        return "(該当なし)"
+    return "\n\n---\n\n".join(f"[{i}] {c}" for i, c in enumerate(contexts, start=1))
+
+
+CITATION_MARKER = re.compile(r"\s*\[\d+\]")
+
+
+def strip_citations(text: str) -> str:
+    """本文から引用マーカー [n] を取り除く。
+
+    過去の回答を履歴として渡すときに使う。★番号は毎回付け直される★ため
+    （今回の検索結果の並びで決まる）、古い [1] を残したままにすると
+    「前の回答で [1] と書いたから」と別のチャンクを指す番号を再利用されうる。
+    """
+    return CITATION_MARKER.sub("", text)
+
+
+def _answer_messages(
+    question: str, contexts: list[str], history: list[dict] | None = None
+) -> list[dict]:
+    """回答生成に渡すメッセージ列を組み立てる。
+
+    並びは [過去のやり取り…, 今回の質問(コンテキスト付き)]。
+    ★コンテキストは毎回「今回の質問」にだけ付ける★
+      過去の質問に当時のコンテキストまで足すと、古い根拠が新しい回答に混ざる。
+      根拠は常に今回の検索結果だけに限る。
+    """
+    messages = [
+        {
+            "role": m["role"],
+            "content": strip_citations(m["content"])
+            if m["role"] == "assistant"
+            else m["content"],
+        }
+        for m in (history or [])
+    ]
+    messages.append(
+        {
+            "role": "user",
+            "content": f"# コンテキスト\n{number_contexts(contexts)}\n\n# 質問\n{question}",
+        }
+    )
+    return messages
+
+
+def generate_answer(
+    question: str, contexts: list[str], history: list[dict] | None = None
+) -> str:
+    """検索した関連チャンクをコンテキストに与えて回答を生成する。
+
+    戻り値の本文には [n] の引用マーカーが含まれる（n は contexts の1始まりの位置）。
+    history に直近のやり取りを渡すと、続きの質問（「その上限は？」等）に答えられる。
+    """
+    _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
     response = _anthropic.messages.create(
         model=CHAT_MODEL,
         max_tokens=1024,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
+        messages=_answer_messages(question, contexts, history),
     )
     return "".join(block.text for block in response.content if block.type == "text")
+
+
+def stream_answer(
+    question: str, contexts: list[str], history: list[dict] | None = None
+) -> Iterator[str]:
+    """generate_answer のストリーミング版。生成された文字を順に yield する。
+
+    回答が出るまで数秒待たされると「固まった」ように見えるため、書けたところから
+    表示する。渡すもの（system / メッセージ列）は非ストリーミング版と同一で、
+    受け取り方だけが違う ＝ 同じ質問なら同じ品質の回答になる。
+    """
+    _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
+    with _anthropic.messages.stream(
+        model=CHAT_MODEL,
+        max_tokens=1024,
+        system=SYSTEM_PROMPT,
+        messages=_answer_messages(question, contexts, history),
+    ) as stream:
+        yield from stream.text_stream

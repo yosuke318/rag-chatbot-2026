@@ -23,6 +23,10 @@ class IngestRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str = Field(description="質問文")
+    conversation_id: Optional[int] = Field(
+        default=None,
+        description="続きを話す会話のID。null=新しい会話を始める（IDは応答に入る）",
+    )
 
 
 class FeedbackRequest(BaseModel):
@@ -168,9 +172,36 @@ class SearchResponse(BaseModel):
     fused: List[FusedHit]
 
 
+class Citation(BaseModel):
+    """回答の根拠に使ったチャンク1件。
+
+    出典名（文書）だけでは「その文書のどこか」までしか分からず、利用者が回答を
+    自分で検証できない。チャンクのid・該当箇所・原本URLまで返して、
+    回答中の [n] から根拠そのものへ辿れるようにする。
+    """
+
+    n: int = Field(description="回答本文の引用マーカー [n] に対応する番号（1始まり）")
+    chunk_id: int = Field(description="根拠チャンクのid（chunks.id）")
+    source: str = Field(description="出典の文書名")
+    preview: str = Field(description="該当箇所のプレビュー（本文の冒頭を抜粋）")
+    file_url: Optional[str] = Field(
+        default=None,
+        description="原本を開くURL（実S3なら署名URL / ローカルは中継URL）。null=原本なし",
+    )
+
+
 class ChatResponse(BaseModel):
-    answer: str
+    answer: str = Field(
+        description="回答本文。各文の末尾に根拠を指す引用マーカー [n] が付く"
+    )
+    conversation_id: int = Field(
+        description="この発言が属する会話のID。次の質問にこれを渡すと履歴が効く"
+    )
     sources: List[str] = Field(description="根拠に使ったチャンクの出典（重複排除済み）")
+    citations: List[Citation] = Field(
+        default_factory=list,
+        description="回答の根拠に使ったチャンク（[n] の n はこの並びの1始まりの位置）",
+    )
 
 
 class FeedbackResponse(BaseModel):
@@ -212,6 +243,10 @@ class EvalReport(BaseModel):
     top_k: int
     retrievers: Optional[List[str]] = Field(description="使った手法（null=設定の既定）")
     rerank: Optional[bool] = Field(description="リランクの有無（null=設定の既定）")
+    rerank_method: Optional[str] = Field(
+        default=None,
+        description="リランクの方式 voyage/llm（null=設定の既定）。rerankが無効なら無意味",
+    )
     rrf_k: Optional[int] = Field(default=None, description="使ったRRF k（null=既定）")
     params: Optional[Dict[str, Dict[str, float]]] = Field(
         default=None, description="使った数値パラメータ（手法ごと。null/空=既定）"

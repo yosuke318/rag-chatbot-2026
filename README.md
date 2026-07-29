@@ -60,7 +60,8 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 |---|---|---|
 | `POST /ingest` | 文書登録（テキスト→チャンク→埋め込み→保存、原本はS3へ） | Voyage |
 | `GET /search` | 検索の内訳（ベクトル/字面/BM25/RRF） | Voyage |
-| `POST /chat` | 回答生成（根拠付き） | Voyage + Anthropic |
+| `POST /chat` | 回答生成（チャンク単位の根拠＋原本URL付き・会話履歴対応） | Voyage + Anthropic |
+| `POST /chat/stream` | 同上をSSEで逐次返す（根拠は本文より先に届く） | Voyage + Anthropic |
 | `GET /eval` | 質問集で Hit@k / MRR を測定 | Voyage（リランク時 Anthropic） |
 | `GET,POST /eval-questions` | 評価用質問の一覧・登録（プロジェクト・トピックで分離可） | 不要 |
 | `POST /feedback` | 回答への 👍/👎 記録 | 不要 |
@@ -72,7 +73,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 |---|---|
 | 公開API（`/v1/...`） | APIキー認証・レート制限・利用ログ・バージョニング |
 | 検索のプロジェクト・トピック分離 | `documents.project` / `topic` は登録済み。検索・回答をこの軸で絞る対応が未実装 |
-| ファイル取り込み | PDF / xlsx / pptx のテキスト・図表抽出、会話履歴、ストリーミング回答 |
+| ファイル取り込み | PDF / xlsx / pptx の図表抽出（テキスト抽出は実装済み） |
 | マルチモーダル | 文書内画像の検索対象化、原本画像を根拠にした回答、チャート読解支援 |
 
 （ロードマップの詳細は本ファイル末尾の「開発ロードマップ」と Linear を参照）
@@ -145,7 +146,8 @@ python -m app.eval --seed                     # サンプル質問をDBへ初期
 python -m app.eval                            # DBの質問で評価
 python -m app.eval --project 社内規程 --topic 労務   # プロジェクト・トピックで絞って評価
 python -m app.eval --retrievers vector,bm25   # 手法を変えて比較
-python -m app.eval --rerank                   # LLMリランク有りで比較（要 Anthropic）
+python -m app.eval --rerank                   # リランク有りで比較（既定は Voyage rerank-2）
+python -m app.eval --rerank --rerank-method llm  # プロンプト式リランクと比較（要 Anthropic）
 python -m app.eval --gen                      # 回答生成まで走らせて目視（要 Anthropic）
 ```
 
@@ -159,9 +161,13 @@ python -m app.eval --gen                      # 回答生成まで走らせて�
 ポイント:
 
 - **検索評価だけなら Anthropic キーは不要**（質問のベクトル化に Voyage は要る）。
-  `--gen` / `--rerank` を付けたときだけ Claude を呼ぶ。
+  `--gen`、および `--rerank --rerank-method llm` のときだけ Claude を呼ぶ
+  （既定の Voyage リランクは Anthropic キー不要）。
 - `--retrievers` や `--rerank` を切り替えると数字が動くので、
-  「BM25を足すと上がるか」「リランクは効くか」を**同じ質問集で公平に比較**できる。
+  「BM25を足すと上がるか」「リランクは効くか」「どの方式のリランクが効くか」を
+  **同じ質問集で公平に比較**できる。
+- リランクは質問1件につきAPI 1リクエスト。Voyage 無料枠（3 RPM）では4問目で
+  429 になるので、評価を回すなら支払い方法を登録して上限を緩和しておく。
 - 改良（チャンク分割の変更・リランク導入など）の**前後で回して差分を見る**のが本来の使い方。
 
 質問と正解ラベルは **DB の `eval_questions` テーブル**に置く。プロジェクト・トピック
@@ -223,10 +229,10 @@ cd frontend
 ## 開発ロードマップ
 
 - [ ] Terraform: network → database → app → ingest → secrets（plan が通る状態まで）
-- [ ] backend/db: pgvector スキーマ（documents / chunks / conversations）
+- [x] backend/db: pgvector スキーマ（documents / chunks / conversations / messages）
 - [ ] backend/ingest: S3取り込み → PDF構造化 → チャンク分割(contextual) → 埋め込み → UPSERT
 - [ ] backend/retrieval: ハイブリッド検索（ベクトル + BM25 + RRF）→ LLMリランク
-- [ ] backend/chat: ストリーミング回答 + 根拠S3署名URL添付
+- [x] backend/chat: ストリーミング回答（SSE）＋会話履歴＋根拠のチャンク明示・原本URL添付
 - [x] backend/eval: Hit@k / MRR による検索評価（`python -m app.eval`）※ Ragas等での回答忠実性評価は次段
 - [ ] frontend: Next.js + Vercel AI SDK チャットUI
 - [ ] ポートフォリオ: README仕上げ + 操作GIF

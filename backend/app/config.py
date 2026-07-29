@@ -61,6 +61,11 @@ UPLOAD_MAX_BYTES = int(os.getenv("UPLOAD_MAX_MB", "20")) * 1024 * 1024
 # 検索・生成
 TOP_K = 4  # 回答生成に使うチャンク数
 
+# 回答生成に載せる直近の会話履歴の件数（user/assistant を1件ずつ数える）。
+# 既定6件＝直近3往復。増やすほど文脈は繋がるが入力トークンとコストが増える。
+# 0にすると履歴を使わない＝単発の一問一答に戻る（挙動比較用）。
+HISTORY_MESSAGES = int(os.getenv("HISTORY_MESSAGES", "6"))
+
 # 字面検索のノイズ除去閾値。
 # trgm類似度がこの値未満の候補は「一致していない」とみなし、RRFに渡さない。
 # （類似度0の候補が"偽の順位"を持ってRRFに票を投じるのを防ぐ）
@@ -83,6 +88,17 @@ RETRIEVERS_DEFAULT = [
 BM25_K1 = float(os.getenv("BM25_K1", "1.2"))
 BM25_B = float(os.getenv("BM25_B", "0.75"))
 
-# LLMリランク（有り/無しを比較できるようフラグ化）
+# リランク（有り/無しを比較できるようフラグ化）
 USE_RERANK = os.getenv("USE_RERANK", "false").lower() == "true"
 RERANK_CANDIDATES = 10  # 融合結果の上位いくつをリランク対象にするか
+
+# リランクの方式。どちらも「質問 + 候補本文 → 関連順の番号」を返す同じ形で、
+# app.retrieval.RERANKERS で切り替える。eval で3条件（なし / llm / voyage）を比較する。
+#   "voyage" … Voyage の専用リランクAPI（rerank-2）。本命。
+#               生成モデルより安く・速く、順位が安定する（毎回同じ入力なら同じ順位）。
+#   "llm"    … Claudeに番号を並べ替えさせるプロンプト式。比較用に残してある。
+RERANK_METHOD = os.getenv("RERANK_METHOD", "voyage").lower()
+
+# Voyage のリランクモデル。rerank-2 は多言語対応で日本語も扱える。
+# 速度優先なら rerank-2-lite（精度は少し落ちる）。
+RERANK_MODEL = os.getenv("RERANK_MODEL", "rerank-2")

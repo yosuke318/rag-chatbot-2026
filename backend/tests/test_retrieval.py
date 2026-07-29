@@ -15,8 +15,7 @@ resolve_retrievers = retrieval.resolve_retrievers
 UnknownRetriever = retrieval.UnknownRetriever
 default_params = retrieval.default_params
 retriever_infos = retrieval.retriever_infos
-_preview = retrieval._preview
-llm_rerank = retrieval.llm_rerank
+preview = retrieval.preview
 
 
 # --- RRF 融合 ---------------------------------------------------------------
@@ -96,22 +95,18 @@ def test_retriever_infos_lists_all_methods():
         assert {"name", "label", "metric_label", "params"} <= info.keys()
 
 
-# --- プレビュー整形・リランクの安全網 ---------------------------------------
+# --- プレビュー整形 ---------------------------------------------------------
+# リランク（方式の切り替え・安全網）は test_rerank.py 側にある
 
 
 def test_preview_collapses_whitespace():
-    assert _preview("a  b\n c\t d") == "a b c d"
+    assert preview("a  b\n c\t d") == "a b c d"
 
 
 def test_preview_truncates_with_ellipsis():
-    out = _preview("x" * 100, n=10)
+    out = preview("x" * 100, n=10)
     assert out == "x" * 10 + "…"
 
 
 def test_preview_short_text_untouched():
-    assert _preview("短い本文") == "短い本文"
-
-
-def test_llm_rerank_empty_candidates_returns_empty_without_calling_llm():
-    # 候補が空なら LLM を呼ばずに [] を返す（rank_by_relevance 未到達）
-    assert llm_rerank("何か質問", []) == []
+    assert preview("短い本文") == "短い本文"

@@ -179,8 +179,50 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Chat */
+        /**
+         * Chat
+         * @description 検索した上位チャンクを根拠に回答する（生成が終わってから一括で返す）。
+         *
+         *     回答本文には [1] [2] の引用マーカーが入り、citations[n-1] がその根拠チャンク
+         *     （id・出典・該当箇所・原本URL）になる。出典名だけを返していた頃と違い、
+         *     利用者が「回答のこの主張はこの条文が根拠」と自分で検証できる。
+         *
+         *     conversation_id を渡すと直近の履歴を踏まえて答える（未指定なら新しい会話）。
+         *     逐次表示したい場合は /chat/stream を使う。
+         */
         post: operations["chat_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Stream
+         * @description /chat のストリーミング版。Server-Sent Events で回答を逐次返す。
+         *
+         *     イベントの順序と意味:
+         *       meta  … 会話ID・出典・引用（★生成より先に確定する★ので最初に送る。
+         *               受け取り側は本文が届く前に根拠を出せる）
+         *       delta … 回答本文の断片。届いた順に連結すると完成した回答になる
+         *       done  … 生成完了（ここで初めて履歴に回答を保存する）
+         *       error … 生成中の失敗。HTTPステータスは200のまま流れているので、
+         *               エラーは本文の中で伝えるしかない（形は通常のエラー応答と同じ）
+         *
+         *     ★検索と会話の解決はストリームを開く前に済ませる★
+         *       そこで失敗したら通常のエラー応答（4xx/5xx）を返せる。ストリームを開いた後は
+         *       ステータスを変えられないため、開く前に失敗できる工程は全部先に終わらせる。
+         */
+        post: operations["chat_stream_chat_stream_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -263,7 +305,9 @@ export interface paths {
          *     同じ意味で、指定するとその値で評価する（例: k1を上げてHit@kが上がるか測る）。
          *     未指定なら設定の既定値。
          *
-         *     Claudeは rerank=True のときだけ呼ぶ（検索評価そのものは Voyage のみ）。
+         *     リランクは rerank=True のときだけ走る。方式は rerank_method で切り替える
+         *     （voyage=専用リランクAPI / llm=プロンプト式。未指定は設定の既定）。
+         *     Claudeを呼ぶのは rerank=True かつ方式が llm のときだけ。
          *     質問が0件なら n=0 の空レポートを返す（UI側で「まず質問を登録」と促す）。
          *     contexts など内部フィールドは response_model(EvalReport)で自動的に落ちる。
          */
@@ -319,16 +363,69 @@ export interface components {
              * @description 質問文
              */
             question: string;
+            /**
+             * Conversation Id
+             * @description 続きを話す会話のID。null=新しい会話を始める（IDは応答に入る）
+             */
+            conversation_id?: number | null;
         };
         /** ChatResponse */
         ChatResponse: {
-            /** Answer */
+            /**
+             * Answer
+             * @description 回答本文。各文の末尾に根拠を指す引用マーカー [n] が付く
+             */
             answer: string;
+            /**
+             * Conversation Id
+             * @description この発言が属する会話のID。次の質問にこれを渡すと履歴が効く
+             */
+            conversation_id: number;
             /**
              * Sources
              * @description 根拠に使ったチャンクの出典（重複排除済み）
              */
             sources: string[];
+            /**
+             * Citations
+             * @description 回答の根拠に使ったチャンク（[n] の n はこの並びの1始まりの位置）
+             */
+            citations?: components["schemas"]["Citation"][];
+        };
+        /**
+         * Citation
+         * @description 回答の根拠に使ったチャンク1件。
+         *
+         *     出典名（文書）だけでは「その文書のどこか」までしか分からず、利用者が回答を
+         *     自分で検証できない。チャンクのid・該当箇所・原本URLまで返して、
+         *     回答中の [n] から根拠そのものへ辿れるようにする。
+         */
+        Citation: {
+            /**
+             * N
+             * @description 回答本文の引用マーカー [n] に対応する番号（1始まり）
+             */
+            n: number;
+            /**
+             * Chunk Id
+             * @description 根拠チャンクのid（chunks.id）
+             */
+            chunk_id: number;
+            /**
+             * Source
+             * @description 出典の文書名
+             */
+            source: string;
+            /**
+             * Preview
+             * @description 該当箇所のプレビュー（本文の冒頭を抜粋）
+             */
+            preview: string;
+            /**
+             * File Url
+             * @description 原本を開くURL（実S3なら署名URL / ローカルは中継URL）。null=原本なし
+             */
+            file_url?: string | null;
         };
         /**
          * Contribution
@@ -463,6 +560,11 @@ export interface components {
              * @description リランクの有無（null=設定の既定）
              */
             rerank: boolean | null;
+            /**
+             * Rerank Method
+             * @description リランクの方式 voyage/llm（null=設定の既定）。rerankが無効なら無意味
+             */
+            rerank_method?: string | null;
             /**
              * Rrf K
              * @description 使ったRRF k（null=既定）
@@ -1181,6 +1283,66 @@ export interface operations {
             };
         };
     };
+    chat_stream_chat_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     feedback_feedback_post: {
         parameters: {
             query?: never;
@@ -1303,6 +1465,7 @@ export interface operations {
                 top_k?: number;
                 retrievers?: string | null;
                 rerank?: boolean | null;
+                rerank_method?: string | null;
                 project?: string | null;
                 topic?: string | null;
                 rrf_k?: number | null;

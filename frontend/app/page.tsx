@@ -6,8 +6,11 @@ import { Fragment, useEffect, useRef, useState } from "react";
 //   再生成: npm run gen:types （backend が :8000 で起動している状態で）
 //   手書きしないことで、BEの型を変えたらここで型エラーになりズレに気づける。
 import type { components } from "./api-types";
+// 描画から切り離した純ロジック（引用の切り分け・SSEの読み取り）は別ファイル。
+// ストリームの境界やマーカーの対応付けは目視で試しにくいので、単体テストを付けてある。
+import { citationHref, splitAnswer, type Citation } from "./citations";
+import { readSSE } from "./sse";
 
-type ChatResponse = components["schemas"]["ChatResponse"];
 type SearchStages = components["schemas"]["SearchResponse"];
 type ApiError = components["schemas"]["ErrorResponse"];
 type RetrieverInfo = components["schemas"]["RetrieverInfo"];
@@ -68,10 +71,12 @@ const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
 // question: 👍/👎 を送るとき評価対象を復元するため、bot回答に元の質問を持たせる。
 //           これが入っている bot メッセージだけがフィードバック対象（エラーは対象外）。
 // rating:   送信済みの評価。二重送信を防ぎ、選んだ側をハイライトする。
+// citations: チャンク単位の根拠。回答本文の [n] と citations[n-1] が対応する。
 type Message = {
   role: "user" | "bot";
   text: string;
   sources?: string[];
+  citations?: Citation[];
   question?: string;
   rating?: 1 | -1;
 };
@@ -98,6 +103,41 @@ function SourceLink({ source }: { source: string }) {
     >
       {source}
     </a>
+  );
+}
+
+// 回答本文の [1] [2] を、対応する根拠へジャンプするボタンに変える。
+// 切り分けの規則（存在しない番号は素の文字のまま残す等）は splitAnswer 側にある。
+function AnswerText({
+  text,
+  citations,
+  onCite,
+}: {
+  text: string;
+  citations: Citation[];
+  onCite: (n: number) => void;
+}) {
+  return (
+    <>
+      {splitAnswer(text, citations).map((part, i) => {
+        const cite = part.citation;
+        if (!cite) return <Fragment key={i}>{part.text}</Fragment>;
+        return (
+          <button
+            key={i}
+            // type を明示しないと <form> 配下に置かれたとき submit になる
+            type="button"
+            className="cite-mark"
+            onClick={() => onCite(cite.n)}
+            title={`根拠 [${cite.n}] ${cite.source}`}
+            // 表示は数字だけなので、読み上げには何のボタンかを補って伝える
+            aria-label={`根拠 ${cite.n} を表示（${cite.source}）`}
+          >
+            {cite.n}
+          </button>
+        );
+      })}
+    </>
   );
 }
 
@@ -178,6 +218,11 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+  // 回答本文の [n] を押したときに光らせる根拠。"メッセージ番号:引用番号" で持つ
+  // （同じ引用番号が別の回答にもあるため、メッセージまで込みで一意にする）。
+  const [activeCite, setActiveCite] = useState<string | null>(null);
+  // 続きの質問で履歴を効かせるための会話ID。null = 次の質問で新しい会話を始める。
+  const [conversationId, setConversationId] = useState<number | null>(null);
 
   // --- 評価パネル（/eval = 質問集で Hit@k / MRR を測る）---
   const [evalSelected, setEvalSelected] = useState<string[]>([]);
@@ -416,35 +461,69 @@ export default function Home() {
     }
   }
 
+  /** 最後のメッセージ（＝生成中の回答）だけを書き換える。 */
+  function patchLastMessage(patch: Partial<Message>) {
+    setMessages((m) =>
+      m.map((x, i) => (i === m.length - 1 ? { ...x, ...patch } : x)),
+    );
+  }
+
   async function ask() {
     const q = question.trim();
     if (!q || loading) return;
-    setMessages((m) => [...m, { role: "user", text: q }]);
+    // 質問と「これから埋まる空の回答」を同時に置く。以降 delta が届くたびに
+    // 末尾（＝この空の回答）を書き換えていく。
+    // question を持たせておくと、この回答に 👍/👎 を付けられる（送信時に復元する）。
+    setMessages((m) => [
+      ...m,
+      { role: "user", text: q },
+      { role: "bot", text: "", question: q },
+    ]);
     setQuestion("");
     setLoading(true);
     try {
-      const res = await fetch("/api/backend/chat", {
+      const res = await fetch("/api/backend/chat/stream", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        // conversation_id を渡すと直近の履歴を踏まえて答える（null=新しい会話）
+        body: JSON.stringify({ question: q, conversation_id: conversationId }),
       });
       const err = await errorMessage(res);
       if (err) {
         // Anthropicキー未設定などをチャット欄にそのまま出す
-        setMessages((m) => [...m, { role: "bot", text: err }]);
+        patchLastMessage({ text: err, question: undefined });
         return;
       }
-      const data: ChatResponse = await res.json();
-      // question を持たせておくと、この回答に 👍/👎 を付けられる（送信時に復元する）
-      setMessages((m) => [
-        ...m,
-        { role: "bot", text: data.answer, sources: data.sources, question: q },
-      ]);
+      await readStream(res);
     } catch (e) {
-      setMessages((m) => [...m, { role: "bot", text: `エラー: ${String(e)}` }]);
+      patchLastMessage({ text: `エラー: ${String(e)}`, question: undefined });
     } finally {
       setLoading(false);
     }
+  }
+
+  /** SSE(text/event-stream)を読み進め、届いたイベントを回答へ反映する。 */
+  async function readStream(res: Response) {
+    if (!res.body) throw new Error("ストリームを読み取れませんでした");
+    let answer = "";
+
+    await readSSE(res.body, (name, data) => {
+      if (name === "meta") {
+        // 根拠は生成より先に確定するので、本文が届く前に出せる
+        setConversationId(data.conversation_id);
+        patchLastMessage({ sources: data.sources, citations: data.citations });
+      } else if (name === "delta") {
+        answer += data.text;
+        patchLastMessage({ text: answer });
+      } else if (name === "error") {
+        // 生成中の失敗。HTTPは200で流れているのでイベントで受け取る
+        const message = data.hint ? `${data.message}\n${data.hint}` : data.message;
+        patchLastMessage({
+          text: answer ? `${answer}\n\n${message}` : message,
+          question: undefined, // 失敗した回答は 👍/👎 の対象にしない
+        });
+      }
+    });
   }
 
   /** 回答に 👍/👎 を送る。楽観的に印を付け、失敗したら戻す。 */
@@ -493,8 +572,8 @@ export default function Home() {
             （消費するのは質問文ぶんの数十トークン）
           </li>
           <li>
-            <code>ANTHROPIC_API_KEY</code>（生成）… <b>回答生成とLLMリランクのみ</b>。
-            検索の内訳を見るだけなら不要
+            <code>ANTHROPIC_API_KEY</code>（生成）… <b>回答生成のみ</b>。
+            検索の内訳を見るだけなら不要（リランクも既定はVoyageの専用APIなので不要）
           </li>
         </ul>
       </div>
@@ -839,12 +918,70 @@ export default function Home() {
 
       {/* 質問フロー: question → hybrid_search → rerank → Claude */}
       <section className="panel">
-        <h2>③ 質問する（/chat・Voyage + Anthropicキー必要）</h2>
+        <h2>③ 質問する（/chat/stream・Voyage + Anthropicキー必要）</h2>
+        {/* 会話は続きものとして扱われる（直近のやり取りが回答生成に載る）。
+            話題を変えるときは新しい会話にすると、前の話に引きずられない。 */}
+        <div className="conversation-bar">
+          {conversationId === null
+            ? "次の質問から新しい会話を始めます"
+            : `会話 #${conversationId}（続きの質問は履歴を踏まえて回答します）`}
+          <button
+            className="new-conversation"
+            onClick={() => {
+              setConversationId(null);
+              setMessages([]);
+            }}
+            disabled={loading || (conversationId === null && messages.length === 0)}
+          >
+            新しい会話
+          </button>
+        </div>
         <div className="messages">
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              {m.text}
-              {m.sources && m.sources.length > 0 && (
+              {m.citations && m.citations.length > 0 ? (
+                <AnswerText
+                  text={m.text}
+                  citations={m.citations}
+                  onCite={(n) => setActiveCite(`${i}:${n}`)}
+                />
+              ) : (
+                m.text
+              )}
+              {/* チャンク単位の根拠。回答中の [n] と番号で対応する */}
+              {m.citations && m.citations.length > 0 && (
+                <div className="citations">
+                  <div className="citations-head">根拠にしたチャンク</div>
+                  {m.citations.map((c) => (
+                    <div
+                      key={c.n}
+                      className={`citation${
+                        activeCite === `${i}:${c.n}` ? " citation-on" : ""
+                      }`}
+                    >
+                      <div className="citation-head">
+                        <span className="cite-n">[{c.n}]</span>
+                        {c.file_url ? (
+                          <a
+                            className="source-link"
+                            href={citationHref(c.file_url)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {c.source}
+                          </a>
+                        ) : (
+                          <SourceLink source={c.source} />
+                        )}
+                        <span className="cite-id">chunk #{c.chunk_id}</span>
+                      </div>
+                      <div className="cite-preview">{c.preview}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* 引用が付かない回答（エラー等）は従来どおり出典名だけ出す */}
+              {!m.citations?.length && m.sources && m.sources.length > 0 && (
                 <div className="sources">
                   根拠:{" "}
                   {m.sources.map((s, si) => (
@@ -985,7 +1122,7 @@ export default function Home() {
                 checked={evalRerank}
                 onChange={(e) => setEvalRerank(e.target.checked)}
               />
-              LLMリランク（要Anthropic）
+              リランク（既定: Voyage rerank-2）
             </label>
           </span>
           {evalSelected.length === 0 && (

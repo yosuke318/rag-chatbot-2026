@@ -14,8 +14,9 @@ app/
 ├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存
 ├── eval.py       # 検索評価（Hit@k / MRR）
 ├── compare.py    # contextual有無のA/B測定
-├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）
-└── main.py       # FastAPI: /health /ingest /chat
+├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）→ リランク
+├── conversations.py # 会話履歴（conversations / messages）の読み書き
+└── main.py       # FastAPI: /health /ingest /chat /chat/stream
 
 tests/            # 単体テスト（DB・外部APIを使わない純ロジック）
 ├── test_keywords.py    # 名詞抽出
@@ -23,7 +24,10 @@ tests/            # 単体テスト（DB・外部APIを使わない純ロジッ�
 ├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
 ├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
 ├── test_compare.py     # contextual有無のA/B測定（比較の公平性）
-└── test_retrieval.py   # RRF融合・手法解決・整形
+├── test_retrieval.py   # RRF融合・手法解決・整形
+├── test_rerank.py      # リランク（voyage / プロンプト式）の切り替え
+├── test_citations.py   # チャンク単位の根拠（回答の [n] との対応）
+└── test_conversations.py # 会話履歴とストリーミング(SSE)
 ```
 
 ## テスト
@@ -181,15 +185,63 @@ curl -X POST localhost:8000/ingest -H 'content-type: application/json' -d '{
 curl -X POST localhost:8000/chat -H 'content-type: application/json' -d '{
   "question": "有給は入社何か月で何日もらえる?"
 }'
-# => {"answer":"入社6か月後に10日付与されます。","sources":["有給休暇.txt"]}
+# => {"answer":"入社6か月後に10日付与されます。[1]",
+#     "sources":["有給休暇.txt"],
+#     "citations":[{"n":1,"chunk_id":134,"source":"有給休暇.txt",
+#                   "preview":"年次有給休暇は、入社から6か月継続勤務し…",
+#                   "file_url":"/files/%E6%9C%89%E7%B5%A6%E4%BC%91%E6%9A%87.txt"}]}
 ```
+
+回答本文の `[n]` は `citations[n-1]` に対応する（チャンク単位の根拠）。
+`file_url` は原本を開くURLで、環境によって形が変わる:
+実S3なら**署名URL**、ローカルのMinIOなら backend 中継の `/files/...`
+（MinIO の署名URLはホストが `minio:9000` になりブラウザから開けないため）。
+原本が未保存の文書では `null`。
+
+## 会話履歴とストリーミング（`conversations.py` / `/chat/stream`）
+
+`conversation_id` を渡すと直近のやり取り（既定6件＝3往復、`HISTORY_MESSAGES`）を
+生成に載せる。「有給は何日？」→「**その**繰り越しの上限は？」のような続きの質問に
+答えるために要る。未指定なら新しい会話を作り、IDを応答に入れて返す。
+
+```bash
+# 1問目（会話IDが返る）
+curl -sN -X POST localhost:8000/chat/stream -H 'content-type: application/json' \
+  -d '{"question":"有給は入社何か月で何日もらえる？"}'
+# 続きの質問（同じ会話に積む）
+curl -sN -X POST localhost:8000/chat/stream -H 'content-type: application/json' \
+  -d '{"question":"その繰り越しの上限は？","conversation_id":1}'
+```
+
+`/chat/stream` は Server-Sent Events で返す:
+
+```
+event: meta   … 会話ID・出典・引用（★検索は生成より先に終わる★ので本文より先に届く）
+event: delta  … 回答本文の断片。連結すると完成した回答になる
+event: done   … 生成完了（このタイミングで回答を履歴に保存する）
+event: error  … 生成中の失敗（開始後はHTTPステータスを変えられないため本文で伝える）
+```
+
+決めごと2つ:
+
+- **検索と会話の解決はストリームを開く前に済ませる**。そこで失敗すれば通常の
+  4xx/5xx を返せる（開いた後はステータスを変えられない）。
+- **履歴に渡す過去の回答からは引用マーカー `[n]` を外す**（`llm.strip_citations`）。
+  番号は毎回その検索結果で振り直すので、古い番号を再利用されると別のチャンクを指す。
+
+検索そのものには履歴を使わず、毎回その質問文だけで引く（前の話題に引きずられて
+別の文書を拾う副作用を避けるため）。質問の書き換えは次段。
 
 ## この最小版で「やっていないこと」（＝次にやると学びが深い）
 
-- **LLMリランク** … `retrieval.py` の `llm_rerank` はまだ TODO スタブ。
-  まず RRF 版で精度を測り、リランク有り/無しを評価で比較するのが目的
+- **リランクのチューニング** … `retrieval.py` の `rerank_candidates` は実装済みで、
+  方式を2つ持つ（`voyage`=Voyage rerank-2 / `llm`=Claudeに番号を並べ替えさせる
+  プロンプト式）。既定は off なので、`python -m app.eval --rerank` で
+  「なし / llm / voyage」の3条件を比較して効果を測るところから
 - ハイブリッド検索の字面側は pg_trgm（トライグラム）で、厳密なBM25ではない。
   日本語BM25が欲しくなったら PGroonga 等の日本語対応エンジンに差し替える
 - PDF/docx/xlsx 取り込み・図表のマルチモーダル文章化（今はプレーンテキストのみ）
-- 回答のストリーミング（今は生成完了後に一括返却）
-- 会話履歴の保持、評価（Ragas/promptfoo）
+- 回答の忠実性の自動評価（Ragas / promptfoo などでのLLM-judge）。今あるのは検索側の
+  Hit@k / MRR だけで、「引いた根拠に忠実に答えているか」は測れていない
+- 続きの質問に合わせた検索クエリの書き換え。会話履歴は回答生成には効くが、
+  検索は毎回その質問文だけで引くので「その上限は？」単体では引きにくい

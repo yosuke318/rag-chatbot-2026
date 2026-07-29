@@ -1,6 +1,7 @@
-# PRごとにバックエンドの単体テストを回す。
-#   ローカルの `task test` と同じ pytest を、コンテナではなく素のPythonで実行する。
-#   テストは DB / 外部API を一切叩かない（tests/conftest.py がダミーキーを入れるだけ）ので、
+# PRごとに単体テスト（backend / frontend）を回す。
+#   backend: ローカルの `task test` と同じ pytest を、コンテナではなく素のPythonで実行する。
+#   frontend: vitest（純ロジックのみ）＋ tsc の型チェック。
+#   どちらも DB / 外部API を一切叩かない（tests/conftest.py がダミーキーを入れるだけ）ので、
 #   AWSにもAnthropic/Voyageにも課金は発生しない。publicリポジトリなのでActions実行時間も無料。
 name: test
 
@@ -44,3 +45,31 @@ jobs:
       # pytest.ini の pythonpath=. / testpaths=tests がそのまま効く
       - name: Run pytest
         run: pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20" # frontend/Dockerfile と揃える
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # lockfile どおりに入れる（npm install と違い勝手に更新しない）
+      - name: Install dependencies
+        run: npm ci
+
+      # 対象は描画から切り離した純ロジック（SSEの読み取り・引用の切り分け）。
+      # ブラウザもDOMも要らないので、jsdom 等の追加依存なしで動く。
+      - name: Run vitest
+        run: npm run test
+
+      # 型のズレも落とす。api-types.ts はバックエンドのOpenAPIから生成しているので、
+      # BEのスキーマ変更にフロントが追随できていないとここで気づける。
+      - name: Type check
+        run: npx tsc --noEmit

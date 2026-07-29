@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import urllib.parse
 from functools import lru_cache
 
 from app.config import S3_BUCKET, S3_ENDPOINT_URL
@@ -100,6 +101,38 @@ def get_object(source: str) -> tuple[bytes, str] | None:
     body = resp["Body"].read()
     content_type = resp.get("ContentType") or _content_type(source)
     return body, content_type
+
+
+SIGNED_URL_TTL = 300  # 署名URLの有効期限（秒）。根拠を開くだけなので短くてよい
+
+
+def file_url(source: str) -> str | None:
+    """原本を開くURL。S3に原本が無ければ None。
+
+    根拠（引用）から原本そのものへ飛べるようにするためのURL。返す形は環境で変わる:
+
+      - 実S3（S3_ENDPOINT_URL 未設定）… ★署名URL★を返す。ブラウザから直接
+        S3を叩けるので backend を経由しない（大きいPDFを中継しなくて済む）。
+      - ローカルのMinIO（S3_ENDPOINT_URL 設定済み）… backend中継の /files/... を返す。
+        署名URLのホストが docker 内の名前(minio:9000)になり、ブラウザから
+        名前解決できないため。ここで環境差を吸収し、UIは受け取ったURLを開くだけにする。
+
+    存在確認(head_object)を挟むのは、原本が無い文書（この機能より前に登録した
+    もの）に対して「開けないリンク」を出さないため。
+    """
+    if not exists(source):
+        return None
+    if S3_ENDPOINT_URL:
+        return f"/files/{urllib.parse.quote(source)}"
+    try:
+        return _client().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": source},
+            ExpiresIn=SIGNED_URL_TTL,
+        )
+    except Exception:
+        logger.warning("署名URLの発行に失敗しました: %s", source, exc_info=True)
+        return None
 
 
 def backfill_from_texts(items: list[tuple[str, str]]) -> int:

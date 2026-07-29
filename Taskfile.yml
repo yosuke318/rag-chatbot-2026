@@ -35,6 +35,15 @@ tasks:
         -v "$PWD/backend/requirements-dev.txt:/app/requirements-dev.txt"
         backend sh -c "pip install -q -r requirements-dev.txt && python -m pytest"
 
+  test-front:
+    desc: フロントの単体テスト＋型チェック（ブラウザ不要。CIと同じ内容）
+    dir: frontend
+    cmds:
+      # 対象は描画から切り離した純ロジック（app/sse.ts・app/citations.ts）。
+      # DOMを使わないので jsdom 等は要らず、node だけで回る。
+      - npm run test
+      - npx tsc --noEmit
+
   down:
     desc: 停止（ベクトルDBのデータは残す）
     cmds:
