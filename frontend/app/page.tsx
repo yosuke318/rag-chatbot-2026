@@ -12,6 +12,7 @@ import { citationHref, splitAnswer, type Citation } from "./citations";
 import { readSSE } from "./sse";
 
 type SearchStages = components["schemas"]["SearchResponse"];
+type VerifyReport = components["schemas"]["VerifyReport"];
 type ApiError = components["schemas"]["ErrorResponse"];
 type RetrieverInfo = components["schemas"]["RetrieverInfo"];
 type ParamSpec = components["schemas"]["ParamSpec"];
@@ -384,6 +385,55 @@ export default function Home() {
   const [evalProject, setEvalProject] = useState("");
   const [evalTopic, setEvalTopic] = useState("");
   const evalTopics = useTopics(evalProject, scopeVersion);
+
+  // --- 保管質問の検証（/verify = ②で検索した質問をまとめて引き直す）---
+  // 区分セレクタは評価(/eval)と共用する。どちらも「④のこの区分について見る」
+  // という同じ意味なので、選び直す手間を増やさない。
+  const [verifyReport, setVerifyReport] = useState<VerifyReport | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState("");
+  // その区分に何件保管されているか（検証は質問数だけ検索するので先に見せる）
+  const [savedCount, setSavedCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (evalProject.trim()) params.set("project", evalProject.trim());
+    if (evalTopic.trim()) params.set("topic", evalTopic.trim());
+    let current = true;
+    fetch(`/api/backend/saved-questions?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (current) setSavedCount(d.questions?.length ?? 0);
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [evalProject, evalTopic, scopeVersion, verifyReport]);
+
+  async function runVerify() {
+    if (verifying) return;
+    setVerifying(true);
+    setVerifyError("");
+    try {
+      const params = new URLSearchParams({ top_k: "4" });
+      if (evalProject.trim()) params.set("project", evalProject.trim());
+      if (evalTopic.trim()) params.set("topic", evalTopic.trim());
+      const res = await fetch(`/api/backend/verify?${params}`);
+      const err = await errorMessage(res);
+      if (err) {
+        setVerifyError(err);
+        setVerifyReport(null);
+        return;
+      }
+      setVerifyReport(await res.json());
+    } catch (e) {
+      setVerifyReport(null);
+      setVerifyError(`通信に失敗しました: ${String(e)}`);
+    } finally {
+      setVerifying(false);
+    }
+  }
   const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
   const [evalError, setEvalError] = useState("");
@@ -1291,12 +1341,89 @@ export default function Home() {
             onTopic={setEvalTopic}
           />
           <button onClick={runEval} disabled={evalRunning || evalSelected.length === 0}>
-            {evalRunning ? "評価中…" : "検証する"}
+            {evalRunning ? "評価中…" : "評価する"}
           </button>
         </div>
         <p className="hint">
-          区分を選ぶと<strong>その区分の質問だけ</strong>で評価します（「すべて」なら全件）。
+          区分を選ぶと<strong>その区分の質問だけ</strong>で評価し、
+          <strong>検索対象の文書も同じ区分</strong>に絞ります（「すべて」なら全件）。
         </p>
+
+        {/* ②で検索した質問の検証。正解ラベルが要らないので、評価用の質問集を
+            用意する前でも「今の設定で何が上位に来るか」を一覧で確認できる */}
+        <div className="verify-controls">
+          <button onClick={runVerify} disabled={verifying || savedCount === 0}>
+            {verifying ? "検証中…" : "保管質問を検証する"}
+          </button>
+          <span className="hint">
+            <Tip label="②で検索した質問の保管">
+              ② で検索すると、そのときの<strong>プロジェクト・トピックと一緒に質問が
+              自動で保管</strong>されます（同じ区分の同じ質問は重ねません）。
+              <br />
+              <br />
+              ここでは保管済みの質問を<strong>まとめて引き直し</strong>、各質問の上位4件と
+              RRFスコアを一覧で確認できます。正解ラベルを持たないので○×は付きません
+              （数値で良し悪しを見るのは上の「評価する」）。
+            </Tip>
+            {savedCount === null
+              ? ""
+              : savedCount === 0
+                ? "この区分に保管された質問はまだありません（②で検索すると貯まります）"
+                : `この区分に ${savedCount} 件の質問が保管されています`}
+          </span>
+        </div>
+
+        {verifyError && <p className="error-note">{verifyError}</p>}
+
+        {verifyReport && verifyReport.n > 0 && (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>質問</th>
+                  <th>順位</th>
+                  <th>RRFスコア</th>
+                  <th>出典</th>
+                  <th>内容</th>
+                </tr>
+              </thead>
+              <tbody>
+                {verifyReport.results.map((r, ri) =>
+                  r.fused.length === 0 ? (
+                    <tr key={ri}>
+                      <td className="preview">{r.question}</td>
+                      <td colSpan={4} className="miss">
+                        （ヒットなし）
+                      </td>
+                    </tr>
+                  ) : (
+                    r.fused.map((f, fi) => (
+                      <tr key={`${ri}:${f.id}`}>
+                        {/* 質問は1問につき1回だけ出し、下の行は上位2位以下 */}
+                        {fi === 0 ? (
+                          <td className="preview" rowSpan={r.fused.length}>
+                            {r.question}
+                          </td>
+                        ) : null}
+                        <td>{f.rank + 1}位</td>
+                        <td>{f.score}</td>
+                        <td>
+                          <SourceLink source={f.source} />
+                        </td>
+                        <td className="preview">{f.preview}</td>
+                      </tr>
+                    ))
+                  ),
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {verifyReport && verifyReport.n === 0 && (
+          <p className="empty-note">
+            この区分に保管された質問がありません。② で検索すると貯まります。
+          </p>
+        )}
         <div className="retriever-picker">
           {available.map((r) => (
             <span key={r.name} className="retriever-option">

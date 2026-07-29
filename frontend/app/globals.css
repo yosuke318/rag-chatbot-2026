@@ -435,10 +435,27 @@ button:disabled {
   margin-bottom: 0;
 }
 
-/* 評価パネルでは区分の2列と「検証する」を1行に並べる */
+/* 評価パネルでは区分の2列と「評価する」を1行に並べる */
 .eval-controls .scope-row {
   flex: 1;
   min-width: 0;
+}
+
+/* 保管質問の検証（/verify）。ボタンと件数の説明を1行に */
+.verify-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.verify-controls button {
+  flex-shrink: 0;
+}
+
+.verify-controls .hint {
+  margin: 0;
 }
 
 .eval-controls button {

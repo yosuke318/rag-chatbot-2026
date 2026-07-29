@@ -164,6 +164,29 @@ def init_db() -> None:
             );
             """
         )
+        # ②で検索した質問の保管庫。正解ラベルを持たない「実際に聞かれた質問」を
+        # 区分ごとに貯め、④でまとめてRRFを検証するのに使う。
+        # eval_questions と分けるのは、あちらが expected_source NOT NULL（正解必須）で
+        # 正解の分からない質問を入れられないため。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS saved_questions (
+                id         BIGSERIAL PRIMARY KEY,
+                project    TEXT,   -- NULL = 区分を選ばずに検索したときの質問
+                topic      TEXT,
+                question   TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        # 同じ区分の同じ質問は積み上げない（検索するたびに1行増えると検証が重複だらけになる）。
+        # ★NULLS NOT DISTINCT★ が肝: 既定では NULL 同士は「別の値」と見なされるため、
+        # 区分なし(NULL)の同じ質問が何行でも入ってしまう。PostgreSQL 15+ の機能で、
+        # compose の pgvector/pgvector:pg16 は満たしている。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS saved_questions_unique_idx "
+            "ON saved_questions (project, topic, question) NULLS NOT DISTINCT;"
+        )
         # 公開API(/v1)のAPIキー。発行・検証は app.apikeys 参照。
         conn.execute(
             """

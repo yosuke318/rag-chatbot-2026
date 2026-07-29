@@ -233,7 +233,8 @@ def test_usage_is_not_recorded_for_internal_endpoints(client, authed):
     empty = {"question": "q", "retrievers": [], "available_retrievers": [],
              "applied_params": {"rrf_k": 60, "retrievers": {}},
              "lexical_min_similarity": 0.0, "stages": [], "fused": []}
-    with patch.object(main_module, "search_stages", return_value=empty):
+    with patch.object(main_module, "search_stages", return_value=empty), \
+         patch("app.saved_questions.save"):
         res = client.get("/search?q=有給")
 
     assert res.status_code == 200

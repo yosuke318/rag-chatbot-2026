@@ -384,6 +384,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/saved-questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Saved Questions
+         * @description 保管済みの質問を返す。project/topic で絞り込める（未指定の軸は絞らない）。
+         *
+         *     UIは検証を走らせる前に「この区分に何件あるか」を出すのに使う
+         *     （/verify は質問数だけ検索するので、先に件数が見えた方が押しやすい）。
+         */
+        get: operations["list_saved_questions_saved_questions_get"];
+        put?: never;
+        /**
+         * Add Saved Question
+         * @description 質問を保管する（正解ラベル不要）。②の検索時は自動で保管される。
+         *
+         *     既に同じ区分に同じ質問があれば saved=false を返す。これはエラーではなく
+         *     「重ねなかった」という結果なので 200 のまま返す。
+         */
+        post: operations["add_saved_question_saved_questions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Verify Saved Questions
+         * @description 保管済みの質問すべてを検索し、各質問の上位k件（RRF）をまとめて返す。
+         *
+         *     ★質問の絞り込みと検索スコープの両方に同じ project/topic が効く★
+         *     「その区分の質問を、その区分の文書に対して引く」を揃えるため。
+         *
+         *     正解ラベルを持たないので採点はしない（○×やHit@kは出ない）。
+         *     「今の設定でこの質問集を引くと何が上位に来るか」を並べて見るための機能で、
+         *     数値で良し悪しを判定したいときは正解ラベル付きの /eval を使う。
+         */
+        get: operations["verify_saved_questions_verify_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/eval": {
         parameters: {
             query?: never;
@@ -964,6 +1021,64 @@ export interface components {
             fusion_params: components["schemas"]["ParamSpec"][];
         };
         /**
+         * SavedQuestion
+         * @description ②で検索したときに保管された質問1件（正解ラベルは持たない）。
+         */
+        SavedQuestion: {
+            /** Id */
+            id: number;
+            /** Question */
+            question: string;
+            /** Project */
+            project?: string | null;
+            /** Topic */
+            topic?: string | null;
+        };
+        /**
+         * SavedQuestionRequest
+         * @description 保管する質問1件（正解ラベルなし）。②の検索時は自動で保管されるので、
+         *     これは「検索せずに質問だけ足したい」場合の入口。
+         */
+        SavedQuestionRequest: {
+            /**
+             * Question
+             * @description 保管する質問
+             */
+            question: string;
+            /**
+             * Project
+             * @description プロジェクト（任意）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（任意）
+             */
+            topic?: string | null;
+        };
+        /**
+         * SavedQuestionResponse
+         * @description 保管の結果。既に同じ質問があれば saved=false（エラーではない）。
+         */
+        SavedQuestionResponse: {
+            /**
+             * Saved
+             * @description 新しく保管したか。false=同じ区分に同じ質問が既にある
+             */
+            saved: boolean;
+            /** Question */
+            question: string;
+            /** Project */
+            project?: string | null;
+            /** Topic */
+            topic?: string | null;
+        };
+        /** SavedQuestionsResponse */
+        SavedQuestionsResponse: {
+            /** Questions */
+            questions: components["schemas"]["SavedQuestion"][];
+        };
+        /**
          * SearchResponse
          * @description 検索の各段階（Claudeを呼ばない）。
          *
@@ -1039,6 +1154,48 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * VerifyReport
+         * @description 保管質問すべての検証結果。UIの一覧はこれを描画する。
+         */
+        VerifyReport: {
+            /**
+             * N
+             * @description 検証した質問数
+             */
+            n: number;
+            /** Top K */
+            top_k: number;
+            /**
+             * Project
+             * @description 絞り込んだプロジェクト（null=全件）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description 絞り込んだトピック（null=全件）
+             */
+            topic?: string | null;
+            /** Results */
+            results: components["schemas"]["VerifyResult"][];
+        };
+        /**
+         * VerifyResult
+         * @description 保管質問1件の検証結果。正解ラベルが無いので○×は付かない。
+         */
+        VerifyResult: {
+            /** Question */
+            question: string;
+            /** Project */
+            project?: string | null;
+            /** Topic */
+            topic?: string | null;
+            /**
+             * Fused
+             * @description RRF融合後の上位k件（②の表と同じ形）
+             */
+            fused: components["schemas"]["FusedHit"][];
         };
     };
     responses: never;
@@ -1801,6 +1958,140 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_saved_questions_saved_questions_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                topic?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQuestionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_saved_question_saved_questions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedQuestionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQuestionResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_saved_questions_verify_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                topic?: string | null;
+                top_k?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyReport"];
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

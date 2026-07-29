@@ -16,7 +16,7 @@ from app import apikeys
 from app.db import get_conn, init_db
 from app.eval import evaluate, load_questions
 from app.ingest import UnsupportedFileType, extract_text, ingest_text
-from app import conversations, storage
+from app import conversations, saved_questions, storage
 from app.conversations import UnknownConversation
 from app.llm import MissingAPIKey, generate_answer, stream_answer
 from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
@@ -45,8 +45,12 @@ from app.schemas import (
     ProjectsResponse,
     PublicChatRequest,
     RetrieversResponse,
+    SavedQuestionRequest,
+    SavedQuestionResponse,
+    SavedQuestionsResponse,
     SearchResponse,
     TopicsResponse,
+    VerifyReport,
 )
 
 
@@ -626,15 +630,22 @@ def search(
     params = {
         r: {k: v for k, v in vals.items() if v is not None} for r, vals in raw.items()
     }
-    return search_stages(
+    project = _blank_to_none(project)
+    topic = _blank_to_none(topic)
+    stages = search_stages(
         q,
         top_n=top_n,
         retrievers=names,
         params=params,
         rrf_k=rrf_k,
-        project=_blank_to_none(project),
-        topic=_blank_to_none(topic),
+        project=project,
+        topic=topic,
     )
+    # ★検索が成功してから保管する★（④でまとめて検証するための質問集になる）。
+    # 失敗した検索（キー未設定・手法名のtypo等）は保管しない: 例外で先に抜けるため
+    # ここまで来ない。同じ区分の同じ質問は重ならない（saved_questions.save）。
+    saved_questions.save(q, project, topic)
+    return stages
 
 
 @app.get("/files/{source:path}", responses=_ERRORS)
@@ -923,6 +934,72 @@ def add_eval_question(req: EvalQuestionRequest):
         "topic": topic,
         "note": req.note,
     }
+
+
+@app.post(
+    "/saved-questions",
+    response_model=SavedQuestionResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def add_saved_question(req: SavedQuestionRequest):
+    """質問を保管する（正解ラベル不要）。②の検索時は自動で保管される。
+
+    既に同じ区分に同じ質問があれば saved=false を返す。これはエラーではなく
+    「重ねなかった」という結果なので 200 のまま返す。
+    """
+    if not req.question.strip():
+        return _error(
+            400,
+            "invalid_saved_question",
+            "質問は必須です。",
+            "question を入力してください。",
+            "",
+        )
+    project = _blank_to_none(req.project)
+    topic = _blank_to_none(req.topic)
+    saved = saved_questions.save(req.question, project, topic)
+    return {
+        "saved": saved,
+        "question": req.question.strip(),
+        "project": project,
+        "topic": topic,
+    }
+
+
+@app.get("/saved-questions", response_model=SavedQuestionsResponse)
+def list_saved_questions(project: Optional[str] = None, topic: Optional[str] = None):
+    """保管済みの質問を返す。project/topic で絞り込める（未指定の軸は絞らない）。
+
+    UIは検証を走らせる前に「この区分に何件あるか」を出すのに使う
+    （/verify は質問数だけ検索するので、先に件数が見えた方が押しやすい）。
+    """
+    return {
+        "questions": saved_questions.load(
+            _blank_to_none(project), _blank_to_none(topic)
+        )
+    }
+
+
+@app.get("/verify", response_model=VerifyReport, responses=_ERRORS)
+def verify_saved_questions(
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
+    top_k: int = 4,
+):
+    """保管済みの質問すべてを検索し、各質問の上位k件（RRF）をまとめて返す。
+
+    ★質問の絞り込みと検索スコープの両方に同じ project/topic が効く★
+    「その区分の質問を、その区分の文書に対して引く」を揃えるため。
+
+    正解ラベルを持たないので採点はしない（○×やHit@kは出ない）。
+    「今の設定でこの質問集を引くと何が上位に来るか」を並べて見るための機能で、
+    数値で良し悪しを判定したいときは正解ラベル付きの /eval を使う。
+    """
+    return saved_questions.verify(
+        project=_blank_to_none(project),
+        topic=_blank_to_none(topic),
+        top_k=top_k,
+    )
 
 
 @app.get("/eval-questions", response_model=EvalQuestionsResponse)

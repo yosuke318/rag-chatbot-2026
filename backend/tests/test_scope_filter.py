@@ -218,7 +218,8 @@ def test_search_endpoint_forwards_scope(client):
     empty = {"question": "q", "retrievers": [], "available_retrievers": [],
              "applied_params": {"rrf_k": 60, "retrievers": {}},
              "lexical_min_similarity": 0.0, "stages": [], "fused": []}
-    with patch.object(main_module, "search_stages", return_value=empty) as m:
+    with patch.object(main_module, "search_stages", return_value=empty) as m, \
+         patch("app.saved_questions.save"):  # 質問の自動保管(DB)はここでは関心外
         res = client.get("/search?q=有給&project=社内規程&topic=労務")
 
     assert res.status_code == 200
@@ -232,7 +233,8 @@ def test_search_endpoint_treats_blank_scope_as_unspecified(client):
     empty = {"question": "q", "retrievers": [], "available_retrievers": [],
              "applied_params": {"rrf_k": 60, "retrievers": {}},
              "lexical_min_similarity": 0.0, "stages": [], "fused": []}
-    with patch.object(main_module, "search_stages", return_value=empty) as m:
+    with patch.object(main_module, "search_stages", return_value=empty) as m, \
+         patch("app.saved_questions.save"):
         client.get("/search?q=有給&project=&topic=%20%20")
 
     assert m.call_args.kwargs["project"] is None

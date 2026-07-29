@@ -220,6 +220,12 @@ def evaluate(
             query_vec=query_vec,
             rerank_method=rerank_method,
             rerank_retry_waits=retry_waits,
+            # ★質問と同じ区分の文書だけを対象にする★
+            # 「社内規程の質問」を全プロジェクトの文書から探すと、他プロジェクトの
+            # 文書が上位を埋めて Hit@k が下がる＝その区分の実力を測れない。
+            # 区分なし(NULL)の質問は従来どおり全文書が対象。
+            project=item.get("project"),
+            topic=item.get("topic"),
         )
         rank = _rank_of(hits, item["expected_source"])
         hit = rank is not None and rank < top_k

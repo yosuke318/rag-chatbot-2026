@@ -68,6 +68,15 @@ class FeedbackRequest(BaseModel):
     comment: Optional[str] = Field(default=None, description="自由記述（任意）")
 
 
+class SavedQuestionRequest(BaseModel):
+    """保管する質問1件（正解ラベルなし）。②の検索時は自動で保管されるので、
+    これは「検索せずに質問だけ足したい」場合の入口。"""
+
+    question: str = Field(description="保管する質問")
+    project: Optional[str] = Field(default=None, description="プロジェクト（任意）")
+    topic: Optional[str] = Field(default=None, description="トピック（任意）")
+
+
 class EvalQuestionRequest(BaseModel):
     """評価用の質問1件（正解ラベル付き）。プロジェクト・トピックごとに分けて登録できる。"""
 
@@ -269,6 +278,47 @@ class EvalQuestionsResponse(BaseModel):
     """評価用質問の一覧（会社・部署で絞り込める）。"""
 
     questions: List[EvalQuestion]
+
+
+class SavedQuestion(BaseModel):
+    """②で検索したときに保管された質問1件（正解ラベルは持たない）。"""
+
+    id: int
+    question: str
+    project: Optional[str] = None
+    topic: Optional[str] = None
+
+
+class SavedQuestionsResponse(BaseModel):
+    questions: List[SavedQuestion]
+
+
+class SavedQuestionResponse(BaseModel):
+    """保管の結果。既に同じ質問があれば saved=false（エラーではない）。"""
+
+    saved: bool = Field(description="新しく保管したか。false=同じ区分に同じ質問が既にある")
+    question: str
+    project: Optional[str] = None
+    topic: Optional[str] = None
+
+
+class VerifyResult(BaseModel):
+    """保管質問1件の検証結果。正解ラベルが無いので○×は付かない。"""
+
+    question: str
+    project: Optional[str] = None
+    topic: Optional[str] = None
+    fused: List[FusedHit] = Field(description="RRF融合後の上位k件（②の表と同じ形）")
+
+
+class VerifyReport(BaseModel):
+    """保管質問すべての検証結果。UIの一覧はこれを描画する。"""
+
+    n: int = Field(description="検証した質問数")
+    top_k: int
+    project: Optional[str] = Field(default=None, description="絞り込んだプロジェクト（null=全件）")
+    topic: Optional[str] = Field(default=None, description="絞り込んだトピック（null=全件）")
+    results: List[VerifyResult]
 
 
 class EvalResult(BaseModel):
