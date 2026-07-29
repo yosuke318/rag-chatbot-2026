@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -14,6 +15,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app import apikeys, conversations, saved_questions, storage
 from app.config import (
+    ADMIN_TOKEN,
     ANSWER_IMAGE_MAX_BYTES,
     ANSWER_MAX_IMAGES,
     IMAGE_INDEX_METHOD,
@@ -165,6 +167,10 @@ def _reject_empty_question(req: ChatRequest):
     )
 
 
+class AdminForbidden(Exception):
+    """/admin/* のトークンが合わない（未設定時は発生しない）。"""
+
+
 @app.exception_handler(MissingAPIKey)
 async def missing_api_key(request: Request, exc: Exception):
     """キーが空のままSDKを呼ぶ前に落とす。SDKに任せると通信前のTypeErrorになり
@@ -181,6 +187,17 @@ async def missing_api_key(request: Request, exc: Exception):
         "missing_api_key",
         f"{which}のAPIキーが未設定です。",
         f"backend/.env の {name} を設定して再起動してください。{extra}",
+        "",
+    )
+
+
+@app.exception_handler(AdminForbidden)
+async def admin_forbidden(request: Request, exc: Exception):
+    return _error(
+        403,
+        "admin_forbidden",
+        "管理用APIのトークンが不正です。",
+        "X-Admin-Token ヘッダに backend/.env の ADMIN_TOKEN と同じ値を付けてください。",
         "",
     )
 
@@ -365,6 +382,26 @@ async def record_api_usage_status(request: Request, call_next):
         except Exception:
             logger.exception("利用ログのステータス書き戻しに失敗（応答はそのまま返す）")
     return response
+
+
+def require_admin(request: Request) -> None:
+    """管理用API(/admin/*)の入口。ADMIN_TOKEN を設定したときだけ認証を要求する。
+
+    ★なぜ「設定したときだけ」なのか★
+      このアプリはログインなし・Tailscaleで閉域という前提で、UI経路には認証の
+      仕組みが無い。ここだけ必須にするとローカル開発で毎回トークンが要る割に、
+      閉域内では守るものが増えない。一方 /admin/reindex-images は画像1枚ごとに
+      Claude/Voyage を呼ぶので、閉域を出す構成では放置できない
+      （コスト増幅・DoSの経路になる）。そこで「出すなら設定する」を選べる形にした。
+
+    照合は secrets.compare_digest で行う（== だと一致する文字数で応答時間が
+    変わり、総当たりの手がかりを与える）。
+    """
+    if not ADMIN_TOKEN:
+        return
+    given = request.headers.get("x-admin-token") or ""
+    if not secrets.compare_digest(given, ADMIN_TOKEN):
+        raise AdminForbidden()
 
 
 def require_api_key(request: Request) -> apikeys.ApiKey:
@@ -717,7 +754,7 @@ def download_file(source: str):
     )
 
 
-@app.post("/admin/backfill-files")
+@app.post("/admin/backfill-files", dependencies=[Depends(require_admin)])
 def backfill_files():
     """この変更より前に登録済みの文書を、原本ダウンロードに対応させる後埋め。
 
@@ -742,7 +779,11 @@ def backfill_files():
     return {"backfilled": saved, "documents": len(texts)}
 
 
-@app.post("/admin/reindex-images", responses=_ERRORS)
+@app.post(
+    "/admin/reindex-images",
+    responses=_ERRORS,
+    dependencies=[Depends(require_admin)],
+)
 def reindex_images_endpoint(method: Optional[str] = None):
     """S3の原本画像から、画像チャンクの索引だけを作り直す（5-2の索引方式の比較評価用）。
 

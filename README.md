@@ -155,6 +155,10 @@ curl -X POST "http://localhost:8000/admin/reindex-images?method=multimodal"
 ```
 
 > どちらが良いかは eval で決める前提。実測の手順は下記「検索精度を測る」を参照。
+>
+> `/admin/*` は `ADMIN_TOKEN` を設定したときだけ `X-Admin-Token` ヘッダを要求する
+> （未設定なら素通し＝ログインなし・Tailscale閉域の前提のまま）。この操作は画像1枚ごとに
+> Claude/Voyage を呼ぶため、**閉域の外に出す構成では必ず設定すること**。
 
 #### 回答は原本画像を見て作る（言語化は索引に格下げ）
 

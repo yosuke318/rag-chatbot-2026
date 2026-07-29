@@ -115,6 +115,14 @@ ANSWER_IMAGE_MAX_BYTES = int(os.getenv("ANSWER_IMAGE_MAX_MB", "4")) * 1024 * 102
 # 検索・生成
 TOP_K = 4  # 回答生成に使うチャンク数
 
+# 管理用API(/admin/*)を守るトークン。
+# ★設定したときだけ認証を要求する★（未設定なら従来どおり素通し）。
+# このアプリは「ログインなし・Tailscaleで閉域」を前提にしていて、UI経路には
+# 認証の仕組みが無い。一方 /admin/reindex-images は画像1枚ごとに Claude/Voyage を
+# 呼ぶため、閉域の外から叩かれるとコスト増幅の穴になる。
+# 閉域を出す構成（ALB直下等）では必ず設定すること。X-Admin-Token ヘッダで照合する。
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+
 # 公開API(/v1)のレート制限。APIキー1本あたり「直近1分間に受け付ける本数」。
 # キーごとに api_keys.rate_limit_per_min で上書きでき、ここはその既定値。
 # 目的は課金保護（1リクエストごとに埋め込み・生成APIを呼ぶため）と暴走の抑制。

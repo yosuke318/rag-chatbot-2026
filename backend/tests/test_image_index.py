@@ -116,6 +116,42 @@ def test_caption_partial_failure_indexes_the_rest(monkeypatch, no_api):
 # ---------------------------------------------------------------------------
 
 
+def test_embed_images_closes_already_opened_images_when_one_is_broken():
+    """★途中で失敗しても開いた分は閉じる★（レビュー指摘）
+
+    内包表記で一度に開くと、壊れた1枚で例外が出たときに、それより前に開いた
+    画像の参照がどこにも残らず閉じられない。
+    """
+    llm = pytest.importorskip("app.llm")
+    pytest.importorskip("PIL")
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (10, 10)).save(buf, format="PNG")
+    good = buf.getvalue()
+
+    opened: list = []
+    real_open = Image.open
+
+    def tracking_open(fp):
+        if len(opened) >= 2:  # 3枚目で失敗させる
+            raise OSError("cannot identify image file")
+        img = real_open(fp)
+        opened.append(img)
+        return img
+
+    with patch("PIL.Image.open", tracking_open):
+        with pytest.raises(OSError):
+            llm.embed_images([good, good, b"broken"])
+
+    # PIL は close() で fp を None にする（開いた直後は必ず値が入っている）ので、
+    # ここが None かどうかで「閉じたか」を判定できる。
+    assert len(opened) == 2
+    assert [img.fp for img in opened] == [None, None], "先に開いた画像が閉じられていない"
+
+
 def test_multimodal_method_embeds_the_image_itself(no_api):
     rows = ingest.build_image_index(
         "決算.pdf", [_image("1ページ目", b"raw")], method="multimodal"
@@ -288,6 +324,22 @@ def test_reindex_counts_only_images_that_actually_got_an_index(monkeypatch, no_a
     assert result == {"documents": 1, "images": 1, "indexed": 0}
 
 
+def test_indexed_count_uses_explicit_none_checks(monkeypatch, no_api):
+    """★空ベクトルを「索引なし」と数えない★（レビュー指摘）
+
+    真偽値で見ると、埋め込みAPIが空配列を返したときに索引済みなのに0件と
+    数えてしまい、「レート制限で索引を作れていない」という警告が誤って出る。
+    """
+    rows = [
+        {"embedding": [], "image_embedding": None},          # 空でも値はある
+        {"embedding": None, "image_embedding": []},          # 同上（案B側）
+        {"embedding": None, "image_embedding": None},        # これだけが索引なし
+        {"embedding": [0.1], "image_embedding": None},
+    ]
+
+    assert ingest._indexed_count(rows) == 3
+
+
 def test_reindex_passes_retry_waits_to_the_embedding_api(monkeypatch, no_api):
     """作り直しは待ってでも完走させる（途中で諦めると索引なしの画像が残る）。"""
     conn = _FakeConn([(11, "images/決算.pdf/0001.png", "1ページ目", "決算.pdf")])
@@ -345,6 +397,86 @@ def test_reindex_endpoint_rejects_unknown_method(client):
 
     assert resp.status_code == 400
     assert resp.json()["error"] == "invalid_image_index_method"
+
+
+# ---------------------------------------------------------------------------
+# /admin/* の保護（レビュー指摘）
+#
+# reindex-images は画像1枚ごとに Claude/Voyage を呼ぶので、閉域の外に出す構成では
+# コスト増幅の経路になる。ADMIN_TOKEN を設定したときだけ認証を要求する。
+# ---------------------------------------------------------------------------
+
+
+def test_admin_is_open_when_no_token_is_configured(client):
+    """未設定なら従来どおり素通し（ログインなし・閉域前提のローカル開発を壊さない）。"""
+    from app import main as main_module
+
+    with (
+        patch.object(main_module, "ADMIN_TOKEN", None),
+        patch("app.main.reindex_images", return_value={"documents": 0, "images": 0, "indexed": 0}),
+    ):
+        assert client.post("/admin/reindex-images").status_code == 200
+
+
+def test_admin_requires_the_token_once_configured(client):
+    from app import main as main_module
+
+    with (
+        patch.object(main_module, "ADMIN_TOKEN", "s3cret"),
+        patch("app.main.reindex_images") as spy,
+    ):
+        resp = client.post("/admin/reindex-images")
+
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "admin_forbidden"
+    spy.assert_not_called()  # ★高価な処理に入る前に弾く★
+
+
+def test_admin_rejects_a_wrong_token(client):
+    from app import main as main_module
+
+    with (
+        patch.object(main_module, "ADMIN_TOKEN", "s3cret"),
+        patch("app.main.reindex_images") as spy,
+    ):
+        resp = client.post(
+            "/admin/reindex-images", headers={"X-Admin-Token": "wrong"}
+        )
+
+    assert resp.status_code == 403
+    spy.assert_not_called()
+
+
+def test_admin_accepts_the_matching_token(client):
+    from app import main as main_module
+
+    with (
+        patch.object(main_module, "ADMIN_TOKEN", "s3cret"),
+        patch(
+            "app.main.reindex_images",
+            return_value={"documents": 1, "images": 2, "indexed": 2},
+        ),
+    ):
+        resp = client.post(
+            "/admin/reindex-images", headers={"X-Admin-Token": "s3cret"}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["indexed"] == 2
+
+
+def test_backfill_files_is_protected_the_same_way(client):
+    """既存の管理APIも同じ扱いに揃える（片方だけ守っても意味がない）。"""
+    from app import main as main_module
+
+    with (
+        patch.object(main_module, "ADMIN_TOKEN", "s3cret"),
+        patch.object(main_module, "get_conn") as spy,
+    ):
+        resp = client.post("/admin/backfill-files")
+
+    assert resp.status_code == 403
+    spy.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

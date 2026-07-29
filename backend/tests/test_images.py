@@ -122,6 +122,65 @@ def test_extract_pdf_images_returns_empty_on_broken_pdf():
     assert parsers.extract_pdf_images(b"this is definitely not a pdf") == []
 
 
+def test_render_page_closes_the_bitmap_after_materializing_the_png():
+    """★描画バッファを解放し、かつ解放の順番を守る★（レビュー指摘）
+
+    PDFium のビットマップはC側の確保で、ページ1枚でも数MB。GC任せにすると
+    大きなPDFでピークが跳ねる。一方 to_pil() はビットマップとメモリを共有する
+    ので、先にビットマップを閉じると解放済み領域を読むことになる。
+    PNG化 → PIL → ビットマップ の順であることを固定する。
+    """
+    closed: list[str] = []
+
+    class FakePil:
+        width, height = 100, 200
+
+        def save(self, buf, format):
+            assert "bitmap" not in closed, "PNG化より先にビットマップを閉じている"
+            buf.write(b"png-bytes")
+
+        def close(self):
+            closed.append("pil")
+
+    class FakeBitmap:
+        def to_pil(self):
+            return FakePil()
+
+        def close(self):
+            assert "pil" in closed, "PIL より先にビットマップを閉じている"
+            closed.append("bitmap")
+
+    class FakePage:
+        def render(self, scale):
+            return FakeBitmap()
+
+    image = parsers._render_page({0: FakePage()}, 0)
+
+    assert closed == ["pil", "bitmap"]
+    assert image is not None
+    assert image.data == b"png-bytes"
+    assert (image.width, image.height) == (100, 200)
+
+
+def test_render_page_closes_the_bitmap_even_when_rendering_fails():
+    """途中で失敗しても確保済みのバッファは解放する。"""
+    closed: list[str] = []
+
+    class FakeBitmap:
+        def to_pil(self):
+            raise RuntimeError("描画に失敗")
+
+        def close(self):
+            closed.append("bitmap")
+
+    class FakePage:
+        def render(self, scale):
+            return FakeBitmap()
+
+    assert parsers._render_page({0: FakePage()}, 0) is None
+    assert closed == ["bitmap"]
+
+
 # ---------------------------------------------------------------------------
 # XLSX / PPTX: 貼られた画像を取り出す
 # ---------------------------------------------------------------------------

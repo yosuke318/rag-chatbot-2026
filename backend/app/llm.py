@@ -126,17 +126,20 @@ def embed_images(
 
     SDK は PIL.Image を受け取るのでここで開く。Pillow は画像抽出(app.parsers)で
     既に依存に入っている。
+
+    ★開いた画像は途中で失敗しても閉じる★
+      内包表記で一度に開くと、途中の1枚が壊れていて Image.open が投げたとき、
+      それより前に開いた分の参照がどこにも残らず閉じられない。ExitStack に
+      登録しながら開けば、どこで失敗しても開いた分だけが確実に閉じられる。
     """
     import io
+    from contextlib import ExitStack
 
     from PIL import Image
 
-    opened = [Image.open(io.BytesIO(data)) for data in images]
-    try:
+    with ExitStack() as stack:
+        opened = [stack.enter_context(Image.open(io.BytesIO(data))) for data in images]
         return _multimodal_embed([[img] for img in opened], "document", retry_waits)
-    finally:
-        for img in opened:
-            img.close()
 
 
 def embed_multimodal_queries(

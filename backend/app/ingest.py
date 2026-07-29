@@ -293,8 +293,12 @@ def _indexed_count(index: list[dict]) -> int:
     ★0件は「引けない画像が並んだ」ということ★。方式の実力ではなく
     APIの失敗でもこうなるので、呼び出し側が区別できるよう件数を返す。
     """
+    # 両方とも「値があるか」で数える。片方を真偽値で見ると、空ベクトル([])が
+    # 返ったときに索引済みなのに0件と数えてしまう（and/or の優先順位も紛らわしい）。
     return sum(
-        1 for row in index if row["embedding"] or row["image_embedding"] is not None
+        1
+        for row in index
+        if row["embedding"] is not None or row["image_embedding"] is not None
     )
 
 

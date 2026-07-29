@@ -195,27 +195,45 @@ def extract_pdf_images(data: bytes) -> list[ExtractedImage]:
     images: list[ExtractedImage] = []
     try:
         for i in range(min(len(pdf), IMAGE_MAX_PER_DOC)):
-            try:
-                bitmap = pdf[i].render(scale=PDF_RENDER_SCALE)
-                buf = io.BytesIO()
-                pil = bitmap.to_pil()
-                pil.save(buf, format="PNG")
-            except Exception:
-                logger.warning("%dページ目を画像化できませんでした", i + 1, exc_info=True)
-                continue
-            images.append(
-                ExtractedImage(
-                    buf.getvalue(),
-                    ".png",
-                    "image/png",
-                    f"{i + 1}ページ目",
-                    pil.width,
-                    pil.height,
-                )
-            )
+            page = _render_page(pdf, i)
+            if page is not None:
+                images.append(page)
     finally:
         pdf.close()
     return images
+
+
+def _render_page(pdf, index: int) -> ExtractedImage | None:
+    """PDFの1ページを PNG にする。失敗したら None（そのページだけ飛ばす）。
+
+    ★描画バッファは使い終わったら必ず閉じる★
+      PDFium のビットマップはC側に確保され、ページ1枚でも数MBになる
+      （144dpiのA4で約8MB）。GC任せにすると大きなPDFでピーク使用量が跳ねる。
+
+      解放の順番が重要で、to_pil() が返す PIL 画像は★ビットマップと同じメモリを
+      共有する★（コピーではない）。先にビットマップを閉じると解放済みメモリを
+      読むことになるため、PNGへ書き出して中身を確定させてから、PIL → ビットマップ
+      の順に閉じる。
+    """
+    bitmap = None
+    pil = None
+    try:
+        bitmap = pdf[index].render(scale=PDF_RENDER_SCALE)
+        pil = bitmap.to_pil()
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG")  # ここでバッファから独立したバイト列になる
+        width, height = pil.width, pil.height
+    except Exception:
+        logger.warning("%dページ目を画像化できませんでした", index + 1, exc_info=True)
+        return None
+    finally:
+        if pil is not None:
+            pil.close()
+        if bitmap is not None:
+            bitmap.close()
+    return ExtractedImage(
+        buf.getvalue(), ".png", "image/png", f"{index + 1}ページ目", width, height
+    )
 
 
 def extract_xlsx_images(data: bytes) -> list[ExtractedImage]:
