@@ -732,7 +732,7 @@ def backfill_files():
 
 @app.post("/admin/reindex-images", responses=_ERRORS)
 def reindex_images_endpoint(method: Optional[str] = None):
-    """S3の原本画像から、画像チャンクの索引だけを作り直す（5-2のA/B比較用）。
+    """S3の原本画像から、画像チャンクの索引だけを作り直す（5-2の索引方式の比較評価用）。
 
     画像の索引方式（自動キャプション / マルチモーダル埋め込み）は取り込み時に
     決まるため、方式を変えて比べるには索引を作り直す必要がある。原本画像はS3に

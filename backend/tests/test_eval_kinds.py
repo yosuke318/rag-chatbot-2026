@@ -1,9 +1,9 @@
-"""チャンク種別まで下ろした正解判定と、A/Bの有意差検定のテスト。
+"""チャンク種別まで下ろした正解判定と、比較評価の有意差検定のテスト。
 
 ここが守っているのは1点:
   ★文書名だけを正解ラベルにすると、図表の索引方式を変えても数字が動かない★
   画像は本文と同じ文書に属するので、「その文書が1位」では本文で引けたのか
-  画像で引けたのか区別が付かない。案A/案Bの比較が成立しなくなる。
+  画像で引けたのか区別が付かない。索引方式の比較評価が成立しなくなる。
 """
 from __future__ import annotations
 
@@ -218,6 +218,49 @@ def test_compare_reports_can_look_at_image_questions_only():
     assert image_only["mrr"]["n"] == 2
     # 本文の設問を混ぜると差が 2/3 に薄まる（判断を誤らせる）
     assert overall["mrr"]["diff"] == pytest.approx(0.6667, abs=1e-4)
+
+
+def test_print_comparison_flags_underpowered_and_unindexed_runs(capsys):
+    """出力側の2つの歯止めを固定する。
+
+    どちらも「数字は出ているのに読んではいけない」ケースで、黙って通すと
+    結論を間違える。キー名(conditions)がずれたらここで落ちる。
+    """
+    comparison = {
+        "conditions": {
+            "caption": {
+                "hit_at_k": 1.0,
+                "mrr": 1.0,
+                "by_kind": {"image": {"n": 3, "hit_at_k": 1.0, "mrr": 1.0}},
+                "reindexed": {"images": 5, "indexed": 2},  # 3枚は索引できていない
+            },
+            "multimodal": {
+                "hit_at_k": 1.0,
+                "mrr": 0.5,
+                "by_kind": {"image": {"n": 3, "hit_at_k": 1.0, "mrr": 0.5}},
+                "reindexed": {"images": 5, "indexed": 5},
+            },
+        },
+        "image_only": {
+            "kind": "image",
+            "mrr": {"diff": -0.5, "ci_low": -0.5, "ci_high": -0.5, "p_value": 0.0, "n": 3},
+            "hit_at_k": {"diff": 0.0, "ci_low": 0.0, "ci_high": 0.0, "p_value": 1.0, "n": 3},
+        },
+        "overall": {
+            "kind": "all",
+            "mrr": {"diff": -0.375, "ci_low": -0.5, "ci_high": -0.125, "p_value": 0.005, "n": 4},
+            "hit_at_k": {"diff": 0.0, "ci_low": 0.0, "ci_high": 0.0, "p_value": 1.0, "n": 4},
+        },
+    }
+
+    eval_mod._print_comparison(comparison)
+    out = capsys.readouterr().out
+
+    assert "索引 2/5枚" in out
+    assert "この比較結果は使えません" in out   # 索引できていない条件がある
+    # p=0.0 でも「有意差あり」と書かない（N=3 は検定として成立しない）
+    assert "判断不可（設問不足）" in out
+    assert "有意差あり" not in out
 
 
 def test_compare_reports_refuses_mismatched_question_sets():

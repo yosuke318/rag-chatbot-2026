@@ -37,7 +37,7 @@
       （3条件の比較: 素の検索 / --rerank --rerank-method llm / --rerank --rerank-method voyage）
   python -m app.eval --gen                        # 回答生成まで走らせて目視（要Anthropic）
 
-図表（画像）の検索を A/B 比較する（5-2）:
+図表（画像）の検索を比較評価する（5-2）:
 
   python -m app.eval --compare-image-index
 
@@ -251,7 +251,7 @@ def evaluate(
       Web経路(/eval)は None のまま即429を返す（利用者を何十秒も待たせない）。
 
     query_vecs: 質問のベクトルを外から渡す（gold と同じ並び・同じ長さ）。
-      取り込み方を変えて2回評価する A/B 測定（app.compare）で、両方の評価に
+      取り込み方を変えて2回評価する比較評価（app.compare）で、両方の評価に
       ★同一のベクトル★を使うための引数。こうすると差が文書側の変更だけに
       由来すると言い切れるうえ、埋め込みAPIの呼び出しも1回で済む。
     """
@@ -348,7 +348,7 @@ def evaluate(
         "rerank_method": rerank_method,
         "rrf_k": rrf_k,
         "params": params,
-        # ★A/B比較の結果に条件を貼り付けておく★ 画像の索引方式は評価コマンドの
+        # ★比較評価の結果に条件を貼り付けておく★ 画像の索引方式は評価コマンドの
         # 引数ではなく「取り込み時の設定」で決まるため、レポートだけを見比べても
         # どちらを測ったのか分からなくなる。現在の設定値を一緒に残す
         # （手順どおりなら、この値の索引に対して測っている）。
@@ -368,12 +368,19 @@ def evaluate(
 
 
 # ============================================================
-# A/B比較: 2条件の差に意味があるかを測る
+# 比較評価: 2条件の差に意味があるかを測る
 #
-# 質問集が20〜30問の規模では、Hit@k が 0.70 → 0.75 に動いても
-# 「たまたま」で説明が付いてしまう。IR分野の慣習に合わせ、
-# ★同じ質問集に両条件をかけて問ごとに対にし（paired）★、
-# その差をブートストラップで再標本化して有意かどうかを見る。
+# ★これは A/B テストではない★
+#   A/Bテストは本番トラフィックを無作為に2群へ分け、実利用者の行動で優劣を
+#   決める online experiment。ここでやっているのは、固定の質問集に2つの構成を
+#   通して正解ラベルと突き合わせる offline evaluation で、同じ質問に両方を通す
+#   「対応のある比較(paired comparison)」。利用者も無作為化も関与しないので、
+#   名前を分けてある（変数名の "conditions" は A/Bテストの "arms" と違う概念）。
+#
+# 検定が要る理由:
+#   質問集が20〜30問の規模では、Hit@k が 0.70 → 0.75 に動いても「たまたま」で
+#   説明が付いてしまう。IR分野の慣習に合わせ、問ごとの差をブートストラップで
+#   再標本化して有意かどうかを見る。
 # ============================================================
 
 BOOTSTRAP_SAMPLES = 10000
@@ -474,7 +481,7 @@ def _print_report(report: dict, generate: bool = False) -> None:
         rerank += f"({report.get('rerank_method') or '既定'})"
     print(f"\n{'='*60}")
     print(f"検索評価  N={report['n']}  top_k={k}  手法={retrievers}  リランク={rerank}")
-    # 画像の索引方式は取り込み時の設定なので、A/B比較の条件として毎回出す
+    # 画像の索引方式は取り込み時の設定なので、比較評価の条件として毎回出す
     print(f"  画像索引 = {report.get('image_index_method', 'none')}")
     print(f"  Hit@{k} = {report['hit_at_k']:.3f}   （上位{k}件に正解が入った割合）")
     print(f"  MRR    = {report['mrr']:.3f}   （正解の順位の逆数平均・1.0が満点）")
@@ -514,15 +521,15 @@ def _print_report(report: dict, generate: bool = False) -> None:
             print(f"    回答: {answer.strip()}")
 
 
-# 画像索引のA/B比較で使う条件。案Aは既存3手法だけ、案Bは image をもう1本足す
+# 画像索引の比較評価で使う条件。案Aは既存3手法だけ、案Bは image をもう1本足す
 # （案Bの画像チャンクは説明文を持たないので、image を外すと絶対に引けない）。
-IMAGE_AB_ARMS = {
+IMAGE_INDEX_CONDITIONS = {
     "caption": ["vector", "trgm", "bm25"],
     "multimodal": ["vector", "trgm", "bm25", "image"],
 }
 
 
-def compare_image_index(
+def compare_image_index_methods(
     top_k: int = TOP_K,
     gold: list[dict] | None = None,
     retry_waits: list[int] | None = None,
@@ -541,7 +548,7 @@ def compare_image_index(
 
     gold = load_questions() if gold is None else gold
     reports: dict[str, dict] = {}
-    for method, retrievers in IMAGE_AB_ARMS.items():
+    for method, retrievers in IMAGE_INDEX_CONDITIONS.items():
         # ★索引の作り直しでも429を待つ★ ここで待たずに失敗すると、索引の無い
         # 画像が並んだまま評価が走り、「その方式では図を引けない」という
         # 実測値と見分けの付かない0点が出る（実際に踏んだ）。
@@ -557,7 +564,7 @@ def compare_image_index(
         reports[method] = report
 
     return {
-        "arms": reports,
+        "conditions": reports,
         # 図表根拠の設問だけの比較（本命）と、全体の比較（副作用の確認）
         "image_only": compare_reports(
             reports["caption"], reports["multimodal"], kind="image"
@@ -567,12 +574,13 @@ def compare_image_index(
 
 
 def _print_comparison(comparison: dict) -> None:
-    """A/B比較の結果を、判断できる形（差・信頼区間・p値）で出す。"""
+    """比較評価の結果を、判断できる形（差・信頼区間・p値）で出す。"""
     print(f"\n{'='*60}")
-    print("画像索引の A/B 比較   案A(caption) → 案B(multimodal)")
+    print("画像索引方式の比較評価（オフライン・対応のある比較）")
+    print("  案A(caption) → 案B(multimodal)")
     print(f"{'='*60}")
     incomplete = []
-    for method, report in comparison["arms"].items():
+    for method, report in comparison["conditions"].items():
         by_image = (report.get("by_kind") or {}).get("image")
         line = f"  {method:<11} 全体 Hit@k={report['hit_at_k']:.3f} MRR={report['mrr']:.3f}"
         if by_image:
@@ -670,7 +678,7 @@ def main() -> None:
     parser.add_argument(
         "--compare-image-index",
         action="store_true",
-        help="画像の索引方式を A/B 比較する（索引を作り直して2回評価し、有意差を検定）",
+        help="画像の索引方式を比較評価する（索引を作り直して2回評価し、有意差を検定）",
     )
     args = parser.parse_args()
 
@@ -711,7 +719,7 @@ def main() -> None:
             )
             return
         _print_comparison(
-            compare_image_index(top_k=args.top_k, gold=gold, retry_waits=RETRY_WAITS)
+            compare_image_index_methods(top_k=args.top_k, gold=gold, retry_waits=RETRY_WAITS)
         )
         return
 

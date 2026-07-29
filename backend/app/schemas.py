@@ -348,7 +348,7 @@ class EvalResult(BaseModel):
     rank: Optional[int] = Field(description="正解の順位（0始まり）。null=圏外")
     reciprocal_rank: float = Field(
         default=0.0,
-        description="この1問のMRR寄与（1位=1.0 / 圏外=0）。A/B比較で問ごとに対にするのに使う",
+        description="この1問のMRR寄与（1位=1.0 / 圏外=0）。比較評価で問ごとに対にするのに使う",
     )
     retrieved: List[str] = Field(description="実際に上位で引いた文書名の並び")
     retrieved_kinds: List[str] = Field(
@@ -388,7 +388,8 @@ class EvalReport(BaseModel):
     # このフィールドを持たない呼び出し側がレポートを組み立てられるようにするため。
     image_index_method: str = Field(
         default="none",
-        description="画像の索引方式 caption/multimodal/none（取り込み時の設定。A/B比較用の記録）",
+        description="画像の索引方式 caption/multimodal/none"
+        "（取り込み時の設定。比較評価の条件として記録する）",
     )
     hit_at_k: float = Field(description="上位k件に正解が入った質問の割合")
     mrr: float = Field(description="正解順位の逆数平均（1位=1.0 / 圏外=0）")

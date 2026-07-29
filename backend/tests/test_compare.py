@@ -1,4 +1,4 @@
-"""app.compare（contextual の有無のA/B測定）のユニットテスト。
+"""app.compare（contextual の有無の比較評価）のユニットテスト。
 
 DB・埋め込みAPI・Claude は触らずモックする。ここで守りたいのは
 「比較が公平であること」＝ 質問ベクトルと検索条件が両構成で同一であること。

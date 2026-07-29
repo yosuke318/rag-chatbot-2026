@@ -128,7 +128,7 @@ def build_image_index(
     各要素は chunks に入れる索引用の値:
       {"content", "context", "content_nouns", "embedding", "image_embedding"}
 
-    方式は IMAGE_INDEX_METHOD（引数 method で上書き可・eval のA/B比較用）:
+    方式は IMAGE_INDEX_METHOD（引数 method で上書き可・eval の比較評価用）:
       caption    … 案A: Claudeに説明文を書かせ、既存のテキスト経路で埋め込む。
                    説明文は content に入る＝ベクトル・字面・BM25の3手法すべてに乗る。
       multimodal … 案B: 画像を直接ベクトル化して image_embedding に入れる。
@@ -142,7 +142,7 @@ def build_image_index(
     retry_waits: 埋め込みAPIが429を返したときに待つ秒数の並び（None=待たない）。
       ★評価では必ず渡すこと★。ここが429で失敗すると索引なしの画像が並び、
       「その方式では図が引けなかった」という実測値と区別が付かない数字が出る
-      （実際に踏んだ。compare_image_index が indexed 件数を検査するのはこのため）。
+      （実際に踏んだ。compare_image_index_methods が indexed 件数を検査するのはこのため）。
     """
     resolved = (method or IMAGE_INDEX_METHOD).lower()
     # context には★常にラベルを入れる★（説明文が付いたかどうかに関わらず）。
@@ -304,7 +304,7 @@ def reindex_images(
     """既存の画像チャンクの索引だけを作り直す。
     {"documents", "images", "indexed"} を返す。
 
-    ★案A/案Bの比較(5-2)を回すための道具★。索引方式は取り込み時に決まるので、
+    ★索引方式の比較評価(5-2)を回すための道具★。索引方式は取り込み時に決まるので、
     素直にやると方式を変えるたびに全ファイルを上げ直すことになる。原本画像は
     S3にあるのだから、そこから読み直して索引だけ差し替えれば足りる。
     説明文を書き直したい（プロンプトを変えた）ときにも使う。

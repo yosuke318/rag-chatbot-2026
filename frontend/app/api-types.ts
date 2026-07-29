@@ -282,7 +282,7 @@ export interface paths {
         put?: never;
         /**
          * Reindex Images Endpoint
-         * @description S3の原本画像から、画像チャンクの索引だけを作り直す（5-2のA/B比較用）。
+         * @description S3の原本画像から、画像チャンクの索引だけを作り直す（5-2の索引方式の比較評価用）。
          *
          *     画像の索引方式（自動キャプション / マルチモーダル埋め込み）は取り込み時に
          *     決まるため、方式を変えて比べるには索引を作り直す必要がある。原本画像はS3に
@@ -791,7 +791,7 @@ export interface components {
             } | null;
             /**
              * Image Index Method
-             * @description 画像の索引方式 caption/multimodal/none（取り込み時の設定。A/B比較用の記録）
+             * @description 画像の索引方式 caption/multimodal/none（取り込み時の設定。比較評価の条件として記録する）
              * @default none
              */
             image_index_method: string;
@@ -845,7 +845,7 @@ export interface components {
             rank: number | null;
             /**
              * Reciprocal Rank
-             * @description この1問のMRR寄与（1位=1.0 / 圏外=0）。A/B比較で問ごとに対にするのに使う
+             * @description この1問のMRR寄与（1位=1.0 / 圏外=0）。比較評価で問ごとに対にするのに使う
              * @default 0
              */
             reciprocal_rank: number;
