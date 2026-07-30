@@ -17,18 +17,34 @@ backend/seed_docs/ に置いた .txt を順に取り込む。
 使い方:
   python -m app.seed              # seed_docs/ の全 .txt を投入
   python -m app.seed foo.txt      # seed_docs/foo.txt だけ投入
+  python -m app.seed --corpus     # 評価専用コーパス(eval_corpus/docs)を投入
+
+★デモ用の seed_docs と評価用コーパスを分けている理由★
+  評価用コーパスは数百チャンクある（指標を飽和させないため意図的に大きい）。
+  これを seed_docs に混ぜると、UIを触るための `task seed` も、contextual の
+  比較評価も、毎回そのすべてを埋め込み直すことになり、時間とAPIの費用が常に
+  かかる。コーパスは --corpus を付けたときだけ触る。
 """
+import argparse
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 
 from app.db import init_db
 from app.ingest import ingest_text
 
-SEED_DIR = Path(__file__).resolve().parent.parent / "seed_docs"
-SCOPES_PATH = Path(__file__).resolve().parent.parent / "seed_data" / "documents.json"
+_BACKEND = Path(__file__).resolve().parent.parent
+
+SEED_DIR = _BACKEND / "seed_docs"
+SCOPES_PATH = _BACKEND / "seed_data" / "documents.json"
+
+# 評価専用コーパス（YOSUKE-29）。指標が飽和しない規模と紛らわしさを持たせた文書群。
+CORPUS_DIR = _BACKEND / "eval_corpus" / "docs"
+CORPUS_SCOPES_PATH = _BACKEND / "eval_corpus" / "documents.json"
+# コーパスの文書と質問に付ける区分。評価はこの project で絞ることで
+# 「コーパスの質問をコーパスの文書に対して引く」を揃える（デモ文書が混ざらない）。
+CORPUS_PROJECT = "評価コーパス"
 
 # 429 を受けたときの再試行。無料枠(3 RPM)なら20秒待てば枠が空く。
 # 有料枠なら制限に当たらないので、この待ちは実質発生しない。
@@ -50,21 +66,35 @@ def load_scopes(path: Path | None = None) -> dict[str, dict]:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="文書の一括投入")
+    parser.add_argument(
+        "names",
+        nargs="*",
+        help="投入するファイル名（省略すると対象ディレクトリの全 .txt）",
+    )
+    parser.add_argument(
+        "--corpus",
+        action="store_true",
+        help="評価専用コーパス(eval_corpus/docs)を投入する（既定は seed_docs）",
+    )
+    args = parser.parse_args()
+
     # 再試行やフォールバックは llm.py が WARNING に出す。既定では表示されないので
     # CLI として動かすときだけロギングを有効にする（何が起きたか見えるように）。
     # WARNING 止まりにするのは、boto3/voyage の INFO ログで進捗が埋もれるため。
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
     init_db()  # スキーマが無ければ作る（単体実行できるように）
-    scopes = load_scopes()
+    directory = CORPUS_DIR if args.corpus else SEED_DIR
+    scopes = load_scopes(CORPUS_SCOPES_PATH if args.corpus else SCOPES_PATH)
 
-    if len(sys.argv) > 1:
-        files = [SEED_DIR / name for name in sys.argv[1:]]
+    if args.names:
+        files = [directory / name for name in args.names]
     else:
-        files = sorted(SEED_DIR.glob("*.txt"))
+        files = sorted(directory.glob("*.txt"))
 
     if not files:
-        print(f"投入対象がありません: {SEED_DIR}")
+        print(f"投入対象がありません: {directory}")
         return
 
     for f in files:

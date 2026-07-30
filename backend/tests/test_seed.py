@@ -78,7 +78,7 @@ def test_seed_passes_retry_waits_to_ingest(monkeypatch, tmp_path):
     monkeypatch.setattr(seed, "SEED_DIR", tmp_path)
     monkeypatch.setattr(seed, "RETRY_WAITS", [5, 10])
     monkeypatch.setattr(seed, "init_db", lambda: None)
-    monkeypatch.setattr(seed.sys, "argv", ["app.seed"])
+    monkeypatch.setattr("sys.argv", ["app.seed"])
 
     captured = {}
 
@@ -98,7 +98,7 @@ def test_seed_reports_skipped_documents(monkeypatch, tmp_path, capsys):
     (tmp_path / "a.txt").write_text("本文", encoding="utf-8")
     monkeypatch.setattr(seed, "SEED_DIR", tmp_path)
     monkeypatch.setattr(seed, "init_db", lambda: None)
-    monkeypatch.setattr(seed.sys, "argv", ["app.seed"])
+    monkeypatch.setattr("sys.argv", ["app.seed"])
     monkeypatch.setattr(
         seed,
         "ingest_text",
@@ -140,11 +140,12 @@ def test_seed_passes_scope_from_manifest(monkeypatch, tmp_path):
     (tmp_path / "z.txt").write_text("本文", encoding="utf-8")  # マニフェスト未掲載
     monkeypatch.setattr(seed, "SEED_DIR", tmp_path)
     monkeypatch.setattr(seed, "init_db", lambda: None)
-    monkeypatch.setattr(seed.sys, "argv", ["app.seed"])
+    monkeypatch.setattr("sys.argv", ["app.seed"])
     monkeypatch.setattr(
         seed,
         "load_scopes",
-        lambda: {"a.txt": {"project": "社内規程", "topic": "労務"}},
+        # main() はどのマニフェストを読むかを引数で渡す（--corpus で切り替わる）
+        lambda path=None: {"a.txt": {"project": "社内規程", "topic": "労務"}},
     )
 
     captured = {}

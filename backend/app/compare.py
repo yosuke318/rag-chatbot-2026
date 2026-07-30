@@ -25,9 +25,17 @@
   実行後のDBは設定どおりの内容になる。
 
 使い方:
-  python -m app.compare                     # DBの全質問で比較
+  python -m app.compare                     # DBの全質問で比較（seed_docs）
   python -m app.compare --project 社内規程   # プロジェクトで絞って比較
   python -m app.compare --top-k 4 --retrievers vector,bm25
+  python -m app.compare --corpus            # 評価専用コーパスで比較
+
+★どのコーパスで測るかで結論が変わる★
+  seed_docs は4文書12チャンクしかなく、Hit@4 が天井に張り付くため、contextual の
+  有無で差が出ない（実測で ±0.000、1位チャンクも1問も動かなかった）。
+  「効果がない」のではなく「測れていない」。
+  --corpus は数百チャンクの評価専用の文書群で測る（app.seed の CORPUS_DIR）。
+  こちらは取り込み直しに時間とAPIの費用がかかるので、既定にはしていない。
 """
 from __future__ import annotations
 
@@ -41,19 +49,34 @@ from app.eval import evaluate, load_questions
 from app.ingest import ingest_text
 from app.llm import embed_texts
 from app.retrieval import resolve_retrievers
-from app.seed import RETRY_WAITS, SEED_DIR, load_scopes
+from app.seed import (
+    CORPUS_DIR,
+    CORPUS_PROJECT,
+    CORPUS_SCOPES_PATH,
+    RETRY_WAITS,
+    SEED_DIR,
+    load_scopes,
+)
 
 LABELS = {False: "文脈なし（見出しのみ）", True: "contextual あり"}
 
 
-def reingest(contextual: bool, seed_dir: Path | None = None) -> int:
-    """seed_docs の文書を、指定した contextual 設定で取り込み直す。チャンク総数を返す。
+def reingest(
+    contextual: bool,
+    seed_dir: Path | None = None,
+    scopes_path: Path | None = None,
+) -> int:
+    """対象ディレクトリの文書を、指定した contextual 設定で取り込み直す。
 
-    区分(project/topic)は app.seed と同じ documents.json から読む。
-    取り込みは既存の同名文書を削除してから入れ直すので、ここで区分を渡さないと
+    チャンク総数を返す。区分(project/topic)は app.seed と同じ documents.json から
+    読む。取り込みは既存の同名文書を削除してから入れ直すので、ここで区分を渡さないと
     `task seed` で付けた区分がこのCLIを実行するたびに NULL で消える。
+
+    scopes_path: 区分のマニフェスト。ディレクトリを差し替えるときは★必ず対になる
+      マニフェストも渡す★（渡さないと評価コーパスの文書が区分なしで入り、
+      project で絞った評価から丸ごと外れて「質問が見つかりません」になる）。
     """
-    scopes = load_scopes()
+    scopes = load_scopes(scopes_path)
     total = 0
     for path in sorted((seed_dir or SEED_DIR).glob("*.txt")):
         scope = scopes.get(path.name, {})
@@ -73,10 +96,15 @@ def compare(
     top_k: int = TOP_K,
     retrievers: list[str] | None = None,
     gold: list[dict] | None = None,
+    seed_dir: Path | None = None,
+    scopes_path: Path | None = None,
 ) -> dict:
     """contextual なし/あり の2構成で評価し、両方のレポートを返す。
 
     戻り値: {"gold": [...], "runs": {False: report, True: report}}
+
+    seed_dir / scopes_path: 取り込み直す文書の置き場所とその区分のマニフェスト
+      （未指定なら seed_docs）。評価専用コーパスで測るときに差し替える。
     """
     gold = load_questions() if gold is None else gold
     if not gold:
@@ -95,7 +123,7 @@ def compare(
     runs: dict[bool, dict] = {}
     for contextual in order:
         print(f"\n▶ {LABELS[contextual]} で取り込み直しています…", flush=True)
-        chunks = reingest(contextual)
+        chunks = reingest(contextual, seed_dir=seed_dir, scopes_path=scopes_path)
         report = evaluate(
             top_k=top_k,
             retrievers=retrievers,
@@ -211,6 +239,12 @@ def main() -> None:
     parser.add_argument(
         "--topic", type=str, default=None, help="このトピックの質問だけで比較する"
     )
+    parser.add_argument(
+        "--corpus",
+        action="store_true",
+        help="評価専用コーパス(eval_corpus)で比較する（既定は seed_docs）。"
+        "数百チャンクを2回取り込み直すため、時間とAPIの費用がかかる",
+    )
     args = parser.parse_args()
 
     # 再試行やフォールバックは llm.py が WARNING に出す（app.seed と同じ方針）
@@ -222,8 +256,26 @@ def main() -> None:
         if args.retrievers
         else None
     )
-    gold = load_questions(project=args.project, topic=args.topic)
-    print_comparison(compare(top_k=args.top_k, retrievers=names, gold=gold))
+    # --corpus 指定時の既定の絞り込み。--project を明示したときはそちらを尊重する。
+    project = args.project or (CORPUS_PROJECT if args.corpus else None)
+    gold = load_questions(project=project, topic=args.topic)
+    if not gold:
+        scope = " / ".join(filter(None, [project, args.topic])) or "指定なし"
+        seed_cmd = "python -m app.eval --seed" + (" --corpus" if args.corpus else "")
+        print(
+            f"評価用の質問が見つかりません（絞り込み: {scope}）。\n"
+            f"まず `{seed_cmd}` で質問集を投入してください。"
+        )
+        return
+    print_comparison(
+        compare(
+            top_k=args.top_k,
+            retrievers=names,
+            gold=gold,
+            seed_dir=CORPUS_DIR if args.corpus else None,
+            scopes_path=CORPUS_SCOPES_PATH if args.corpus else None,
+        )
+    )
 
 
 if __name__ == "__main__":

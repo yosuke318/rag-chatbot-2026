@@ -18,7 +18,7 @@ def harness(monkeypatch):
     """取り込みと評価を差し替え、呼ばれ方を記録する。"""
     calls: dict[str, list] = {"reingest": [], "evaluate": [], "embed": []}
 
-    def fake_reingest(contextual, seed_dir=None):
+    def fake_reingest(contextual, seed_dir=None, scopes_path=None):
         calls["reingest"].append(contextual)
         return 5 if contextual else 4
 
@@ -199,7 +199,8 @@ def test_reingest_passes_contextual_and_retry_waits(monkeypatch, tmp_path):
         return {"chunks_created": 3, "replaced": 1, "skipped": False}
 
     monkeypatch.setattr(compare_module, "ingest_text", fake_ingest)
-    monkeypatch.setattr(compare_module, "load_scopes", dict)
+    # reingest はどのマニフェストを読むかを引数で渡す（--corpus で切り替わる）
+    monkeypatch.setattr(compare_module, "load_scopes", lambda path=None: {})
     monkeypatch.setattr(compare_module, "RETRY_WAITS", [20])
 
     assert compare_module.reingest(contextual=True, seed_dir=tmp_path) == 6
@@ -223,7 +224,7 @@ def test_reingest_keeps_document_scope(monkeypatch, tmp_path):
     monkeypatch.setattr(
         compare_module,
         "load_scopes",
-        lambda: {"a.txt": {"project": "社内規程", "topic": "労務"}},
+        lambda path=None: {"a.txt": {"project": "社内規程", "topic": "労務"}},
     )
 
     compare_module.reingest(contextual=False, seed_dir=tmp_path)

@@ -34,6 +34,17 @@
   （Django の fixture と同じ位置づけ。冪等なので何度流してもよい）。
   設問を足すときはこの JSON に追記するか、POST /eval-questions でDBへ直接入れる。
 
+評価専用コーパス（指標を飽和させないための大きめの質問集・文書群）:
+
+  python -m app.seed --corpus                     # コーパスの文書を投入
+  python -m app.eval --seed --corpus              # コーパスの質問集を投入
+  python -m app.eval --corpus --retrievers trgm   # コーパスだけで評価
+
+  デモ用の seed_docs は4文書12チャンクしかなく、Hit@4 が天井(1.000)に張り付いて
+  改良の余地が数字に残らない。eval_corpus はそれを解消するための評価専用の文書群で、
+  語彙の似た規程を何本も並べ、断片だけでは意味が取れない条文を意図的に含めてある。
+  ★--corpus を付けたときだけ触る★（毎回の seed で数百チャンクを埋め込み直さない）。
+
 使い方:
   python -m app.eval --seed                       # fixture をDBへ初期投入（冪等）
   python -m app.eval                              # DBの全質問で検索を評価
@@ -86,7 +97,7 @@ from app.retrieval import RERANKERS, hybrid_search, resolve_retrievers
 
 # 429の待ち時間はseedと同じ設定(SEED_RETRY_WAITS)を使う。バッチ処理の待ち方は
 # 「取り込み」も「評価」も同じでよく、環境変数を2つに増やす理由がないため。
-from app.seed import RETRY_WAITS
+from app.seed import CORPUS_PROJECT, RETRY_WAITS
 
 # --- 初期投入用の質問セット（fixture） ----------------------------------------
 # 質問の正はDB(eval_questions)。ここはあくまで「seed_docs とセットの初期データ」で、
@@ -98,6 +109,13 @@ from app.seed import RETRY_WAITS
 #   project/topic: 省略可（＝プロジェクト・トピックをまたぐ共通の質問）
 SEED_QUESTIONS_PATH = (
     Path(__file__).resolve().parent.parent / "seed_data" / "eval_questions.json"
+)
+
+# 評価専用コーパスの質問集（YOSUKE-29）。デモ用の fixture と分けてあるのは、
+# 参照先の文書が別（eval_corpus/docs）で、seed_docs だけを入れた状態では
+# これらの質問が必ず外れるため。--corpus で明示的に投入・評価する。
+CORPUS_QUESTIONS_PATH = (
+    Path(__file__).resolve().parent.parent / "eval_corpus" / "eval_questions.json"
 )
 
 
@@ -800,7 +818,8 @@ def main() -> None:
     parser.add_argument(
         "--seed",
         action="store_true",
-        help="fixture(seed_data/eval_questions.json)をDBへ投入して終了する（冪等）",
+        help="fixture(seed_data/eval_questions.json)をDBへ投入して終了する（冪等）。"
+        "--corpus を付けると評価専用コーパスの質問集を投入する",
     )
     parser.add_argument(
         "--project", type=str, default=None, help="このプロジェクトの質問だけで評価する"
@@ -809,36 +828,47 @@ def main() -> None:
         "--topic", type=str, default=None, help="このトピックの質問だけで評価する"
     )
     parser.add_argument(
+        "--corpus",
+        action="store_true",
+        help="評価専用コーパスを対象にする（--seed 時は eval_corpus の質問集を投入し、"
+        f"評価時は --project {CORPUS_PROJECT} と同じ絞り込みになる）",
+    )
+    parser.add_argument(
         "--compare-image-index",
         action="store_true",
         help="画像の索引方式を比較評価する（索引を作り直して2回評価し、有意差を検定）",
     )
     args = parser.parse_args()
 
+    questions_path = CORPUS_QUESTIONS_PATH if args.corpus else SEED_QUESTIONS_PATH
+    # --corpus 指定時の既定の絞り込み。--project を明示したときはそちらを尊重する
+    # （コーパスの一部のトピックだけを見たい、という使い方を妨げないため）。
+    project = args.project or (CORPUS_PROJECT if args.corpus else None)
+
     if args.seed:
-        added = seed_questions()
+        fixture = load_seed_questions(questions_path)
+        added = seed_questions(fixture)
         # 既存行にはラベル(expected_text)だけ後から入れる。既に seed 済みの環境が
         # 文書単位の判定に取り残されないようにするため（backfill_expected_text 参照）。
-        updated = backfill_expected_text()
+        updated = backfill_expected_text(fixture)
         # 「0件」は fixture が空なのか全部スキップされたのか区別が付かないので、
         # fixture の件数とDBの現在件数まで出す（冪等な操作は結果が読めることが大事）。
         total = len(load_questions())
         print(
             f"評価質問: {added} 件を追加"
-            f"（fixture {len(load_seed_questions())} 件中、既存はスキップ）。"
+            f"（fixture {len(fixture)} 件中、既存はスキップ）。"
             f"既存 {updated} 件に正解語句(expected_text)を追加。"
             f"DBの登録件数は {total} 件。"
         )
         return
 
-    gold = load_questions(project=args.project, topic=args.topic)
+    gold = load_questions(project=project, topic=args.topic)
     if not gold:
-        scope = " / ".join(
-            filter(None, [args.project, args.topic])
-        ) or "指定なし"
+        scope = " / ".join(filter(None, [project, args.topic])) or "指定なし"
+        seed_cmd = "python -m app.eval --seed" + (" --corpus" if args.corpus else "")
         print(
             f"評価用の質問が見つかりません（絞り込み: {scope}）。\n"
-            f"まず `python -m app.eval --seed` でサンプルを投入するか、"
+            f"まず `{seed_cmd}` でサンプルを投入するか、"
             f"POST /eval-questions で質問を登録してください。"
         )
         return
