@@ -5,6 +5,12 @@
   取り込み方（contextual の有無）だけを変えて同じ質問集を2回評価し、
   Hit@k / MRR と、質問ごとの順位の変化を並べて出す。
 
+  ★順位の他に「1位チャンクの本文」も突き合わせる★
+    正解ラベルが文書単位の設問では、同じ文書の別チャンクに入れ替わっても
+    順位は動かない。contextual retrieval が変えるのはまさにそこなので、
+    順位だけを見ていると「差が無い」と「測れていない」を混同する。
+    チャンク単位のラベル(expected_text)を整備すれば数値にも出る。
+
 公平に測るための決めごと:
   1. 質問のベクトルは最初に1回だけ作り、両方の評価で使い回す。
      こうすると差が「文書側の作り方」だけに由来すると言い切れる
@@ -106,6 +112,28 @@ def _rank_label(rank: int | None) -> str:
     return "圏外" if rank is None else f"{rank + 1}位"
 
 
+# 1位チャンクの本文をどこまで出すか。差が読めれば十分なので頭だけ出す。
+EXCERPT_CHARS = 48
+
+
+def _top_chunk(result: dict) -> str:
+    """その質問で1位に来たチャンクの本文（無ければ空文字）。
+
+    evaluate() が results[].contexts に引いたチャンク本文を持っているので、
+    その先頭が1位のチャンク。
+    """
+    contexts = result.get("contexts") or []
+    return contexts[0] if contexts else ""
+
+
+def _excerpt(text: str) -> str:
+    """1行に収まる抜粋にする（改行をつぶして頭だけ）。"""
+    flat = " ".join(text.split())
+    if not flat:
+        return "(なし)"
+    return flat if len(flat) <= EXCERPT_CHARS else flat[:EXCERPT_CHARS] + "…"
+
+
 def print_comparison(outcome: dict) -> None:
     """2構成の結果を並べて出力する。"""
     runs = outcome["runs"]
@@ -128,21 +156,40 @@ def print_comparison(outcome: dict) -> None:
         f"{before['chunks_created']:>12}{after['chunks_created']:>12}"
     )
 
-    # 順位が動いた質問だけを出す（変化なしの行で埋めない）
+    # 何かが動いた質問だけを出す（変化なしの行で埋めない）
+    #
+    # ★順位だけを見ると変化を見落とす★
+    #   正解ラベルが文書単位（expected_text なし）の設問では、同じ文書の別の
+    #   チャンクに入れ替わっても順位は動かない。contextual retrieval が変える
+    #   のはまさにそこなので、順位が同じでも1位チャンクが入れ替わったなら出す。
+    #   ラベルをチャンク単位にする前に「そもそも検索結果が動いているのか」を
+    #   確かめられる（動いていなければ、疑うのはラベルではなく前置きの作り方）。
     print(f"\n{'-' * 66}")
     moved = 0
     for b, a in zip(before["results"], after["results"]):
-        if b["rank"] == a["rank"]:
+        rank_changed = b["rank"] != a["rank"]
+        top_before, top_after = _top_chunk(b), _top_chunk(a)
+        top_changed = top_before != top_after
+        if not rank_changed and not top_changed:
             continue
         moved += 1
-        # rank は 0始まり・None=圏外。小さいほど良いので None を最下位に倒して比較
-        worse = (a["rank"] if a["rank"] is not None else 10**9) > (
-            b["rank"] if b["rank"] is not None else 10**9
-        )
-        mark = "▼ 悪化" if worse else "▲ 改善"
-        print(f"{mark}  {_rank_label(b['rank'])} → {_rank_label(a['rank'])}  {b['question']}")
+        if rank_changed:
+            # rank は 0始まり・None=圏外。小さいほど良いので None を最下位に倒して比較
+            worse = (a["rank"] if a["rank"] is not None else 10**9) > (
+                b["rank"] if b["rank"] is not None else 10**9
+            )
+            mark = "▼ 悪化" if worse else "▲ 改善"
+            print(
+                f"{mark}  {_rank_label(b['rank'])} → {_rank_label(a['rank'])}  "
+                f"{b['question']}"
+            )
+        else:
+            print(f"= 同順位  1位チャンクが入れ替わり  {b['question']}")
+        if top_changed:
+            print(f"        1位(なし): {_excerpt(top_before)}")
+            print(f"        1位(あり): {_excerpt(top_after)}")
     if moved == 0:
-        print("順位が変わった質問はありません。")
+        print("順位も1位チャンクも変わった質問はありません。")
     print(f"{'-' * 66}")
     print(f"実行後のDBは「{LABELS[USE_CONTEXTUAL_CHUNKING]}」の状態で残っています。")
 

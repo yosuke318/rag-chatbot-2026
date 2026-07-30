@@ -6,9 +6,16 @@
   これが無いと以降の改良はすべて「良くなった気がする」で終わる。
 
 測るもの（検索側）:
-  - Hit@k : 上位k件の中に正解文書が入っていた質問の割合（拾えたか）
-  - MRR   : 正解文書が何位に来たかの逆数の平均（どれだけ上位に置けたか）
+  - Hit@k : 上位k件の中に正解が入っていた質問の割合（拾えたか）
+  - MRR   : 正解が何位に来たかの逆数の平均（どれだけ上位に置けたか）
             例) 正解が1位なら 1.0、2位なら 0.5、圏外なら 0。1.0に近いほど良い。
+
+  ★何を「正解」と数えるかは設問ごとに決まる★（_matches 参照）
+    expected_text（正解チャンクに必ず含まれる語句）を持つ設問は
+    ★その語句を含むチャンクを引けたときだけ★正解。持たない設問は従来どおり
+    文書名だけで判定する。分割・contextual retrieval・リランクはどれも
+    「文書内のどのチャンクが当たるか」を動かす改良なので、文書名で判定して
+    いる限り効果が数値に出ない（YOSUKE-15 の比較評価が ±0.000 だった理由）。
 
   ★Anthropicキーは不要★（検索のベクトル化で VOYAGE_API_KEY だけ要る）。
   vector を外して trgm/bm25 だけにすれば埋め込みも呼ばないのでキー無しで動く。
@@ -85,11 +92,24 @@ from app.seed import RETRY_WAITS
 # 質問の正はDB(eval_questions)。ここはあくまで「seed_docs とセットの初期データ」で、
 # --seed でDBへ流し込む（Django の fixture と同じ位置づけ）。
 #   expected_source: この質問に答えられる根拠が入っている文書（正解ラベル）
+#   expected_text  : 正解チャンクに必ず含まれる語句（省略可）。書くと判定が
+#                    ★文書単位からチャンク単位に上がる★（下の _matches 参照）
 #   note           : 何を確かめる質問かのメモ（人間向け。採点には使わない）
 #   project/topic: 省略可（＝プロジェクト・トピックをまたぐ共通の質問）
 SEED_QUESTIONS_PATH = (
     Path(__file__).resolve().parent.parent / "seed_data" / "eval_questions.json"
 )
+
+
+def _clean_expected_text(value: str | None) -> str | None:
+    """expected_text を正規化する。空文字・空白のみは None（＝文書単位）に倒す。
+
+    UIの空欄やfixtureの "" がそのまま入ると、どのチャンクにも含まれる
+    「空文字」で判定することになり全問正解になってしまうため。
+    """
+    if value is None:
+        return None
+    return value.strip() or None
 
 
 def load_seed_questions(path: Path | None = None) -> list[dict]:
@@ -117,8 +137,9 @@ def seed_questions(questions: list[dict] | None = None) -> int:
                 continue
             conn.execute(
                 "INSERT INTO eval_questions "
-                "(project, topic, question, expected_source, expected_kind, note) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
+                "(project, topic, question, expected_source, expected_kind, "
+                "expected_text, note) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     item.get("project"),
                     item.get("topic"),
@@ -127,11 +148,41 @@ def seed_questions(questions: list[dict] | None = None) -> int:
                     # 省略時は 'any'（文書が上位に来れば正解）＝ 従来の fixture が
                     # そのまま動く。図表根拠の設問だけ "image" を書く。
                     item.get("expected_kind") or "any",
+                    # 省略時は NULL ＝ 文書単位の判定（従来どおり）
+                    _clean_expected_text(item.get("expected_text")),
                     item.get("note"),
                 ),
             )
             added += 1
     return added
+
+
+def backfill_expected_text(questions: list[dict] | None = None) -> int:
+    """既にDBにある質問へ、fixture の expected_text を後から入れる。更新件数を返す。
+
+    ★これが無いと、既存のDBではラベルが一生入らない★
+      seed_questions は質問本文で重複判定して既存行をスキップするので、
+      fixture に語句を足しても「10件中0件を追加（既存はスキップ）」で終わる。
+      チャンク単位で測れるようになったのに、既に seed 済みの環境だけ文書単位の
+      ままになる（しかも数字は出るので気付けない）。
+
+    ★人が入れた値は上書きしない★
+      NULL の行だけを埋める。UIやAPIで貼ったラベルを fixture で潰さないため。
+    """
+    questions = load_seed_questions() if questions is None else questions
+    updated = 0
+    with get_conn() as conn:
+        for item in questions:
+            expected_text = _clean_expected_text(item.get("expected_text"))
+            if not expected_text:
+                continue
+            cur = conn.execute(
+                "UPDATE eval_questions SET expected_text = %s "
+                "WHERE question = %s AND expected_text IS NULL",
+                (expected_text, item["question"]),
+            )
+            updated += cur.rowcount if cur is not None else 0
+    return updated
 
 
 def load_questions(
@@ -155,8 +206,8 @@ def load_questions(
 
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT question, expected_source, note, project, topic, expected_kind "
-            f"FROM eval_questions {where} ORDER BY id",
+            f"SELECT question, expected_source, note, project, topic, expected_kind, "
+            f"expected_text FROM eval_questions {where} ORDER BY id",
             params,
         ).fetchall()
     return [
@@ -167,6 +218,7 @@ def load_questions(
             "project": r[3],
             "topic": r[4],
             "expected_kind": r[5],
+            "expected_text": r[6],
         }
         for r in rows
     ]
@@ -179,32 +231,71 @@ def load_questions(
 EXPECTED_KINDS = ("any", "text", "image")
 
 
-def _matches(hit: dict, expected_source: str, expected_kind: str) -> bool:
+# 判定の粒度。レポートに載せて、どちらで測った数字なのかを読み手に示す。
+#   chunk    … expected_text を持つ設問（正解チャンクを引けたかを測っている）
+#   document … expected_text が無い設問（その文書を引けたかしか測っていない）
+GRANULARITY_CHUNK = "chunk"
+GRANULARITY_DOCUMENT = "document"
+
+
+def _squash(text: str) -> str:
+    """空白・改行をすべて落とす。expected_text の突き合わせ用。
+
+    チャンクは行の途中で改行が入ったり、contextual retrieval の前置きが付いたり
+    するので、素の `in` だと「本文には書いてあるのに一致しない」が起きる。
+    日本語は語間に空白を入れないので、全部落として比べて差し支えない。
+    """
+    return "".join(text.split())
+
+
+def _matches(
+    hit: dict,
+    expected_source: str,
+    expected_kind: str,
+    expected_text: str | None = None,
+) -> bool:
     """このヒットを「正解」と認めるか。
 
-    ★文書名だけでは図表の検索を測れない★
+    ★文書名だけではチャンク単位の改良を測れない★
+      `就業規則.txt` は5チャンクあるので、文書名だけを正解ラベルにすると
+      どのチャンクが1位でも同じ点になる。分割の変更・contextual retrieval・
+      リランクはいずれも「文書内のどのチャンクが当たるか」を動かす改良なので、
+      この粒度では原理的に差が出ない（YOSUKE-15 の比較評価が ±0.000 だった理由）。
+      そこで expected_text を持つ設問は★その語句を含むチャンクを引けたときだけ★
+      正解にする。
+
+    ★文書名だけでは図表の検索も測れない★
       画像は本文と同じ文書に属するので、文書名だけを正解ラベルにすると
       「本文チャンクが1位」でも「画像チャンクが1位」でも同じ点になる。
       それでは図表の索引方式(5-2の案A/案B)を変えても数字が動かず、比較にならない。
       そこで expected_kind='image' の設問は★画像チャンクで引けたときだけ★正解にする。
 
     種類は image_path の有無で判定する（値あり＝画像チャンク）。
+
+    expected_text があっても文書名の一致は外さない。語句だけで判定すると、
+    同じ言い回しが別の文書にも現れたときに誤って正解と認めてしまう
+    （規程間で条文の言い回しが似ているのはむしろ普通）。
     """
     if hit["source"] != expected_source:
         return False
-    if expected_kind == "text":
-        return hit.get("image_path") is None
-    if expected_kind == "image":
-        return hit.get("image_path") is not None
+    if expected_kind == "text" and hit.get("image_path") is not None:
+        return False
+    if expected_kind == "image" and hit.get("image_path") is None:
+        return False
+    if expected_text:
+        return _squash(expected_text) in _squash(hit.get("content") or "")
     return True
 
 
 def _rank_of(
-    hits: list[dict], expected_source: str, expected_kind: str = "any"
+    hits: list[dict],
+    expected_source: str,
+    expected_kind: str = "any",
+    expected_text: str | None = None,
 ) -> int | None:
     """検索結果の中で正解が最初に現れた順位（0始まり）。無ければ None。"""
     for i, h in enumerate(hits):
-        if _matches(h, expected_source, expected_kind):
+        if _matches(h, expected_source, expected_kind, expected_text):
             return i
     return None
 
@@ -314,7 +405,8 @@ def evaluate(
             topic=item.get("topic"),
         )
         expected_kind = item.get("expected_kind") or "any"
-        rank = _rank_of(hits, item["expected_source"], expected_kind)
+        expected_text = _clean_expected_text(item.get("expected_text"))
+        rank = _rank_of(hits, item["expected_source"], expected_kind, expected_text)
         hit = rank is not None and rank < top_k
         if hit:
             hit_count += 1
@@ -325,6 +417,13 @@ def evaluate(
                 "question": item["question"],
                 "expected_source": item["expected_source"],
                 "expected_kind": expected_kind,
+                "expected_text": expected_text,
+                # ★どちらの粒度で測った1問なのか★ を結果に貼っておく。混在した
+                # 質問集では、これが無いと「Hit@4=1.000」がチャンクを当てた
+                # 1.000 なのか文書を当てただけの 1.000 なのか区別が付かない。
+                "match_granularity": (
+                    GRANULARITY_CHUNK if expected_text else GRANULARITY_DOCUMENT
+                ),
                 "hit": hit,
                 "rank": rank,  # None = 圏外
                 # ★1問ごとの成績★ 条件Aと条件Bを問単位で対にして比べる
@@ -364,6 +463,14 @@ def evaluate(
             kind: _summarize([r for r in results if r["expected_kind"] == kind], top_k)
             for kind in EXPECTED_KINDS
             if any(r["expected_kind"] == kind for r in results)
+        },
+        # ★判定粒度別の内訳★ 文書単位の設問はチャンク単位の設問より当たりやすい
+        # （その文書のどのチャンクでも正解になる）ので、混ぜた平均を「チャンクを
+        # 引けた率」と読むと過大評価になる。粒度ごとに分けて出す。
+        "by_granularity": {
+            g: _summarize([r for r in results if r["match_granularity"] == g], top_k)
+            for g in (GRANULARITY_CHUNK, GRANULARITY_DOCUMENT)
+            if any(r["match_granularity"] == g for r in results)
         },
         "results": results,
     }
@@ -491,6 +598,27 @@ def _print_report(report: dict, generate: bool = False) -> None:
 
     # 種類別の内訳。図表根拠の設問だけを見たいときはここ（"image" の行）を読む。
     # 全体平均は本文根拠の設問に引きずられるので、索引方式の判断には使えない。
+    # 判定粒度の内訳。混在した質問集で「Hit@k が高い」を読み違えないための行。
+    # 文書単位の設問は当たりやすいので、平均を「チャンクを引けた率」とは読めない。
+    by_granularity = report.get("by_granularity") or {}
+    if len(by_granularity) > 1:
+        print("  --- 判定の粒度別 ---")
+        for g, s in by_granularity.items():
+            label = {
+                GRANULARITY_CHUNK: "チャンク単位",
+                GRANULARITY_DOCUMENT: "文書単位",
+            }[g]
+            print(
+                f"  {label:<12} N={s['n']:<3} "
+                f"Hit@{k}={s['hit_at_k']:.3f}  MRR={s['mrr']:.3f}"
+            )
+        print(
+            "  ※ 文書単位の設問は「その文書のどのチャンクでも正解」なので当たりやすい。"
+            "\n     チャンク品質の改良（分割・contextual・リランク）は"
+            "上のチャンク単位の行で見る。"
+        )
+        print(f"{'='*60}")
+
     by_kind = report.get("by_kind") or {}
     if len(by_kind) > 1:
         print("  --- 正解の種類別 ---")
@@ -509,6 +637,9 @@ def _print_report(report: dict, generate: bool = False) -> None:
         kind = r.get("expected_kind", "any")
         suffix = "" if kind == "any" else f"（{kind} チャンクで引けたら正解）"
         print(f"    正解: {r['expected_source']}{suffix}")
+        # 語句がある行は「文書のどこか」ではなく「このチャンク」で採点している
+        if r.get("expected_text"):
+            print(f"    正解語句: 「{r['expected_text']}」（チャンク単位で判定）")
         # 同じ文書名が本文と画像で並ぶので、どちらを引いたのかを添える
         retrieved = ", ".join(
             f"{s}[{t[0]}]" for s, t in zip(r["retrieved"], r.get("retrieved_kinds", []))
@@ -686,12 +817,16 @@ def main() -> None:
 
     if args.seed:
         added = seed_questions()
+        # 既存行にはラベル(expected_text)だけ後から入れる。既に seed 済みの環境が
+        # 文書単位の判定に取り残されないようにするため（backfill_expected_text 参照）。
+        updated = backfill_expected_text()
         # 「0件」は fixture が空なのか全部スキップされたのか区別が付かないので、
         # fixture の件数とDBの現在件数まで出す（冪等な操作は結果が読めることが大事）。
         total = len(load_questions())
         print(
             f"評価質問: {added} 件を追加"
             f"（fixture {len(load_seed_questions())} 件中、既存はスキップ）。"
+            f"既存 {updated} 件に正解語句(expected_text)を追加。"
             f"DBの登録件数は {total} 件。"
         )
         return
