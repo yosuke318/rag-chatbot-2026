@@ -418,9 +418,27 @@ task test-front  # フロントの単体テスト + 型チェック
 - 片側だけ回したいときは `task lint-back` / `task lint-front`（`fmt` も同様）
 - BE は **ruff**（設定 `backend/ruff.toml`）、FE は **ESLint**（設定 `frontend/.eslintrc.json`）
 - BE 側は使い捨てコンテナで実行するので、ホストに Python 環境は要らない
-- 同じコマンドを GitHub Actions（`.github/workflows/test.yml`）でも PR ごとに回すため、
-  手元で `task lint` が通っていれば CI で lint だけ落ちることはない
 - `task fmt` が直せるのは意味の変わらない範囲だけ。行が長すぎる等は手で直す
+
+### CI（PRごとに回る4つのチェック）
+
+同じコマンドを GitHub Actions でも回すので、手元で通っていれば CI だけ落ちることはない。
+**lint とテストを別チェックに分けてある** ので、PR画面で「落ちたのが lint なのかテストなのか」が
+一目で分かる。
+
+| チェック | 中身 | 手元での等価コマンド | 定義 |
+|---|---|---|---|
+| `lint / backend` | ruff | `task lint-back` | [lint.yml](.github/workflows/lint.yml) |
+| `lint / frontend` | ESLint | `task lint-front` | [lint.yml](.github/workflows/lint.yml) |
+| `test / backend` | pytest | `task test` | [test.yml](.github/workflows/test.yml) |
+| `test / frontend` | vitest + `tsc --noEmit` | `task test-front` | [test.yml](.github/workflows/test.yml) |
+
+- 4つは**並列に走る**ので、分けたことで待ち時間は増えない（むしろ lint の結果が早く出る）
+- `lint / backend` は **ruff だけ**を入れて動かす（静的解析に app の依存は要らない）。
+  バージョンの出どころは `requirements-dev.txt` の1か所に保っている
+- 型チェック(`tsc`)が lint 側ではなく `test / frontend` にあるのは、手元の
+  `task test-front` が vitest と まとめて回す単位に合わせているため
+- DB も外部API も叩かないので、**Anthropic / Voyage / AWS への課金は発生しない**
 
 ## 開発ロードマップ
 
