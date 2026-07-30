@@ -1162,17 +1162,22 @@ def add_eval_question(req: EvalQuestionRequest):
         )
     project = _blank_to_none(req.project)
     topic = _blank_to_none(req.topic)
+    # 空欄は NULL に倒す（＝文書単位で判定）。空文字のまま入れるとどのチャンクにも
+    # 含まれる空文字で判定することになり、全問正解になってしまう。
+    expected_text = _blank_to_none(req.expected_text)
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO eval_questions "
-            "(project, topic, question, expected_source, expected_kind, note) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            "(project, topic, question, expected_source, expected_kind, "
+            "expected_text, note) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
                 project,
                 topic,
                 req.question,
                 req.expected_source,
                 req.expected_kind,
+                expected_text,
                 req.note,
             ),
         ).fetchone()[0]
@@ -1181,6 +1186,7 @@ def add_eval_question(req: EvalQuestionRequest):
         "question": req.question,
         "expected_source": req.expected_source,
         "expected_kind": req.expected_kind,
+        "expected_text": expected_text,
         "project": project,
         "topic": topic,
         "note": req.note,
@@ -1274,7 +1280,7 @@ def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = No
     with get_conn() as conn:
         rows = conn.execute(
             f"SELECT id, question, expected_source, project, topic, note, "
-            f"expected_kind FROM eval_questions {where} ORDER BY id",
+            f"expected_kind, expected_text FROM eval_questions {where} ORDER BY id",
             params,
         ).fetchall()
     return {
@@ -1284,6 +1290,7 @@ def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = No
                 "question": r[1],
                 "expected_source": r[2],
                 "expected_kind": r[6],
+                "expected_text": r[7],
                 "project": r[3],
                 "topic": r[4],
                 "note": r[5],

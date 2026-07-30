@@ -122,10 +122,32 @@ tasks:
       # `python -m app.eval` が「質問が見つかりません」で止まるため、セットで流す。
       - docker compose exec -T backend python -m app.eval --seed
 
+  seed-corpus:
+    desc: 評価専用コーパス（eval_corpus・数百チャンク）の文書と質問集を投入。冪等
+    cmds:
+      # ★デモ用の seed とは別コマンドにしている★
+      # コーパスは指標を飽和させないために意図的に大きい（29文書 / 約270チャンク）。
+      # `task seed` に混ぜると、UIを触るだけのときも毎回それを全部埋め込むことになり、
+      # 時間とAPIの費用が常にかかる。measure したいときだけこちらを叩く。
+      - docker compose exec -T backend python -m app.seed --corpus
+      - docker compose exec -T backend python -m app.eval --seed --corpus
+
+  eval-corpus:
+    desc: 評価専用コーパスで検索を評価する（飽和していないか＝改善の余地が残るかを見る）
+    cmds:
+      - docker compose exec -T backend python -m app.eval --corpus
+
   compare-contextual:
     desc: contextual retrieval の有無で検索精度を比較する（seed_docs を2回取り込み直す）
     cmds:
       - docker compose exec -T backend python -m app.compare
+
+  compare-contextual-corpus:
+    desc: 同じ比較を評価専用コーパスで行う（数百チャンクを2回取り込む＝時間とAPI費用がかかる）
+    cmds:
+      # seed_docs（12チャンク）では Hit@4 が天井に張り付いて差が出ない。
+      # 「効果がない」と「測れていない」を分けるにはこちらで測る。
+      - docker compose exec -T backend python -m app.compare --corpus
 
   # 例: 単一ファイルだけ入れたいときのテンプレ（拡張の見本）
   # ingest-file:

@@ -290,6 +290,19 @@ def init_db() -> None:
             "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
             "expected_kind TEXT NOT NULL DEFAULT 'any';"
         )
+        # 正解ラベルを「その文書のどこか」から「このチャンク」へ下ろす軸（6-1）。
+        #   NULL   … 従来どおり文書名だけで判定する（既存の質問の意味を変えない）
+        #   値あり … その語句を含むチャンクを引けたときだけ正解
+        # これが無いと、分割・文脈付与・リランクといった★チャンク単位の改良★が
+        # 数値に出ない（就業規則.txt の5チャンクのどれが1位でも同点になるため）。
+        # ★チャンクIDではなく語句で持つ★ 比較評価(app.compare)は文書を取り込み
+        # 直すのでIDが変わり、分割ロジックを変えればさらにずれる。語句なら
+        # 再チャンク後も生き残る。
+        # nullable にするのは、NULL に「文書単位で判定する」という意味があり、
+        # 既存の質問すべてがその状態に当たるため（後方互換）。
+        conn.execute(
+            "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS expected_text TEXT;"
+        )
         # 既存DB向けの冪等マイグレーション: 会社・部署の2軸は当初の実装で、
         # 本来の設計軸は project/topic。データを保ったまま改名する。
         conn.execute(

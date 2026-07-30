@@ -87,6 +87,13 @@ class EvalQuestionRequest(BaseModel):
         default="any",
         description="正解と認めるチャンクの種類 any/text/image（既定 any=文書単位）",
     )
+    # 省略可（既定 None = 文書単位の判定）。書くと★チャンク単位★の判定になり、
+    # 分割・contextual・リランクといったチャンク品質の改良が数値に出るようになる。
+    expected_text: Optional[str] = Field(
+        default=None,
+        description="正解チャンクに必ず含まれる語句。指定すると"
+        "「この語句を含むチャンクを引けたときだけ正解」になる（未指定は文書単位）",
+    )
     project: Optional[str] = Field(default=None, description="プロジェクト（未指定は共通）")
     topic: Optional[str] = Field(default=None, description="トピック（未指定は共通）")
     note: Optional[str] = Field(default=None, description="何を確かめる質問かのメモ（任意）")
@@ -295,6 +302,10 @@ class EvalQuestion(BaseModel):
     expected_kind: str = Field(
         default="any", description="正解と認めるチャンクの種類 any/text/image"
     )
+    expected_text: Optional[str] = Field(
+        default=None,
+        description="正解チャンクに必ず含まれる語句（null=文書単位で判定）",
+    )
     project: Optional[str] = None
     topic: Optional[str] = None
     note: Optional[str] = None
@@ -355,6 +366,15 @@ class EvalResult(BaseModel):
     expected_kind: str = Field(
         default="any", description="正解と認めたチャンクの種類 any/text/image"
     )
+    expected_text: Optional[str] = Field(
+        default=None,
+        description="正解チャンクに含まれるべき語句（null=文書単位で判定した設問）",
+    )
+    match_granularity: str = Field(
+        default="document",
+        description="この設問をどの粒度で採点したか chunk/document。"
+        "文書単位の設問は当たりやすいので、平均を読むときに混ぜない",
+    )
     hit: bool = Field(description="上位k件に正解が入ったか")
     rank: Optional[int] = Field(description="正解の順位（0始まり）。null=圏外")
     reciprocal_rank: float = Field(
@@ -399,10 +419,11 @@ class ChartReadResponse(BaseModel):
 
 
 class KindSummary(BaseModel):
-    """正解の種類（本文 / 画像）ごとの成績。
+    """設問を性質で分けたグループ1つ分の成績（正解の種類別・判定粒度別で使う）。
 
     全体平均だけでは図表の検索を評価できない。図表根拠の設問が数問しか無いと、
     本文根拠の設問の平均にかき消されて索引方式の差が見えなくなるため。
+    判定粒度も同じ理由で分ける（文書単位の設問はチャンク単位より当たりやすい）。
     """
 
     n: int = Field(description="その種類の設問数")
@@ -437,6 +458,11 @@ class EvalReport(BaseModel):
     by_kind: Dict[str, KindSummary] = Field(
         default_factory=dict,
         description="正解の種類(any/text/image)ごとの内訳。図表の効果は image の行で見る",
+    )
+    by_granularity: Dict[str, KindSummary] = Field(
+        default_factory=dict,
+        description="判定粒度(chunk/document)ごとの内訳。"
+        "文書単位の設問は当たりやすいので、チャンク品質の改良は chunk の行で見る",
     )
     results: List[EvalResult]
 

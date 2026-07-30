@@ -36,6 +36,39 @@ def test_expected_sources_exist_in_seed_docs():
         assert item["expected_source"] in available, item["expected_source"]
 
 
+def test_expected_texts_land_in_exactly_one_chunk():
+    """★チャンク単位のラベルが機能する状態を保つ★（YOSUKE-28）
+
+    expected_text は「正解チャンクに必ず含まれる語句」なので、次の2つが要る:
+      - 1つ以上のチャンクに含まれる  … 0件なら、正しく引けても必ず×になる
+      - 2つ以上に含まれない          … 複数に散ると、どれを引いても正解になり
+                                       文書単位の判定に戻ってしまう
+
+    分割ロジック(app.chunking)を変えたときにここが落ちる ＝ ラベルの貼り直しが
+    必要だというサイン。語句で持っているので、IDと違って多くの変更には耐える。
+    """
+    from app.chunking import chunk_text
+
+    seed_docs = SEED_QUESTIONS_PATH.parent.parent / "seed_docs"
+    squash = lambda s: "".join(s.split())  # noqa: E731  改行や折り返しを無視して比べる
+    chunks = {
+        f.name: [squash(c) for c in chunk_text(f.read_text(encoding="utf-8"))]
+        for f in seed_docs.iterdir()
+        if f.suffix == ".txt"
+    }
+
+    labelled = [q for q in load_seed_questions() if q.get("expected_text")]
+    assert labelled, "チャンク単位のラベルを持つ質問が1件も無い（文書単位のまま）"
+    for item in labelled:
+        found = [
+            c for c in chunks[item["expected_source"]] if squash(item["expected_text"]) in c
+        ]
+        assert len(found) == 1, (
+            f"{item['expected_source']} で「{item['expected_text']}」が "
+            f"{len(found)} チャンクに一致（1でなければならない）"
+        )
+
+
 def test_missing_fixture_returns_empty_list(tmp_path):
     """ファイルが無くても例外にせず空を返す（seed がスキップされるだけ）。"""
     assert load_seed_questions(tmp_path / "nope.json") == []
