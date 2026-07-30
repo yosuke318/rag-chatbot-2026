@@ -23,6 +23,9 @@ type ParamSpec = components["schemas"]["ParamSpec"];
 type EvalResult = {
   question: string;
   expected_source: string;
+  // 正解チャンクに含まれるべき語句。値があれば★チャンク単位★で採点した設問
+  // （null は従来どおり文書単位）。
+  expected_text?: string | null;
   hit: boolean;
   rank: number | null;
   retrieved: string[];
@@ -458,6 +461,8 @@ export default function Home() {
   // 評価用の質問を登録するフォーム（POST /eval-questions）
   const [newQ, setNewQ] = useState("");
   const [newExpected, setNewExpected] = useState("");
+  // 正解チャンクに必ず含まれる語句（任意）。入れるとチャンク単位の判定になる
+  const [newExpectedText, setNewExpectedText] = useState("");
   const [newQProject, setNewQProject] = useState("");
   const [newQTopic, setNewQTopic] = useState("");
   const newQTopics = useTopics(newQProject, scopeVersion);
@@ -476,6 +481,8 @@ export default function Home() {
         body: JSON.stringify({
           question: newQ,
           expected_source: newExpected,
+          // 空欄は送らない（＝文書単位で判定する従来どおりの質問になる）
+          expected_text: newExpectedText.trim() || null,
           // 空欄は送らない（＝共通の質問として登録）
           project: newQProject.trim() || null,
           topic: newQTopic.trim() || null,
@@ -488,10 +495,16 @@ export default function Home() {
         setAddQStatus(err);
         return;
       }
-      setAddQStatus(`「${newQ}」を登録しました（正解: ${newExpected}）`);
+      setAddQStatus(
+        `「${newQ}」を登録しました（正解: ${newExpected}` +
+          (newExpectedText.trim()
+            ? ` / 語句「${newExpectedText.trim()}」を含むチャンクで判定）`
+            : "・文書単位で判定）"),
+      );
       setScopeVersion((v) => v + 1); // 新しい区分が増えていれば他パネルの候補にも出す
       setNewQ("");
       setNewExpected("");
+      setNewExpectedText("");
       setNewQNote("");
     } catch (e) {
       setAddQStatus(`エラー: ${String(e)}`);
@@ -1359,6 +1372,16 @@ export default function Home() {
             value={newExpected}
             onChange={(e) => setNewExpected(e.target.value)}
           />
+          <input
+            placeholder="正解チャンクに含まれる語句（任意・例: 1日2時間を超える場合）"
+            value={newExpectedText}
+            onChange={(e) => setNewExpectedText(e.target.value)}
+          />
+          <p className="hint">
+            語句を入れると<strong>チャンク単位</strong>で採点する（その語句を含むチャンクを
+            引けたときだけ正解）。空欄なら<strong>文書単位</strong>＝その文書のどのチャンクでも
+            正解になり、分割やcontextualの改良は<strong>数字に出ない</strong>。
+          </p>
           <ScopeInput
             idPrefix="newq"
             project={newQProject}
@@ -1625,6 +1648,15 @@ export default function Home() {
                         <td className="preview">{r.question}</td>
                         <td>
                           <SourceLink source={r.expected_source} />
+                          {/* 語句がある行はチャンク単位で採点した設問。粒度が混ざった
+                              質問集で「○」の重みを読み違えないよう明示する */}
+                          {r.expected_text ? (
+                            <div className="hint">
+                              チャンク単位「{r.expected_text}」
+                            </div>
+                          ) : (
+                            <div className="hint">文書単位</div>
+                          )}
                         </td>
                         <td className="preview">
                           {r.retrieved.length === 0

@@ -18,7 +18,7 @@ def harness(monkeypatch):
     """取り込みと評価を差し替え、呼ばれ方を記録する。"""
     calls: dict[str, list] = {"reingest": [], "evaluate": [], "embed": []}
 
-    def fake_reingest(contextual, seed_dir=None):
+    def fake_reingest(contextual, seed_dir=None, scopes_path=None):
         calls["reingest"].append(contextual)
         return 5 if contextual else 4
 
@@ -114,6 +114,73 @@ def test_print_comparison_marks_improvements(harness, capsys):
     assert "+0.500" in out  # Hit@k の差
 
 
+def test_print_comparison_shows_a_swapped_top_chunk_at_the_same_rank(capsys):
+    """★順位だけ見ていると変化を見落とす★（YOSUKE-28）
+
+    正解ラベルが文書単位の設問では、同じ文書の別チャンクに入れ替わっても順位は
+    動かない。contextual retrieval が変えるのはまさにそこなので、順位が同じでも
+    1位チャンクが入れ替わったなら出す。ラベルを整備する前に「そもそも検索結果が
+    動いているのか」を確かめるための表示。
+    """
+    outcome = {
+        "gold": [{"question": "残業の事前承認は？"}],
+        "runs": {
+            False: {
+                "n": 1,
+                "top_k": 4,
+                "hit_at_k": 1.0,
+                "mrr": 1.0,
+                "chunks_created": 5,
+                "results": [
+                    {
+                        "question": "残業の事前承認は？",
+                        "rank": 0,
+                        "contexts": ["第9条 振替休日 当該休日の属する月の翌月末までに取得…"],
+                    }
+                ],
+            },
+            True: {
+                "n": 1,
+                "top_k": 4,
+                "hit_at_k": 1.0,
+                "mrr": 1.0,
+                "chunks_created": 5,
+                "results": [
+                    {
+                        "question": "残業の事前承認は？",
+                        "rank": 0,
+                        "contexts": ["第6条 時間外労働 1日2時間を超える場合は…"],
+                    }
+                ],
+            },
+        },
+    }
+
+    compare_module.print_comparison(outcome)
+    out = capsys.readouterr().out
+
+    assert "順位も1位チャンクも変わった質問はありません" not in out
+    assert "= 同順位  1位チャンクが入れ替わり  残業の事前承認は？" in out
+    assert "1位(なし): 第9条 振替休日" in out
+    assert "1位(あり): 第6条 時間外労働" in out
+
+
+def test_print_comparison_stays_quiet_when_nothing_moved(capsys):
+    """1位チャンクも順位も同じなら、行を並べない（読む価値のある差だけ出す）。"""
+    result = {"question": "Q1", "rank": 0, "contexts": ["同じチャンク"]}
+    run = {
+        "n": 1,
+        "top_k": 4,
+        "hit_at_k": 1.0,
+        "mrr": 1.0,
+        "chunks_created": 5,
+        "results": [result],
+    }
+    compare_module.print_comparison({"gold": [{"question": "Q1"}], "runs": {False: run, True: run}})
+
+    assert "順位も1位チャンクも変わった質問はありません" in capsys.readouterr().out
+
+
 def test_print_comparison_without_questions(capsys):
     compare_module.print_comparison({"gold": [], "runs": {}})
     assert "評価用の質問がありません" in capsys.readouterr().out
@@ -132,7 +199,8 @@ def test_reingest_passes_contextual_and_retry_waits(monkeypatch, tmp_path):
         return {"chunks_created": 3, "replaced": 1, "skipped": False}
 
     monkeypatch.setattr(compare_module, "ingest_text", fake_ingest)
-    monkeypatch.setattr(compare_module, "load_scopes", dict)
+    # reingest はどのマニフェストを読むかを引数で渡す（--corpus で切り替わる）
+    monkeypatch.setattr(compare_module, "load_scopes", lambda path=None: {})
     monkeypatch.setattr(compare_module, "RETRY_WAITS", [20])
 
     assert compare_module.reingest(contextual=True, seed_dir=tmp_path) == 6
@@ -156,7 +224,7 @@ def test_reingest_keeps_document_scope(monkeypatch, tmp_path):
     monkeypatch.setattr(
         compare_module,
         "load_scopes",
-        lambda: {"a.txt": {"project": "社内規程", "topic": "労務"}},
+        lambda path=None: {"a.txt": {"project": "社内規程", "topic": "労務"}},
     )
 
     compare_module.reingest(contextual=False, seed_dir=tmp_path)
