@@ -1,9 +1,11 @@
-# PRごとに lint と単体テスト（backend / frontend）を回す。
-#   backend: ruff（`task lint-back` と同じ）＋ ローカルの `task test` と同じ pytest を、
-#            コンテナではなく素のPythonで実行する。
-#   frontend: ESLint（`task lint-front` と同じ）＋ vitest（純ロジックのみ）＋ tsc の型チェック。
-#   どちらも DB / 外部API を一切叩かない（tests/conftest.py がダミーキーを入れるだけ）ので、
-#   AWSにもAnthropic/Voyageにも課金は発生しない。publicリポジトリなのでActions実行時間も無料。
+# PRごとに単体テストを回す（backend / frontend を別チェックとして出す）。
+#   backend:  ローカルの `task test` と同じ pytest を、コンテナではなく素のPythonで実行する
+#   frontend: vitest（純ロジックのみ）＋ tsc の型チェック（`task test-front` と同じ）
+#
+# lint は別ワークフロー（lint.yml）。分けた理由はそちらのコメント参照。
+#
+# どちらも DB / 外部API を一切叩かない（tests/conftest.py がダミーキーを入れるだけ）ので、
+# AWSにもAnthropic/Voyageにも課金は発生しない。publicリポジトリなのでActions実行時間も無料。
 name: test
 
 on:
@@ -43,11 +45,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      # lint はテストより先に出す（落ちた理由がすぐ分かる）。設定は backend/ruff.toml。
-      # 手元の `task lint-back` と同じコマンドなので、CIだけ落ちることがない。
-      - name: Run ruff
-        run: ruff check .
-
       # pytest.ini の pythonpath=. / testpaths=tests がそのまま効く
       - name: Run pytest
         run: pytest
@@ -70,11 +67,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # ESLint（next/core-web-vitals）。手元の `task lint-front` と同じコマンド。
-      # 生成物の api-types.ts は .eslintrc.json の ignorePatterns で対象外。
-      - name: Run ESLint
-        run: npm run lint
-
       # 対象は描画から切り離した純ロジック（SSEの読み取り・引用の切り分け）。
       # ブラウザもDOMも要らないので、jsdom 等の追加依存なしで動く。
       - name: Run vitest
@@ -82,5 +74,7 @@ jobs:
 
       # 型のズレも落とす。api-types.ts はバックエンドのOpenAPIから生成しているので、
       # BEのスキーマ変更にフロントが追随できていないとここで気づける。
+      # ★lint側ではなくここに置いてある★のは、手元の `task test-front` が
+      # vitest と tsc をまとめて回すため（CIと手元で同じ単位に保つ）。
       - name: Type check
         run: npx tsc --noEmit

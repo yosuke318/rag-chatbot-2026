@@ -81,6 +81,12 @@ class EvalQuestionRequest(BaseModel):
 
     question: str = Field(description="評価する質問")
     expected_source: str = Field(description="正解の文書名（この文書が上位に来れば正解）")
+    # 省略可（既定 'any' = 従来どおり文書単位の判定）。図表根拠の設問だけ
+    # 'image' を指定すると「画像チャンクで引けたときだけ正解」になる。
+    expected_kind: str = Field(
+        default="any",
+        description="正解と認めるチャンクの種類 any/text/image（既定 any=文書単位）",
+    )
     project: Optional[str] = Field(default=None, description="プロジェクト（未指定は共通）")
     topic: Optional[str] = Field(default=None, description="トピック（未指定は共通）")
     note: Optional[str] = Field(default=None, description="何を確かめる質問かのメモ（任意）")
@@ -101,6 +107,13 @@ class IngestResponse(BaseModel):
     replaced: int = Field(description="置き換えた既存文書の件数（0なら新規）")
     skipped: bool = Field(
         description="内容が既存と同じで、埋め込みをやり直さずに済ませたか"
+    )
+    # 常にサーバー側が値を入れる（画像を持たない登録は0）ので Optional にはしない。
+    # default=0 を置くのは、テキスト貼り付け登録のように画像の概念が無い経路で
+    # 呼び出し側がこのキーを組み立てなくて済むようにするため。
+    images_stored: int = Field(
+        default=0,
+        description="文書から抽出してS3に保存した画像の枚数（skipped=true でも保存する）",
     )
 
 
@@ -241,6 +254,17 @@ class Citation(BaseModel):
         default=None,
         description="原本を開くURL（実S3なら署名URL / ローカルは中継URL）。null=原本なし",
     )
+    # 以下2つは画像チャンクのときだけ値が入る（テキストチャンクは null）。
+    # 回答生成に渡したのと同じ1枚を利用者にも見せ、図表を根拠にした回答を
+    # 自分の目で検証できるようにするためのもの（5-3）。
+    image_url: Optional[str] = Field(
+        default=None,
+        description="根拠が文書内の図表のとき、その画像を開くURL。null=画像ではない",
+    )
+    image_label: Optional[str] = Field(
+        default=None,
+        description="その画像の由来（「3ページ目」等）。null=画像ではない",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -268,6 +292,9 @@ class EvalQuestion(BaseModel):
     id: int
     question: str
     expected_source: str
+    expected_kind: str = Field(
+        default="any", description="正解と認めるチャンクの種類 any/text/image"
+    )
     project: Optional[str] = None
     topic: Optional[str] = None
     note: Optional[str] = None
@@ -325,9 +352,62 @@ class EvalResult(BaseModel):
 
     question: str
     expected_source: str = Field(description="正解の文書名")
+    expected_kind: str = Field(
+        default="any", description="正解と認めたチャンクの種類 any/text/image"
+    )
     hit: bool = Field(description="上位k件に正解が入ったか")
     rank: Optional[int] = Field(description="正解の順位（0始まり）。null=圏外")
+    reciprocal_rank: float = Field(
+        default=0.0,
+        description="この1問のMRR寄与（1位=1.0 / 圏外=0）。比較評価で問ごとに対にするのに使う",
+    )
     retrieved: List[str] = Field(description="実際に上位で引いた文書名の並び")
+    retrieved_kinds: List[str] = Field(
+        default_factory=list,
+        description="retrieved と同じ並びの種類（text/image）。同名文書の本文と画像を見分ける",
+    )
+
+
+class ChartReadRequest(BaseModel):
+    """チャート読解のリクエスト（5-4）。売買判断は返さない。"""
+
+    question: str = Field(description="チャートについて知りたいこと")
+    project: Optional[str] = Field(default=None, description="プロジェクト（未指定は全体）")
+    topic: Optional[str] = Field(default=None, description="トピック（未指定は全体）")
+
+
+class ChartReadResponse(BaseModel):
+    """チャート読解の結果。
+
+    ★売買判断・将来予想は含まない★（app.charts 参照）。生成側が書いてしまった
+    場合はその文を落とし、removed に入れて何が起きたか追えるようにする。
+    """
+
+    reading: str = Field(description="画像から読み取れる状態の説明（末尾にスコープの注記）")
+    charts_read: int = Field(description="読解に使ったチャート画像の枚数")
+    citations: List[Citation] = Field(
+        description="根拠にしたチャンク。回答中の [n] と対応する"
+    )
+    removed: List[str] = Field(
+        default_factory=list,
+        description="売買判断・将来予想に当たるとして除いた文（通常は空）",
+    )
+    removed_labels: List[str] = Field(
+        default_factory=list,
+        description="除いた記述の種類（売買推奨・将来予想 等）",
+    )
+
+
+class KindSummary(BaseModel):
+    """正解の種類（本文 / 画像）ごとの成績。
+
+    全体平均だけでは図表の検索を評価できない。図表根拠の設問が数問しか無いと、
+    本文根拠の設問の平均にかき消されて索引方式の差が見えなくなるため。
+    """
+
+    n: int = Field(description="その種類の設問数")
+    hit_at_k: float
+    mrr: float
 
 
 class EvalReport(BaseModel):
@@ -345,8 +425,19 @@ class EvalReport(BaseModel):
     params: Optional[Dict[str, Dict[str, float]]] = Field(
         default=None, description="使った数値パラメータ（手法ごと。null/空=既定）"
     )
+    # 常にサーバー側が設定値を入れる（Optional にしない）。既定を置くのは、
+    # このフィールドを持たない呼び出し側がレポートを組み立てられるようにするため。
+    image_index_method: str = Field(
+        default="none",
+        description="画像の索引方式 caption/multimodal/none"
+        "（取り込み時の設定。比較評価の条件として記録する）",
+    )
     hit_at_k: float = Field(description="上位k件に正解が入った質問の割合")
     mrr: float = Field(description="正解順位の逆数平均（1位=1.0 / 圏外=0）")
+    by_kind: Dict[str, KindSummary] = Field(
+        default_factory=dict,
+        description="正解の種類(any/text/image)ごとの内訳。図表の効果は image の行で見る",
+    )
     results: List[EvalResult]
 
 

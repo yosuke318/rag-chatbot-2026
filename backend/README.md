@@ -11,19 +11,29 @@ app/
 ├── db.py         # pgvector 接続 + スキーマ初期化
 ├── llm.py        # 埋め込み(Voyage) + 文脈生成/回答生成(Claude)
 ├── chunking.py   # ★チャンク分割（見出し・条文の構造で切る）
-├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存
+├── parsers.py    # ファイル→テキスト / 文書内画像の抽出（PDF/XLSX/PPTX）
+├── storage.py    # 原本・文書内画像の S3(MinIO) 保存
+├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存（＋画像チャンク登録）
+├── charts.py     # ★チャート読解支援（売買判断は出さない・スコープ制限が本体）
 ├── eval.py       # 検索評価（Hit@k / MRR）
-├── compare.py    # contextual有無のA/B測定
-├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + RRF融合）→ リランク
+├── backtest.py   # チャート読解の的中率をベースラインと比較（価値を主張しないための道具）
+├── compare.py    # contextual有無の比較評価
+├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + 画像 + RRF融合）→ リランク
 ├── conversations.py # 会話履歴（conversations / messages）の読み書き
-└── main.py       # FastAPI: /health /ingest /chat /chat/stream
+└── main.py       # FastAPI: /health /ingest /chat /chat/stream /chart-read
 
 tests/            # 単体テスト（DB・外部APIを使わない純ロジック）
 ├── test_keywords.py    # 名詞抽出
-├── test_parsers.py     # PDF/XLSX/PPTX 抽出
+├── test_parsers.py     # PDF/XLSX/PPTX のテキスト抽出
+├── test_images.py      # 文書内画像の抽出・S3保存・画像チャンク登録
+├── test_image_index.py # 画像の検索対象化（キャプション / マルチモーダル埋め込み）
+├── test_eval_kinds.py  # チャンク種別の正解判定と比較評価の有意差検定
+├── test_answer_images.py # 原本画像を根拠にした回答生成（画像content block）
+├── test_charts.py      # チャート読解のスコープ制限（売買判断を出さない）
+├── test_backtest.py    # バックテスト（ベースライン比較・件数不足の扱い）
 ├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
 ├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
-├── test_compare.py     # contextual有無のA/B測定（比較の公平性）
+├── test_compare.py     # contextual有無の比較評価（比較の公平性）
 ├── test_retrieval.py   # RRF融合・手法解決・整形
 ├── test_rerank.py      # リランク（voyage / プロンプト式）の切り替え
 ├── test_citations.py   # チャンク単位の根拠（回答の [n] との対応）
@@ -94,7 +104,7 @@ python -m app.seed               # 文書投入
 ハッシュには本文だけでなく **埋め込み結果を左右する入力すべて** を混ぜる
 （`ingest.content_hash`）: contextual の有無・`EMBED_MODEL`・チャンクのサイズ設定・
 `CHUNKING_VERSION`。本文だけで判定すると、設定を変えて入れ直したのに古い
-埋め込みが残ったり、`app.compare` の A/B が2回目でスキップされて成立しなくなる。
+埋め込みが残ったり、`app.compare` の比較が2回目でスキップされて成立しなくなる。
 
 - `app.chunking` の**分割ロジックを変えたら `config.CHUNKING_VERSION` を上げる**
   （上げないと本文が同じ既存文書は作り直されない）
@@ -102,7 +112,7 @@ python -m app.seed               # 文書投入
   `documents` の行だけ更新する
 - この機能より前に入った文書は `content_hash` が NULL なので、一度だけ入れ直される
 
-### 効果を測る（A/B測定）
+### 効果を測る（比較評価）
 
 有り/無しを手で切り替えて測ると条件がずれるので、専用のCLIを用意してある:
 

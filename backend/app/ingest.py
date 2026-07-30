@@ -5,10 +5,16 @@
 ここは「その2つを繋いでDBに入れる」役に徹する。
 再取り込みは content_hash で差分検知し、内容が変わっていなければ
 埋め込み・文脈生成のAPI呼び出しごと省く（content_hash 関数を参照）。
+
+文書内の画像（5-1）はテキストとは別の流れで扱う: 抽出→S3保存→画像チャンクとして
+登録（store_images）。埋め込みAPIを呼ばないので、本文が変わっていない
+再取り込みでも実行する（この機能より前に登録した文書を入れ直せばよい、という
+移行経路を作るため）。
 """
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 
 from app import parsers, storage
@@ -19,11 +25,20 @@ from app.config import (
     CHUNK_OVERLAP,
     CHUNKING_VERSION,
     EMBED_MODEL,
+    EXTRACT_IMAGES,
+    IMAGE_INDEX_METHOD,
     USE_CONTEXTUAL_CHUNKING,
 )
 from app.db import get_conn
 from app.keywords import noun_text
-from app.llm import embed_texts, generate_chunk_contexts
+from app.llm import (
+    embed_images,
+    embed_texts,
+    generate_chunk_contexts,
+    generate_image_captions,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class UnsupportedFileType(Exception):
@@ -69,6 +84,312 @@ def extract_text(filename: str, data: bytes) -> str:
     if parser is None:
         raise UnsupportedFileType(ext)
     return parser(data)
+
+
+def extract_images(filename: str, data: bytes) -> list[parsers.ExtractedImage]:
+    """アップロードされたファイルから画像を取り出す（PDF/XLSX/PPTX）。
+
+    extract_text と違い★例外を投げない★。画像が無い形式（.txt 等）も、解析に
+    失敗した場合も空リストを返す。図が取れなくても文書としては成立するので、
+    ここで取り込み全体を止めない、という判断（詳細は app.parsers の方針）。
+    EXTRACT_IMAGES=false なら常に空（画像機能を丸ごと止めるスイッチ）。
+    """
+    if not EXTRACT_IMAGES:
+        return []
+    ext = os.path.splitext(filename)[1].lower()
+    extractor = parsers.IMAGE_EXTRACTORS.get(ext)
+    if extractor is None:
+        return []
+    return extractor(data)
+
+
+# 画像の検索対象化の方式（config.IMAGE_INDEX_METHOD が取りうる値）。
+# API境界での検証にも使う（/admin/reindex-images?method=...）。
+IMAGE_INDEX_METHODS = ("caption", "multimodal", "none")
+
+
+def _image_placeholder(label: str) -> str:
+    """索引を作らない（作れなかった）画像チャンクの content。
+
+    content は NOT NULL なので、本文の代わりに由来のわかるラベルを置く。
+    名詞も埋め込みも付かないため、この状態の画像は検索に出ない。
+    """
+    return f"[画像] {label}"
+
+
+def build_image_index(
+    source: str,
+    images: list[parsers.ExtractedImage],
+    method: str | None = None,
+    retry_waits: list[int] | None = None,
+) -> list[dict]:
+    """画像を「テキストの質問で引ける」形にする（5-2）。images と同じ長さを返す。
+
+    各要素は chunks に入れる索引用の値:
+      {"content", "context", "content_nouns", "embedding", "image_embedding"}
+
+    方式は IMAGE_INDEX_METHOD（引数 method で上書き可・eval の比較評価用）:
+      caption    … 案A: Claudeに説明文を書かせ、既存のテキスト経路で埋め込む。
+                   説明文は content に入る＝ベクトル・字面・BM25の3手法すべてに乗る。
+      multimodal … 案B: 画像を直接ベクトル化して image_embedding に入れる。
+                   content は説明文を持たないので、当たるのは image 検索だけ。
+      none       … 索引を作らない（保管のみ）。
+
+    ★失敗しても取り込みを止めない★。APIキー未設定・レート制限・APIエラーは
+    すべて「索引なし（＝検索に出ない画像）」に落として警告ログにとどめる。
+    図が引けないのは困るが、そのために文書登録ごと失敗させる方がもっと困る。
+
+    retry_waits: 埋め込みAPIが429を返したときに待つ秒数の並び（None=待たない）。
+      ★評価では必ず渡すこと★。ここが429で失敗すると索引なしの画像が並び、
+      「その方式では図が引けなかった」という実測値と区別が付かない数字が出る
+      （実際に踏んだ。compare_image_index_methods が indexed 件数を検査するのはこのため）。
+    """
+    resolved = (method or IMAGE_INDEX_METHOD).lower()
+    # context には★常にラベルを入れる★（説明文が付いたかどうかに関わらず）。
+    # 「文書内での位置づけ」というテキストチャンクと同じ意味づけであり、かつ
+    # 索引を作り直す(reindex_images)ときに「何ページ目の図か」を復元する唯一の
+    # 手がかりになる（content は説明文で上書きされてラベルが消えるため）。
+    blank = [
+        {
+            "content": _image_placeholder(img.label),
+            "context": img.label,
+            "content_nouns": None,
+            "embedding": None,
+            "image_embedding": None,
+        }
+        for img in images
+    ]
+    if resolved not in IMAGE_INDEX_METHODS:
+        # 設定のtypoで黙って案Aに落ちると、案Bを測っているつもりの評価が
+        # 案Aの数字を返す。索引は作らず、はっきり警告に出す。
+        logger.warning(
+            "未知の画像索引方式です（画像は保管のみになります）: %s / 利用可能: %s",
+            resolved,
+            ", ".join(IMAGE_INDEX_METHODS),
+        )
+        return blank
+    if not images or resolved == "none":
+        return blank
+
+    try:
+        if resolved == "multimodal":
+            vectors = embed_images(
+                [img.data for img in images], retry_waits=retry_waits
+            )
+            for row, vec in zip(blank, vectors):
+                row["image_embedding"] = vec
+            return blank
+
+        # 案A（既定）: 説明文 → 既存のテキスト経路
+        captions = generate_image_captions(
+            [(img.data, img.content_type, img.label) for img in images], source
+        )
+        # 説明文が書けた画像だけを埋め込む。失敗分(空文字)を混ぜると
+        # 「ラベルだけのベクトル」ができ、無関係な質問に当たりはじめる。
+        indexable = [i for i, c in enumerate(captions) if c.strip()]
+        if not indexable:
+            return blank
+        # 埋め込むのは「ラベル + 説明文」。テキストチャンクが文脈を前置するのと
+        # 同じ狙いで、「何ページ目の図か」を検索側から当てられるようにする。
+        embeddings = embed_texts(
+            [_embed_source(images[i].label, captions[i]) for i in indexable],
+            input_type="document",
+            retry_waits=retry_waits,
+        )
+        for i, vec in zip(indexable, embeddings):
+            caption = captions[i].strip()
+            blank[i]["content"] = caption
+            blank[i]["content_nouns"] = noun_text(
+                _embed_source(images[i].label, caption)
+            )
+            blank[i]["embedding"] = vec
+        return blank
+    except Exception:
+        logger.warning(
+            "画像の索引作成に失敗しました（方式=%s・画像は保管のみになります）: %s",
+            resolved,
+            source,
+            exc_info=True,
+        )
+        return blank
+
+
+def store_images(
+    document_id: int,
+    source: str,
+    images: list[parsers.ExtractedImage],
+    index_method: str | None = None,
+) -> int:
+    """画像の原本を S3 に保存し、chunks に画像チャンクとして登録する。保存件数を返す。
+
+    画像チャンクは image_path（S3キー）を持つ行。検索に当てるための索引
+    （説明文＋埋め込み、または画像ベクトル）は build_image_index が決める。
+
+    ★S3に保存できた画像だけをDBに入れる★。行だけ作ると、実体の無いキーを指す
+    画像チャンクが残り、5-3 の回答生成で毎回取得に失敗することになるため。
+    索引作成（Claude/Voyage を呼ぶ）はS3保存の後に回す ＝ 保存できなかった画像に
+    APIコストを払わない。
+    S3未設定なら画像は扱わない（0件）。
+
+    同じ文書の画像チャンクは毎回まるごと入れ替える。再取り込みで同じ絵が
+    二重に積み上がるのを防ぐ（テキストチャンク側の「消してから入れ直す」と同じ方針）。
+    """
+    if not images:
+        return 0
+    if not storage.is_enabled():
+        logger.info("S3が未設定のため文書内画像は保存しません: %s", source)
+        return 0
+
+    stored: list[tuple[str, parsers.ExtractedImage]] = []  # (S3キー, 画像)
+    for i, image in enumerate(images, start=1):
+        key = storage.image_key(source, i, image.ext)
+        if storage.save_bytes(key, image.data, image.content_type):
+            stored.append((key, image))
+    if not stored:
+        return 0
+
+    index = build_image_index(source, [img for _, img in stored], index_method)
+
+    with get_conn() as conn:
+        with conn.transaction():
+            conn.execute(
+                "DELETE FROM chunks WHERE document_id = %s AND image_path IS NOT NULL",
+                (document_id,),
+            )
+            # chunk_index はテキストチャンクの続き番号にする。テキストと画像で
+            # 番号が衝突すると、chunk_index 順に並べる処理（原本の復元など）で
+            # 順序が入れ替わるため。
+            next_index = conn.execute(
+                "SELECT COALESCE(MAX(chunk_index), -1) + 1 FROM chunks "
+                "WHERE document_id = %s",
+                (document_id,),
+            ).fetchone()[0]
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO chunks "
+                    "(document_id, chunk_index, content, context, content_nouns, "
+                    " embedding, image_embedding, image_path) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    [
+                        (
+                            document_id,
+                            next_index + n,
+                            row["content"],
+                            row["context"],
+                            row["content_nouns"],
+                            row["embedding"],
+                            row["image_embedding"],
+                            key,
+                        )
+                        for n, ((key, _img), row) in enumerate(zip(stored, index))
+                    ],
+                )
+    return len(stored)
+
+
+def _indexed_count(index: list[dict]) -> int:
+    """索引が実際に付いた画像の枚数（どちらかのベクトルを持つ行）。
+
+    ★0件は「引けない画像が並んだ」ということ★。方式の実力ではなく
+    APIの失敗でもこうなるので、呼び出し側が区別できるよう件数を返す。
+    """
+    # 両方とも「値があるか」で数える。片方を真偽値で見ると、空ベクトル([])が
+    # 返ったときに索引済みなのに0件と数えてしまう（and/or の優先順位も紛らわしい）。
+    return sum(
+        1
+        for row in index
+        if row["embedding"] is not None or row["image_embedding"] is not None
+    )
+
+
+def reindex_images(
+    method: str | None = None, retry_waits: list[int] | None = None
+) -> dict:
+    """既存の画像チャンクの索引だけを作り直す。
+    {"documents", "images", "indexed"} を返す。
+
+    ★索引方式の比較評価(5-2)を回すための道具★。索引方式は取り込み時に決まるので、
+    素直にやると方式を変えるたびに全ファイルを上げ直すことになる。原本画像は
+    S3にあるのだから、そこから読み直して索引だけ差し替えれば足りる。
+    説明文を書き直したい（プロンプトを変えた）ときにも使う。
+
+    method を省略すると現在の設定(IMAGE_INDEX_METHOD)。
+    S3から取れなかった画像は飛ばす（その行は前の索引のまま残る）。
+
+    indexed は★実際に索引が付いた枚数★。images と食い違っていたら、その分は
+    レート制限やAPIエラーで索引を作れていない ＝ 検索に出ない。評価の前に
+    ここを見ないと「その方式では引けなかった」という結論を誤って出す。
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.image_path, c.context, d.source "
+            "FROM chunks c JOIN documents d ON d.id = c.document_id "
+            "WHERE c.image_path IS NOT NULL "
+            "ORDER BY d.source, c.chunk_index"
+        ).fetchall()
+
+    # 文書ごとにまとめる。build_image_index は文書名を説明文の手がかりに使うのと、
+    # 1文書ぶんをまとめて埋め込みAPIに渡してリクエスト数を減らすため。
+    by_source: dict[str, list[tuple[int, str, str]]] = {}
+    for chunk_id, image_path, context, source in rows:
+        by_source.setdefault(source, []).append((chunk_id, image_path, context or ""))
+
+    documents = 0
+    updated = 0
+    indexed = 0
+    for source, items in by_source.items():
+        fetched: list[tuple[int, parsers.ExtractedImage]] = []
+        for chunk_id, image_path, label in items:
+            obj = storage.get_object(image_path)
+            if obj is None:
+                logger.warning(
+                    "原本画像を取得できませんでした（この画像は飛ばします）: %s", image_path
+                )
+                continue
+            data, content_type = obj
+            fetched.append(
+                (
+                    chunk_id,
+                    parsers.ExtractedImage(
+                        data=data,
+                        ext=os.path.splitext(image_path)[1],
+                        content_type=content_type,
+                        label=label or "画像",
+                        # 幅・高さは索引作成に使わない（足切りは抽出時に済んでいる）
+                        width=0,
+                        height=0,
+                    ),
+                )
+            )
+        if not fetched:
+            continue
+
+        index = build_image_index(
+            source, [img for _, img in fetched], method, retry_waits
+        )
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "UPDATE chunks SET content = %s, context = %s, "
+                    "content_nouns = %s, embedding = %s, image_embedding = %s "
+                    "WHERE id = %s",
+                    [
+                        (
+                            row["content"],
+                            row["context"],
+                            row["content_nouns"],
+                            row["embedding"],
+                            row["image_embedding"],
+                            chunk_id,
+                        )
+                        for (chunk_id, _img), row in zip(fetched, index)
+                    ],
+                )
+        documents += 1
+        updated += len(fetched)
+        indexed += _indexed_count(index)
+
+    return {"documents": documents, "images": updated, "indexed": indexed}
 
 
 def build_contexts(
@@ -134,10 +455,11 @@ def ingest_text(
     store_original: bool = True,
     contextual: bool | None = None,
     embed_retry_waits: list[int] | None = None,
+    images: list[parsers.ExtractedImage] | None = None,
 ) -> dict:
     """1つの文書を取り込む（upsert）。
 
-    戻り値は {"chunks_created", "replaced", "skipped"}。
+    戻り値は {"chunks_created", "replaced", "skipped", "images_stored"}。
     skipped=True なら内容が変わっていないので何も作り直しておらず、
     chunks_created は「今DBにある既存チャンク数」を表す。
 
@@ -161,6 +483,12 @@ def ingest_text(
     embed_retry_waits: 埋め込みAPIが 429 を返したときに待つ秒数の並び
       （None = 再試行しない）。文脈生成はこの前に済ませてあるので、
       待って再試行しても Claude を呼び直さない。
+
+    images: 文書から抽出した画像（app.ingest.extract_images の戻り値）。
+      原本バイナリを持つ /ingest-file だけが渡す。テキスト貼り付け登録には
+      画像が無いので None。★skipped のときも保存する★ ─ 画像の保存には
+      埋め込みAPIもClaudeも要らないので省く理由が無く、むしろこの機能より前に
+      登録済みの文書を「同じファイルを入れ直すだけ」で画像対応にできる。
     """
     use_contextual = USE_CONTEXTUAL_CHUNKING if contextual is None else contextual
     new_hash = content_hash(text, use_contextual)
@@ -186,8 +514,12 @@ def ingest_text(
                 )
             # チャンク数はスキップ時の戻り値にしか要らないので、ここでだけ数える
             # （作り直す場合は数えても捨てるだけなので、上のSELECTには含めない）。
+            # 画像チャンクは数えない。chunks_created は「本文を何チャンクに割ったか」
+            # を表す数字なので、新規登録時（len(chunks)）と意味を揃える。
             chunk_count = conn.execute(
-                "SELECT count(*) FROM chunks WHERE document_id = %s", (document_id,)
+                "SELECT count(*) FROM chunks "
+                "WHERE document_id = %s AND image_path IS NULL",
+                (document_id,),
             ).fetchone()[0]
 
     if unchanged:
@@ -195,11 +527,21 @@ def ingest_text(
         # （S3障害中に取り込んだ等）を、再取り込みで直せるようにするため。
         if store_original:
             storage.save_text(source, text)
-        return {"chunks_created": chunk_count, "replaced": 0, "skipped": True}
+        return {
+            "chunks_created": chunk_count,
+            "replaced": 0,
+            "skipped": True,
+            "images_stored": store_images(document_id, source, images or []),
+        }
 
     chunks = split_chunks(text)
     if not chunks:
-        return {"chunks_created": 0, "replaced": 0, "skipped": False}
+        return {
+            "chunks_created": 0,
+            "replaced": 0,
+            "skipped": False,
+            "images_stored": 0,
+        }
 
     contexts = build_contexts(text, chunks, use_contextual)
     # 埋め込むのは「文脈 + 本文」。本文だけを埋め込むと、断片のままの
@@ -251,4 +593,12 @@ def ingest_text(
     if store_original:
         storage.save_text(source, text)
 
-    return {"chunks_created": len(chunks), "replaced": replaced, "skipped": False}
+    return {
+        "chunks_created": len(chunks),
+        "replaced": replaced,
+        "skipped": False,
+        # 画像チャンクは chunks_created に数えない（「本文を何チャンクに割ったか」
+        # という数字の意味を保つため）。DELETE→INSERT でテキストを入れ直した
+        # 直後なので、この文書の画像チャンクはここで作られる分だけになる。
+        "images_stored": store_images(document_id, source, images or []),
+    }

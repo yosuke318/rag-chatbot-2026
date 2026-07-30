@@ -76,6 +76,20 @@ def save_text(source: str, text: str) -> bool:
     return save_bytes(source, text.encode("utf-8"), _content_type(source))
 
 
+# 文書内画像のキーに付けるプレフィックス。原本ファイル（キー = 出典名そのもの）と
+# 名前空間を分け、「登録した文書の一覧」と「そこから取り出した画像」を混ぜない。
+IMAGE_KEY_PREFIX = "images/"
+
+
+def image_key(source: str, index: int, ext: str) -> str:
+    """文書内画像のS3キー。`images/<出典名>/0001.png` の形。
+
+    index を0埋めするのは、キーの辞書順とページ順を一致させるため
+    （S3のリスト表示で 10 が 2 より前に来るのを防ぐ）。
+    """
+    return f"{IMAGE_KEY_PREFIX}{source}/{index:04d}{ext}"
+
+
 def exists(source: str) -> bool:
     """原本がS3に存在するか。本文をダウンロードせず head_object で確認する。"""
     if not is_enabled():

@@ -1,0 +1,81 @@
+# PRごとに lint を回す（backend / frontend を別チェックとして出す）。
+#   backend:  ruff（`task lint-back` と同じ）
+#   frontend: ESLint（`task lint-front` と同じ）
+#
+# ★テスト(test.yml)と別ワークフローにしている理由★
+#   GitHubのチェック名は「ワークフロー名 / ジョブ名」になるので、分けることで
+#   PR画面に lint / backend・lint / frontend・test / backend・test / frontend の
+#   4つが並ぶ。1つのワークフローに混ぜると全部が同じ見出しの下に入り、
+#   落ちたのが lint なのかテストなのかが一目で分からない。
+#   別ワークフローなので lint が落ちてもテストは走る（両方の結果が同時に分かる）。
+#
+# DB / 外部API は一切叩かない。AWSにもAnthropic/Voyageにも課金は発生しない。
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop] # マージ後のmainが壊れていないかも見る
+  workflow_dispatch:
+
+# 同じPRに連続pushしたとき、古い実行を打ち切って無駄な実行を減らす
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # backend/Dockerfile と揃える
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      # ★ruff だけ入れる★
+      #   ruff は静的解析なので app の依存（anthropic / voyageai / pypdfium2 /
+      #   janome の辞書…）は要らない。lint のためにそれを全部入れるのは無駄。
+      #   ただしバージョンの出どころは requirements-dev.txt 1か所に保ちたいので、
+      #   その行をそのまま取り出して渡す（将来 ruff==x.y に固定してもここが追随する）。
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install "$(grep -E '^ruff' requirements-dev.txt)"
+
+      # 設定は backend/ruff.toml。手元の `task lint-back` と同じコマンドなので、
+      # CIだけ落ちることがない。
+      - name: Run ruff
+        run: ruff check .
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20" # frontend/Dockerfile と揃える
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # lockfile どおりに入れる（npm install と違い勝手に更新しない）。
+      # ESLint は next の設定を読むので、依存を入れずには動かせない。
+      - name: Install dependencies
+        run: npm ci
+
+      # ESLint（next/core-web-vitals）。手元の `task lint-front` と同じコマンド。
+      # 生成物の api-types.ts は .eslintrc.json の ignorePatterns で対象外。
+      - name: Run ESLint
+        run: npm run lint

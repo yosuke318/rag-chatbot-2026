@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -12,13 +13,33 @@ import voyageai.error
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from app import apikeys, conversations, saved_questions, storage
-from app.config import RETRIEVERS_DEFAULT, UPLOAD_MAX_BYTES
+from app import apikeys, charts, conversations, saved_questions, storage
+from app.config import (
+    ADMIN_TOKEN,
+    ANSWER_IMAGE_MAX_BYTES,
+    ANSWER_MAX_IMAGES,
+    IMAGE_INDEX_METHOD,
+    RETRIEVERS_DEFAULT,
+    UPLOAD_MAX_BYTES,
+)
 from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
-from app.eval import evaluate, load_questions
-from app.ingest import UnsupportedFileType, extract_text, ingest_text
-from app.llm import MissingAPIKey, generate_answer, stream_answer
+from app.eval import EXPECTED_KINDS, evaluate, load_questions
+from app.ingest import (
+    IMAGE_INDEX_METHODS,
+    UnsupportedFileType,
+    extract_images,
+    extract_text,
+    ingest_text,
+    reindex_images,
+)
+from app.llm import (
+    ANSWER_IMAGE_MEDIA_TYPES,
+    ImageContext,
+    MissingAPIKey,
+    generate_answer,
+    stream_answer,
+)
 from app.retrieval import (
     FUSION_PARAM_SPECS,
     UnknownReranker,
@@ -29,6 +50,8 @@ from app.retrieval import (
     search_stages,
 )
 from app.schemas import (
+    ChartReadRequest,
+    ChartReadResponse,
     ChatRequest,
     ChatResponse,
     ErrorResponse,
@@ -51,6 +74,7 @@ from app.schemas import (
     TopicsResponse,
     VerifyReport,
 )
+from app.seed import RETRY_WAITS
 
 
 @asynccontextmanager
@@ -145,6 +169,10 @@ def _reject_empty_question(req: ChatRequest):
     )
 
 
+class AdminForbidden(Exception):
+    """/admin/* のトークンが合わない（未設定時は発生しない）。"""
+
+
 @app.exception_handler(MissingAPIKey)
 async def missing_api_key(request: Request, exc: Exception):
     """キーが空のままSDKを呼ぶ前に落とす。SDKに任せると通信前のTypeErrorになり
@@ -161,6 +189,17 @@ async def missing_api_key(request: Request, exc: Exception):
         "missing_api_key",
         f"{which}のAPIキーが未設定です。",
         f"backend/.env の {name} を設定して再起動してください。{extra}",
+        "",
+    )
+
+
+@app.exception_handler(AdminForbidden)
+async def admin_forbidden(request: Request, exc: Exception):
+    return _error(
+        403,
+        "admin_forbidden",
+        "管理用APIのトークンが不正です。",
+        "X-Admin-Token ヘッダに backend/.env の ADMIN_TOKEN と同じ値を付けてください。",
         "",
     )
 
@@ -347,6 +386,26 @@ async def record_api_usage_status(request: Request, call_next):
     return response
 
 
+def require_admin(request: Request) -> None:
+    """管理用API(/admin/*)の入口。ADMIN_TOKEN を設定したときだけ認証を要求する。
+
+    ★なぜ「設定したときだけ」なのか★
+      このアプリはログインなし・Tailscaleで閉域という前提で、UI経路には認証の
+      仕組みが無い。ここだけ必須にするとローカル開発で毎回トークンが要る割に、
+      閉域内では守るものが増えない。一方 /admin/reindex-images は画像1枚ごとに
+      Claude/Voyage を呼ぶので、閉域を出す構成では放置できない
+      （コスト増幅・DoSの経路になる）。そこで「出すなら設定する」を選べる形にした。
+
+    照合は secrets.compare_digest で行う（== だと一致する文字数で応答時間が
+    変わり、総当たりの手がかりを与える）。
+    """
+    if not ADMIN_TOKEN:
+        return
+    given = request.headers.get("x-admin-token") or ""
+    if not secrets.compare_digest(given, ADMIN_TOKEN):
+        raise AdminForbidden()
+
+
 def require_api_key(request: Request) -> apikeys.ApiKey:
     """/v1 の入口。認証・レート制限・利用ログをまとめて行う。
 
@@ -487,6 +546,10 @@ async def ingest_file(
     そのまま S3 に保存する（storage.save_bytes）。抽出テキストを原本として
     保存すると原本ダウンロードが壊れるため、取り込みは store_original=False にし、
     原本の保存はここで明示的に行う。
+
+    加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する（5-1）。
+    画像を持つのは原本バイナリがあるこの経路だけなので、/ingest（テキスト貼り付け）
+    には無い処理になる。
     """
     source = (file.filename or "").strip()
     if not source:
@@ -537,12 +600,17 @@ async def ingest_file(
             "",
         )
 
+    # 文書内の画像（PDFはページ画像・xlsx/pptxは貼られた図）も取り出す。
+    # 抽出できなくても取り込みは続ける（extract_images は例外を投げない）。
+    images = extract_images(source, data)
+
     result = ingest_text(
         source,
         text,
         _blank_to_none(project),
         _blank_to_none(topic),
         store_original=False,
+        images=images,
     )
     # 原本バイナリを S3(MinIO) に保存し、出典名からダウンロードできるようにする。
     # 取り込み(DB登録)成立後に行う best-effort（S3が落ちていても登録は残す）。
@@ -688,7 +756,7 @@ def download_file(source: str):
     )
 
 
-@app.post("/admin/backfill-files")
+@app.post("/admin/backfill-files", dependencies=[Depends(require_admin)])
 def backfill_files():
     """この変更より前に登録済みの文書を、原本ダウンロードに対応させる後埋め。
 
@@ -701,6 +769,8 @@ def backfill_files():
         rows = conn.execute(
             "SELECT d.source, c.content "
             "FROM chunks c JOIN documents d ON d.id = c.document_id "
+            # 画像チャンクは本文を持たない（content はラベル）ので原本の復元に混ぜない
+            "WHERE c.image_path IS NULL "
             "ORDER BY d.source, c.chunk_index"
         ).fetchall()
     # 出典ごとにチャンク本文を順に連結して原本テキストを復元
@@ -709,6 +779,93 @@ def backfill_files():
         texts[source] = texts.get(source, "") + content
     saved = storage.backfill_from_texts(list(texts.items()))
     return {"backfilled": saved, "documents": len(texts)}
+
+
+@app.post(
+    "/admin/reindex-images",
+    responses=_ERRORS,
+    dependencies=[Depends(require_admin)],
+)
+def reindex_images_endpoint(method: Optional[str] = None):
+    """S3の原本画像から、画像チャンクの索引だけを作り直す（5-2の索引方式の比較評価用）。
+
+    画像の索引方式（自動キャプション / マルチモーダル埋め込み）は取り込み時に
+    決まるため、方式を変えて比べるには索引を作り直す必要がある。原本画像はS3に
+    あるので、ファイルを上げ直さずここで差し替えられる。
+
+    method 省略時は現在の設定(IMAGE_INDEX_METHOD)。手順は app.eval のドキュメント参照。
+
+    ★429は待って再試行する★（他のWeb経路と違う扱い）。管理用のバッチ操作なので
+    多少待たせてよく、待たずに失敗すると「索引の無い画像」が残って、以降の検索・
+    評価が静かに壊れるため。戻り値の indexed が images と一致しているかを必ず見ること。
+    """
+    if method is not None and method not in IMAGE_INDEX_METHODS:
+        return _error(
+            400,
+            "invalid_image_index_method",
+            f"未知の画像索引方式: {method}",
+            f"利用可能: {', '.join(IMAGE_INDEX_METHODS)}",
+            "",
+        )
+    return {
+        "method": method or IMAGE_INDEX_METHOD,
+        **reindex_images(method, retry_waits=RETRY_WAITS),
+    }
+
+
+@app.post("/chart-read", response_model=ChartReadResponse, responses=_ERRORS)
+def chart_read(req: ChartReadRequest):
+    """文書内のチャート画像を読解する（5-4）。★売買判断は返さない★
+
+    5-3（原本画像を根拠にした回答）をチャートに向けたもの。検索でヒットした
+    画像チャンクだけを根拠にし、「今どういう状態か」を言葉にする。
+    複数レポートの図表を集めて要約する用途もここに乗る。
+
+    ★この機能を /v1（公開API）に載せないのは意図的★
+      個別銘柄の売買判断を業として提供すると、日本では金融商品取引法の
+      投資助言・代理業の登録が必要になる可能性が高い。社外へ売買判断を返す
+      経路をそもそも作らないため、社内向けのこの経路だけに置く。
+      出力側の検査も含め、制限の理由は app.charts の冒頭にまとめてある。
+
+    画像が1件も引けなかったときは 404。「テキストだけで答えた説明」を
+    チャート読解として返すと、利用者は図を読んだ結果だと受け取ってしまう。
+    """
+    if not req.question.strip():
+        return _error(
+            400,
+            "invalid_question",
+            "質問は必須です。",
+            "question を入力してください。",
+            "",
+        )
+    hits = hybrid_search(
+        req.question,
+        project=_blank_to_none(req.project),
+        topic=_blank_to_none(req.topic),
+    )
+    # 根拠は画像だけに絞る。本文チャンクを混ぜると、チャートを読んだのか
+    # 本文を読んだのか区別が付かない説明になる。
+    image_hits = [h for h in hits if h.get("image_path")]
+    contexts = _answer_contexts(image_hits)
+    attached = [c for c in contexts if isinstance(c, ImageContext)]
+    if not attached:
+        return _error(
+            404,
+            "no_chart_found",
+            "対象になる図表が見つかりませんでした。",
+            "図表を含む文書を /ingest-file で登録し、"
+            "IMAGE_INDEX_METHOD で索引を作ってから試してください。",
+            "",
+        )
+
+    result = charts.read_charts(req.question, contexts)
+    return {
+        "reading": result["reading"],
+        "charts_read": len(attached),
+        "citations": _citations(image_hits),
+        "removed": result["removed"],
+        "removed_labels": result["labels"],
+    }
 
 
 CITATION_PREVIEW_CHARS = 200  # 引用に載せる該当箇所の長さ（検索の内訳より少し長め）
@@ -720,6 +877,9 @@ def _citations(hits: list[dict]) -> list[dict]:
     ★番号は hits の並びそのもの★（1始まり）。同じ並びを generate_answer にも
     渡しているので、回答本文の [n] とここの n が必ず一致する。
     原本URLは出典ごとに1回だけ引く（S3のhead_objectを同じ文書で何度も叩かない）。
+
+    画像チャンクには image_url も付ける。回答生成に渡したのと同じ1枚を利用者にも
+    見せるため ＝ 「この図のここが根拠」を自分の目で確かめられる（5-3）。
     """
     urls: dict[str, str | None] = {}
     citations = []
@@ -727,6 +887,7 @@ def _citations(hits: list[dict]) -> list[dict]:
         source = hit["source"]
         if source not in urls:
             urls[source] = storage.file_url(source)
+        image_path = hit.get("image_path")
         citations.append(
             {
                 "n": n,
@@ -734,9 +895,74 @@ def _citations(hits: list[dict]) -> list[dict]:
                 "source": source,
                 "preview": preview(hit["content"], CITATION_PREVIEW_CHARS),
                 "file_url": urls[source],
+                # 画像チャンクなら「その画像」へのURL。文書の原本(file_url)とは別物で、
+                # 何ページ目の図が根拠だったかはこちらでしか分からない。
+                "image_url": storage.file_url(image_path) if image_path else None,
+                "image_label": hit.get("context") if image_path else None,
             }
         )
     return citations
+
+
+def _image_context(hit: dict) -> Optional[ImageContext]:
+    """画像チャンクなら原本画像を S3 から取り出す。使えなければ None。
+
+    None を返した場合、呼び出し側は言語化テキスト（キャプション等）で代替する。
+    ★画像が取れないことを理由に回答を失敗させない★のが方針で、S3障害でも
+    5-2 までの品質（言語化テキストで答える）には落ちるだけで済ませる。
+
+    大きすぎる画像を弾くのは、Claude の画像1枚の上限(5MB)を超えると
+    リクエストごと失敗し、回答が1文字も返らなくなるため。
+    """
+    image_path = hit.get("image_path")
+    if not image_path:
+        return None
+    obj = storage.get_object(image_path)
+    if obj is None:
+        logger.warning("原本画像を取得できませんでした（言語化テキストで代替）: %s", image_path)
+        return None
+    data, media_type = obj
+    if media_type not in ANSWER_IMAGE_MEDIA_TYPES:
+        logger.warning(
+            "回答生成に渡せない画像形式です（言語化テキストで代替）: %s (%s)",
+            image_path,
+            media_type,
+        )
+        return None
+    if len(data) > ANSWER_IMAGE_MAX_BYTES:
+        logger.warning(
+            "画像が大きすぎるため添付しません（言語化テキストで代替）: %s (%d bytes)",
+            image_path,
+            len(data),
+        )
+        return None
+    # label は「3ページ目」等の由来。中身の説明ではない（中身は画像から読ませる）
+    return ImageContext(
+        data=data, media_type=media_type, label=hit.get("context") or hit["source"]
+    )
+
+
+def _answer_contexts(hits: list[dict]) -> list:
+    """回答生成に渡すコンテキストを組み立てる。並びは hits と1対1（引用番号の根拠）。
+
+    ★画像チャンクは言語化テキストではなく原本画像を渡す（5-3）★
+      キャプションは検索で見つけるための索引に格下げし、判断は毎回原本に
+      対して行わせる。こうしないと「言語化した時点で書かれなかったこと」を
+      後から問えない（それが2023年方式の弱点だった）。
+
+    添付する枚数に上限を置くのは入力トークンとコストの保護。上限を超えた分は
+    従来どおり言語化テキストで渡す（順位が上のものから優先して画像にする）。
+    """
+    contexts: list = []
+    attached = 0
+    for hit in hits:
+        image = _image_context(hit) if attached < ANSWER_MAX_IMAGES else None
+        if image is None:
+            contexts.append(hit["content"])
+        else:
+            contexts.append(image)
+            attached += 1
+    return contexts
 
 
 def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
@@ -764,7 +990,8 @@ def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
     return {
         "conversation_id": conversation_id,
         "history": history,
-        "contexts": [h["content"] for h in hits],
+        # 画像チャンクは原本画像そのものが入る（テキストと混在する。5-3）
+        "contexts": _answer_contexts(hits),
         # 根拠として使ったチャンクの出典も返す（重複排除）
         "sources": list(dict.fromkeys(h["source"] for h in hits)),
         "citations": _citations(hits),
@@ -925,19 +1152,35 @@ def add_eval_question(req: EvalQuestionRequest):
             "question と expected_source の両方を入力してください。",
             "",
         )
+    if req.expected_kind not in EXPECTED_KINDS:
+        return _error(
+            400,
+            "invalid_eval_question",
+            f"未知の正解種別: {req.expected_kind}",
+            f"利用可能: {', '.join(EXPECTED_KINDS)}",
+            "",
+        )
     project = _blank_to_none(req.project)
     topic = _blank_to_none(req.topic)
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO eval_questions "
-            "(project, topic, question, expected_source, note) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (project, topic, req.question, req.expected_source, req.note),
+            "(project, topic, question, expected_source, expected_kind, note) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                project,
+                topic,
+                req.question,
+                req.expected_source,
+                req.expected_kind,
+                req.note,
+            ),
         ).fetchone()[0]
     return {
         "id": new_id,
         "question": req.question,
         "expected_source": req.expected_source,
+        "expected_kind": req.expected_kind,
         "project": project,
         "topic": topic,
         "note": req.note,
@@ -1030,8 +1273,8 @@ def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = No
 
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT id, question, expected_source, project, topic, note "
-            f"FROM eval_questions {where} ORDER BY id",
+            f"SELECT id, question, expected_source, project, topic, note, "
+            f"expected_kind FROM eval_questions {where} ORDER BY id",
             params,
         ).fetchall()
     return {
@@ -1040,6 +1283,7 @@ def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = No
                 "id": r[0],
                 "question": r[1],
                 "expected_source": r[2],
+                "expected_kind": r[6],
                 "project": r[3],
                 "topic": r[4],
                 "note": r[5],

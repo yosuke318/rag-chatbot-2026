@@ -90,7 +90,7 @@ def test_default_params_shapes():
 def test_retriever_infos_lists_all_methods():
     infos = retriever_infos()
     names = {i["name"] for i in infos}
-    assert names == {"vector", "trgm", "bm25"}
+    assert names == {"vector", "trgm", "bm25", "image"}
     for info in infos:
         assert {"name", "label", "metric_label", "params"} <= info.keys()
 

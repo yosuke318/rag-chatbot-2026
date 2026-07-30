@@ -37,7 +37,12 @@ def client():
 # ヘルパー
 # ---------------------------------------------------------------------------
 
-_MOCK_INGEST_RESULT = {"chunks_created": 3, "replaced": 0, "skipped": False}
+_MOCK_INGEST_RESULT = {
+    "chunks_created": 3,
+    "replaced": 0,
+    "skipped": False,
+    "images_stored": 0,
+}
 
 
 def _post_txt(client: TestClient, content: bytes = b"Hello world", filename: str = "doc.txt"):
@@ -67,6 +72,26 @@ def test_200_returns_ingest_response_shape(client: TestClient):
     assert body["source"] == "doc.txt"
     assert body["chunks_created"] == 3
     assert body["replaced"] == 0
+
+
+def test_200_passes_extracted_images_to_ingest(client: TestClient):
+    """文書内画像を抽出して ingest_text に渡し、枚数をレスポンスに載せる（5-1）。"""
+    with (
+        patch("app.main.extract_text", return_value="取り込み本文テキスト"),
+        patch("app.main.extract_images", return_value=["img1", "img2"]) as extract,
+        patch(
+            "app.main.ingest_text",
+            return_value={**_MOCK_INGEST_RESULT, "images_stored": 2},
+        ) as ingest,
+        patch("app.main.storage"),
+    ):
+        resp = _post_txt(client, filename="決算.pdf")
+
+    assert resp.status_code == 200
+    assert resp.json()["images_stored"] == 2
+    # 抽出は原本のバイト列に対して行う（抽出テキストではない）
+    assert extract.call_args.args == ("決算.pdf", b"Hello world")
+    assert ingest.call_args.kwargs["images"] == ["img1", "img2"]
 
 
 # ---------------------------------------------------------------------------

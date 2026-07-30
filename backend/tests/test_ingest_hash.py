@@ -191,7 +191,12 @@ def test_reingest_same_content_skips_embedding(monkeypatch, calls):
 
     assert calls["embed"] == 0
     assert calls["context"] == 0  # Claude（文脈生成）も呼ばない
-    assert result == {"chunks_created": 2, "replaced": 0, "skipped": True}
+    assert result == {
+        "chunks_created": 2,
+        "replaced": 0,
+        "skipped": True,
+        "images_stored": 0,
+    }
     assert conn.statements("DELETE") == []  # 既存文書は消さない（id が保たれる）
     assert conn.statements("INSERT") == []
 
@@ -278,3 +283,50 @@ def test_skip_respects_store_original_false(monkeypatch, calls):
 
     ingest_text("a.txt", TEXT, store_original=False, contextual=False)
     assert calls["save_text"] == 0
+
+
+# --- 文書内画像（5-1）の受け渡し ---------------------------------------
+
+
+def _record_store_images(monkeypatch):
+    """store_images の呼び出しを記録するだけの差し替え。"""
+    calls_made: list[tuple] = []
+
+    def fake(document_id, source, images):
+        calls_made.append((document_id, source, images))
+        return len(images)
+
+    monkeypatch.setattr(ingest_module, "store_images", fake)
+    return calls_made
+
+
+def test_ingest_stores_images_with_new_document_id(monkeypatch, calls):
+    """新規登録では、作ったばかりの documents.id に画像を紐づける。"""
+    conn = FakeConn(existing=None)
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+    made = _record_store_images(monkeypatch)
+
+    result = ingest_text("a.pdf", TEXT, contextual=False, images=["img1", "img2"])
+
+    assert made == [(42, "a.pdf", ["img1", "img2"])]  # 42 = INSERT ... RETURNING id
+    assert result["images_stored"] == 2
+    # 画像は chunks_created（本文を何チャンクに割ったか）には数えない
+    assert result["chunks_created"] == len(conn.chunk_rows)
+
+
+def test_skipped_ingest_still_stores_images(monkeypatch, calls):
+    """★本文が同じでも画像は保存する★
+
+    画像の保存には埋め込みAPIもClaudeも要らないので省く理由が無く、この機能より
+    前に登録済みの文書を「同じファイルを入れ直すだけ」で画像対応にできる。
+    """
+    conn = FakeConn(existing=_existing(content_hash(TEXT, False)))
+    monkeypatch.setattr(ingest_module, "get_conn", conn)
+    made = _record_store_images(monkeypatch)
+
+    result = ingest_text("a.pdf", TEXT, contextual=False, images=["img1"])
+
+    assert calls["embed"] == 0  # 埋め込みはやはり省く
+    assert result["skipped"] is True
+    assert made == [(42, "a.pdf", ["img1"])]  # 既存文書の id に紐づく
+    assert result["images_stored"] == 1

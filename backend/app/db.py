@@ -5,7 +5,7 @@
 import psycopg
 from pgvector.psycopg import register_vector
 
-from app.config import DATABASE_URL, EMBED_DIM
+from app.config import DATABASE_URL, EMBED_DIM, MULTIMODAL_EMBED_DIM
 
 
 def get_conn() -> psycopg.Connection:
@@ -97,6 +97,31 @@ def init_db() -> None:
         # 埋め込み・字面検索には content と繋げたものを使うが、回答生成に渡すのは
         # あくまで content なので、別カラムに分けて保持する。
         conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS context TEXT;")
+        # 文書内画像の原本のS3キー（app.storage.image_key）。
+        # NULL = テキストチャンク。値あり = 画像チャンク（その1枚が根拠になる）。
+        # 画像チャンクは 5-1 の時点では embedding も content_nouns も持たないため
+        # 検索にはヒットしない（検索対象化は 5-2）。回答生成で原本画像を渡す（5-3）
+        # ときに、ヒットしたチャンクからこのキーで原本を引く。
+        conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS image_path TEXT;")
+        # 画像チャンクは「その文書の分を丸ごと入れ替える」形で書くので、
+        # 文書ID＋画像有無で引ける形にしておく（部分インデックスなので
+        # テキストチャンクが大半でも小さいまま）。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS chunks_image_idx ON chunks (document_id) "
+            "WHERE image_path IS NOT NULL;"
+        )
+        # 案B（IMAGE_INDEX_METHOD=multimodal）で画像を直接ベクトル化したもの。
+        # ★embedding とは別の空間★（voyage-multimodal-3 と voyage-3.5）なので
+        # 同じ列に混ぜられない。混ぜるとエラーにならずただ無意味な順位が返る。
+        # NULL = その画像は案Bの索引を持たない（案A・未索引・テキストチャンク）。
+        conn.execute(
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS image_embedding "
+            f"VECTOR({MULTIMODAL_EMBED_DIM});"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS chunks_image_embedding_idx "
+            "ON chunks USING hnsw (image_embedding vector_cosine_ops);"
+        )
         # 外部キーの参照側にはインデックスが自動では付かない。無いと
         # スキップ時のチャンク数集計も、documents 削除時の CASCADE も
         # chunks 全体の逐次スキャンになる。
@@ -252,6 +277,18 @@ def init_db() -> None:
                 created_at      TIMESTAMPTZ DEFAULT now()
             );
             """
+        )
+        # 正解を「どの種類のチャンクで引けたら正解か」まで下ろす軸（5-2の索引方式の比較評価用）。
+        #   'any'（既定） … 文書が上位に来れば正解（従来どおり）
+        #   'text'        … 本文チャンクで引けたときだけ正解
+        #   'image'       … ★画像チャンクで引けたときだけ正解★
+        # これが無いと、図表の索引方式を変えても「同じ文書が1位」で同点になり、
+        # 案A/案Bの差が数値に出ない（文書名だけが正解ラベルだったときの限界）。
+        # NOT NULL + DEFAULT にするのは、NULL に「未指定」以上の意味が無く、
+        # 既存行の意味（文書単位の判定）がそのまま 'any' に対応するため。
+        conn.execute(
+            "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
+            "expected_kind TEXT NOT NULL DEFAULT 'any';"
         )
         # 既存DB向けの冪等マイグレーション: 会社・部署の2軸は当初の実装で、
         # 本来の設計軸は project/topic。データを保ったまま改名する。

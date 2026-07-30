@@ -66,6 +66,18 @@ const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
       どの文書にも出る語より、珍しい語の一致を高く評価する。
     </>
   ),
+  image: (
+    <>
+      質問と<strong>文書内の画像そのもの</strong>のベクトルがどれだけ近いか。
+      voyage-multimodal-3 が画像とテキストを同じ空間に埋め込むので、
+      言語化を挟まずに図表を直接引ける。
+      <br />
+      <br />
+      当たるのは <code>IMAGE_INDEX_METHOD=multimodal</code> で索引した画像だけ。
+      自動キャプション方式で運用しているときは常に空になり、
+      図表は上の3手法（説明文のチャンク）の側で引っかかる。
+    </>
+  ),
 };
 
 // UI内部だけで使う型（APIには存在しない）
@@ -623,15 +635,20 @@ export default function Home() {
           continue;
         }
         const data = await res.json();
+        // 文書内画像（PDFはページ画像、xlsx/pptxは貼られた図）を取り出せた枚数。
+        // 本文が同じでスキップした場合も保存されるので、両方の分岐に付ける。
+        const images = data.images_stored
+          ? `・画像${data.images_stored}枚`
+          : "";
         if (data.skipped) {
           // 内容が同じ＝埋め込みをやり直していない（差分検知）
           results.push(
-            `✓ ${file.name}: 内容に変更なし（${data.chunks_created}チャンクのまま）`,
+            `✓ ${file.name}: 内容に変更なし（${data.chunks_created}チャンクのまま${images}）`,
           );
         } else {
           const note = data.replaced ? "（同名を置き換え）" : "";
           results.push(
-            `✓ ${file.name}: ${data.chunks_created}チャンクで登録${note}`,
+            `✓ ${file.name}: ${data.chunks_created}チャンク${images}で登録${note}`,
           );
         }
       } catch (e) {
@@ -1225,9 +1242,36 @@ export default function Home() {
                         ) : (
                           <SourceLink source={c.source} />
                         )}
+                        {c.image_label && (
+                          <span className="cite-image-label">
+                            図: {c.image_label}
+                          </span>
+                        )}
                         <span className="cite-id">chunk #{c.chunk_id}</span>
                       </div>
-                      <div className="cite-preview">{c.preview}</div>
+                      {/* 根拠が図表なら、回答生成に渡したのと同じ画像をそのまま見せる。
+                          「この図のここが根拠」を利用者が自分の目で確かめられる */}
+                      {c.image_url ? (
+                        <a
+                          href={citationHref(c.image_url)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {/* 原本画像。next/image は最適化サーバを挟むので使わない。
+                              ★遅延読み込みにしない★ 1回答で最大4枚しか出ないうえ、
+                              これは回答の根拠そのもの＝すぐ見たいもの。加えて
+                              読み込み前は高さ0に潰れるため、遅延させると画面内に
+                              入らず永久に読み込まれないことがある。 */}
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            className="cite-image"
+                            src={citationHref(c.image_url)}
+                            alt={c.image_label ?? c.source}
+                          />
+                        </a>
+                      ) : (
+                        <div className="cite-preview">{c.preview}</div>
+                      )}
                     </div>
                   ))}
                 </div>

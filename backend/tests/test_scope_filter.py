@@ -45,7 +45,10 @@ class FakeConn:
 def sql_spy(monkeypatch):
     """検索関数が投げたSQLを記録する。戻り値は (sql, params) のリスト。"""
     calls: list = []
-    rows = [(1, "本文", "有給休暇.txt", 0.1)]
+    # 列の並びは (id, content, source, image_path, context, 指標)。
+    # image_path は「本文チャンクか画像チャンクか」を評価側が見分けるため、
+    # context は画像チャンクの由来（「3ページ目」等）を回答生成に渡すため。
+    rows = [(1, "本文", "有給休暇.txt", None, None, 0.1)]
     monkeypatch.setattr(retrieval, "get_conn", lambda: FakeConn(calls, rows))
     monkeypatch.setattr(retrieval, "embed_query", lambda q: [0.1, 0.2, 0.3])
     return calls
@@ -158,7 +161,14 @@ def retriever_spy(monkeypatch):
     seen: dict[str, dict] = {}
 
     def make(name):
-        def fake(question, params=None, query_vec=None, project=None, topic=None):
+        def fake(
+            question,
+            params=None,
+            query_vec=None,
+            image_query_vec=None,
+            project=None,
+            topic=None,
+        ):
             seen[name] = {"project": project, "topic": topic}
             return [{"id": 1, "content": "本文", "source": "有給休暇.txt",
                      "cosine_similarity": 0.9, "trgm_similarity": 0.5,
