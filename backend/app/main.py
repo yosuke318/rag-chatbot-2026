@@ -13,7 +13,7 @@ import voyageai.error
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from app import apikeys, conversations, saved_questions, storage
+from app import apikeys, charts, conversations, saved_questions, storage
 from app.config import (
     ADMIN_TOKEN,
     ANSWER_IMAGE_MAX_BYTES,
@@ -50,6 +50,8 @@ from app.retrieval import (
     search_stages,
 )
 from app.schemas import (
+    ChartReadRequest,
+    ChartReadResponse,
     ChatRequest,
     ChatResponse,
     ErrorResponse,
@@ -808,6 +810,61 @@ def reindex_images_endpoint(method: Optional[str] = None):
     return {
         "method": method or IMAGE_INDEX_METHOD,
         **reindex_images(method, retry_waits=RETRY_WAITS),
+    }
+
+
+@app.post("/chart-read", response_model=ChartReadResponse, responses=_ERRORS)
+def chart_read(req: ChartReadRequest):
+    """文書内のチャート画像を読解する（5-4）。★売買判断は返さない★
+
+    5-3（原本画像を根拠にした回答）をチャートに向けたもの。検索でヒットした
+    画像チャンクだけを根拠にし、「今どういう状態か」を言葉にする。
+    複数レポートの図表を集めて要約する用途もここに乗る。
+
+    ★この機能を /v1（公開API）に載せないのは意図的★
+      個別銘柄の売買判断を業として提供すると、日本では金融商品取引法の
+      投資助言・代理業の登録が必要になる可能性が高い。社外へ売買判断を返す
+      経路をそもそも作らないため、社内向けのこの経路だけに置く。
+      出力側の検査も含め、制限の理由は app.charts の冒頭にまとめてある。
+
+    画像が1件も引けなかったときは 404。「テキストだけで答えた説明」を
+    チャート読解として返すと、利用者は図を読んだ結果だと受け取ってしまう。
+    """
+    if not req.question.strip():
+        return _error(
+            400,
+            "invalid_question",
+            "質問は必須です。",
+            "question を入力してください。",
+            "",
+        )
+    hits = hybrid_search(
+        req.question,
+        project=_blank_to_none(req.project),
+        topic=_blank_to_none(req.topic),
+    )
+    # 根拠は画像だけに絞る。本文チャンクを混ぜると、チャートを読んだのか
+    # 本文を読んだのか区別が付かない説明になる。
+    image_hits = [h for h in hits if h.get("image_path")]
+    contexts = _answer_contexts(image_hits)
+    attached = [c for c in contexts if isinstance(c, ImageContext)]
+    if not attached:
+        return _error(
+            404,
+            "no_chart_found",
+            "対象になる図表が見つかりませんでした。",
+            "図表を含む文書を /ingest-file で登録し、"
+            "IMAGE_INDEX_METHOD で索引を作ってから試してください。",
+            "",
+        )
+
+    result = charts.read_charts(req.question, contexts)
+    return {
+        "reading": result["reading"],
+        "charts_read": len(attached),
+        "citations": _citations(image_hits),
+        "removed": result["removed"],
+        "removed_labels": result["labels"],
     }
 
 

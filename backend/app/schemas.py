@@ -368,6 +368,36 @@ class EvalResult(BaseModel):
     )
 
 
+class ChartReadRequest(BaseModel):
+    """チャート読解のリクエスト（5-4）。売買判断は返さない。"""
+
+    question: str = Field(description="チャートについて知りたいこと")
+    project: Optional[str] = Field(default=None, description="プロジェクト（未指定は全体）")
+    topic: Optional[str] = Field(default=None, description="トピック（未指定は全体）")
+
+
+class ChartReadResponse(BaseModel):
+    """チャート読解の結果。
+
+    ★売買判断・将来予想は含まない★（app.charts 参照）。生成側が書いてしまった
+    場合はその文を落とし、removed に入れて何が起きたか追えるようにする。
+    """
+
+    reading: str = Field(description="画像から読み取れる状態の説明（末尾にスコープの注記）")
+    charts_read: int = Field(description="読解に使ったチャート画像の枚数")
+    citations: List[Citation] = Field(
+        description="根拠にしたチャンク。回答中の [n] と対応する"
+    )
+    removed: List[str] = Field(
+        default_factory=list,
+        description="売買判断・将来予想に当たるとして除いた文（通常は空）",
+    )
+    removed_labels: List[str] = Field(
+        default_factory=list,
+        description="除いた記述の種類（売買推奨・将来予想 等）",
+    )
+
+
 class KindSummary(BaseModel):
     """正解の種類（本文 / 画像）ごとの成績。
 

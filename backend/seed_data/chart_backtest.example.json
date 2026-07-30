@@ -1,0 +1,17 @@
+[
+  {
+    "image": "images/月次レポート_2026-02.pdf/0003.png",
+    "outcome": "up",
+    "note": "2026-02月次レポート p3 / 判定: 図の右端の日付から30営業日後の終値が +1%超なら up、-1%未満なら down、その間は flat"
+  },
+  {
+    "image": "images/月次レポート_2026-03.pdf/0003.png",
+    "outcome": "down",
+    "note": "2026-03月次レポート p3 / 判定条件は上と同一"
+  },
+  {
+    "image": "/app/seed_docs/charts/sample-2026-04.png",
+    "outcome": "flat",
+    "note": "ローカルパスでも指定できる（手元で試すとき用）。判定条件は上と同一"
+  }
+]

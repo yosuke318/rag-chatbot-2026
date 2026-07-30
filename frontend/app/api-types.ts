@@ -301,6 +301,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chart-read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chart Read
+         * @description 文書内のチャート画像を読解する（5-4）。★売買判断は返さない★
+         *
+         *     5-3（原本画像を根拠にした回答）をチャートに向けたもの。検索でヒットした
+         *     画像チャンクだけを根拠にし、「今どういう状態か」を言葉にする。
+         *     複数レポートの図表を集めて要約する用途もここに乗る。
+         *
+         *     ★この機能を /v1（公開API）に載せないのは意図的★
+         *       個別銘柄の売買判断を業として提供すると、日本では金融商品取引法の
+         *       投資助言・代理業の登録が必要になる可能性が高い。社外へ売買判断を返す
+         *       経路をそもそも作らないため、社内向けのこの経路だけに置く。
+         *       出力側の検査も含め、制限の理由は app.charts の冒頭にまとめてある。
+         *
+         *     画像が1件も引けなかったときは 404。「テキストだけで答えた説明」を
+         *     チャート読解として返すと、利用者は図を読んだ結果だと受け取ってしまう。
+         */
+        post: operations["chart_read_chart_read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/chat": {
         parameters: {
             query?: never;
@@ -543,6 +576,61 @@ export interface components {
              * @description トピック（任意）
              */
             topic?: string | null;
+        };
+        /**
+         * ChartReadRequest
+         * @description チャート読解のリクエスト（5-4）。売買判断は返さない。
+         */
+        ChartReadRequest: {
+            /**
+             * Question
+             * @description チャートについて知りたいこと
+             */
+            question: string;
+            /**
+             * Project
+             * @description プロジェクト（未指定は全体）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（未指定は全体）
+             */
+            topic?: string | null;
+        };
+        /**
+         * ChartReadResponse
+         * @description チャート読解の結果。
+         *
+         *     ★売買判断・将来予想は含まない★（app.charts 参照）。生成側が書いてしまった
+         *     場合はその文を落とし、removed に入れて何が起きたか追えるようにする。
+         */
+        ChartReadResponse: {
+            /**
+             * Reading
+             * @description 画像から読み取れる状態の説明（末尾にスコープの注記）
+             */
+            reading: string;
+            /**
+             * Charts Read
+             * @description 読解に使ったチャート画像の枚数
+             */
+            charts_read: number;
+            /**
+             * Citations
+             * @description 根拠にしたチャンク。回答中の [n] と対応する
+             */
+            citations: components["schemas"]["Citation"][];
+            /**
+             * Removed
+             * @description 売買判断・将来予想に当たるとして除いた文（通常は空）
+             */
+            removed?: string[];
+            /**
+             * Removed Labels
+             * @description 除いた記述の種類（売買推奨・将来予想 等）
+             */
+            removed_labels?: string[];
         };
         /** ChatRequest */
         ChatRequest: {
@@ -1854,6 +1942,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description APIキー未設定・認証失敗 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description レート制限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 外部API呼び出し失敗 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    chart_read_chart_read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChartReadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChartReadResponse"];
                 };
             };
             /** @description APIキー未設定・認証失敗 */

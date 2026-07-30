@@ -14,11 +14,13 @@ app/
 ├── parsers.py    # ファイル→テキスト / 文書内画像の抽出（PDF/XLSX/PPTX）
 ├── storage.py    # 原本・文書内画像の S3(MinIO) 保存
 ├── ingest.py     # テキスト→チャンク→文脈付与→埋め込み→保存（＋画像チャンク登録）
+├── charts.py     # ★チャート読解支援（売買判断は出さない・スコープ制限が本体）
 ├── eval.py       # 検索評価（Hit@k / MRR）
+├── backtest.py   # チャート読解の的中率をベースラインと比較（価値を主張しないための道具）
 ├── compare.py    # contextual有無の比較評価
 ├── retrieval.py  # ★ハイブリッド検索（ベクトル + 字面 + 画像 + RRF融合）→ リランク
 ├── conversations.py # 会話履歴（conversations / messages）の読み書き
-└── main.py       # FastAPI: /health /ingest /chat /chat/stream
+└── main.py       # FastAPI: /health /ingest /chat /chat/stream /chart-read
 
 tests/            # 単体テスト（DB・外部APIを使わない純ロジック）
 ├── test_keywords.py    # 名詞抽出
@@ -27,6 +29,8 @@ tests/            # 単体テスト（DB・外部APIを使わない純ロジッ�
 ├── test_image_index.py # 画像の検索対象化（キャプション / マルチモーダル埋め込み）
 ├── test_eval_kinds.py  # チャンク種別の正解判定と比較評価の有意差検定
 ├── test_answer_images.py # 原本画像を根拠にした回答生成（画像content block）
+├── test_charts.py      # チャート読解のスコープ制限（売買判断を出さない）
+├── test_backtest.py    # バックテスト（ベースライン比較・件数不足の扱い）
 ├── test_chunking.py    # 構造分割（条文境界・最小/最大サイズ）
 ├── test_contextual.py  # 文脈付与とプロンプトキャッシュの並び
 ├── test_compare.py     # contextual有無の比較評価（比較の公平性）

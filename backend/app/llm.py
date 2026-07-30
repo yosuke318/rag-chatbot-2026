@@ -492,11 +492,17 @@ IMAGE_SYSTEM_PROMPT = (
 )
 
 
-def _system_prompt(contexts: list) -> str:
-    """コンテキストに画像があるときだけ画像用の指示を足したシステムプロンプト。"""
+def _system_prompt(contexts: list, base: str | None = None) -> str:
+    """コンテキストに画像があるときだけ画像用の指示を足したシステムプロンプト。
+
+    base を渡すと土台の指示を差し替えられる（チャート読解のように、回答の
+    出し方そのものを変える用途。app.charts 参照）。画像の扱いに関する指示は
+    土台が何であっても同じなので、ここで一括して足す。
+    """
+    prompt = SYSTEM_PROMPT if base is None else base
     if any(isinstance(c, ImageContext) for c in contexts):
-        return SYSTEM_PROMPT + IMAGE_SYSTEM_PROMPT
-    return SYSTEM_PROMPT
+        return prompt + IMAGE_SYSTEM_PROMPT
+    return prompt
 
 
 def number_contexts(contexts: list[str]) -> str:
@@ -589,7 +595,10 @@ def _answer_messages(
 
 
 def generate_answer(
-    question: str, contexts: list, history: list[dict] | None = None
+    question: str,
+    contexts: list,
+    history: list[dict] | None = None,
+    system: str | None = None,
 ) -> str:
     """検索した関連チャンクをコンテキストに与えて回答を生成する。
 
@@ -597,12 +606,15 @@ def generate_answer(
     その番号の根拠が「画像そのもの」になる（5-3）。
     戻り値の本文には [n] の引用マーカーが含まれる（n は contexts の1始まりの位置）。
     history に直近のやり取りを渡すと、続きの質問（「その上限は？」等）に答えられる。
+
+    system: 土台のシステムプロンプトの差し替え（未指定なら通常の回答用）。
+      チャート読解のように「答え方そのもの」を変える用途で使う（app.charts）。
     """
     _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
     response = _anthropic.messages.create(
         model=CHAT_MODEL,
         max_tokens=1024,
-        system=_system_prompt(contexts),
+        system=_system_prompt(contexts, system),
         messages=_answer_messages(question, contexts, history),
     )
     return "".join(block.text for block in response.content if block.type == "text")
