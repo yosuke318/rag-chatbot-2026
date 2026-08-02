@@ -25,6 +25,21 @@ from __future__ import annotations
 from app.db import get_conn
 
 
+def _clean(value: str | None) -> str | None:
+    """区分名を正規化する。前後の空白を落とし、空になったら未指定(None)。
+
+    ★API境界(app.main._blank_to_none)だけでは足りない★
+      seed の fixture やCLI・他モジュールからの内部呼び出しはそこを通らないので、
+      `""` や `"  "` がそのままマスタに入って「空文字プロジェクト」ができたり、
+      `" 社内規程 "` が「社内規程」と別物として並んだりする。マスタは選択肢の
+      集合なので、ここで揃えないと表記ゆれを潰すという目的自体が崩れる。
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
 def _project_id(conn, name: str) -> int:
     """プロジェクト名を id に引く。無ければ作る。
 
@@ -72,7 +87,10 @@ def register(
     ★書き込み側はこの id を行に入れる★（documents.project_id 等）。
     名前のまま行に持たせない（重複保持に戻ってしまう）。
     未指定(None)の軸は id も None（=「どこにも属さない共通」のまま）。
+    空文字・空白だけの名前も未指定として扱う（_clean 参照）。
     """
+    project = _clean(project)
+    topic = _clean(topic)
     if project is None and topic is None:
         return None, None
     with get_conn() as conn:
@@ -87,8 +105,8 @@ def create_project(name: str) -> bool:
     文書も質問も無いプロジェクトを先に用意するための入口。重複判定はDBの
     ユニーク制約に任せる（SELECTしてからINSERTだと連打で競合する）。
     """
-    name = name.strip()
-    if not name:
+    name = _clean(name)
+    if name is None:
         raise ValueError("プロジェクト名が空です")
     with get_conn() as conn:
         row = conn.execute(
@@ -106,10 +124,14 @@ def create_topic(name: str, project: str | None = None) -> bool:
     属さないトピック）。親のプロジェクトが未登録なら先に作る: UIは
     「プロジェクトを選ぶ → トピックを足す」の順で使うので親は在るはずだが、
     APIを直接叩いたときに存在しない親で落ちるより、意図どおり作れた方が素直。
+
+    project も正規化する（空白だけなら「属さない」扱い）。ここを揃えないと
+    " 営業 " が「営業」と別プロジェクトとして作られてしまう。
     """
-    name = name.strip()
-    if not name:
+    name = _clean(name)
+    if name is None:
         raise ValueError("トピック名が空です")
+    project = _clean(project)
     with get_conn() as conn:
         project_id = None if project is None else _project_id(conn, project)
         row = conn.execute(
@@ -133,7 +155,10 @@ def list_topics(project: str | None = None) -> list[str]:
     未指定なら全プロジェクトのトピックを返す（絞り込みなし）。従来の導出SQLと
     同じ約束で、project を指定したときに「プロジェクトに属さないトピック」は
     含めない。同名トピックが複数プロジェクトに在るので、全体一覧は DISTINCT。
+    絞り込みの名前も正規化する（空白だけを「その名前で絞る」と解釈すると、
+    未指定のつもりの呼び出しが常に0件になる）。
     """
+    project = _clean(project)
     with get_conn() as conn:
         if project is None:
             rows = conn.execute(

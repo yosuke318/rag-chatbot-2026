@@ -93,6 +93,28 @@ def test_register_does_not_touch_db_without_scope(monkeypatch):
     assert scopes.register(None, None) == (None, None)
 
 
+def test_register_treats_blank_names_as_unspecified(monkeypatch):
+    """★空文字・空白だけは「未指定」★ 空文字プロジェクトを作らせない。
+
+    API境界(app.main._blank_to_none)を通らない経路（seedのfixture・CLI・他
+    モジュール）から `""` が来ても、マスタに空の区分が生えないようにする。
+    """
+    monkeypatch.setattr(
+        scopes, "get_conn", lambda: pytest.fail("空名でDBを触ってはいけない")
+    )
+    assert scopes.register("", "  ") == (None, None)
+
+
+def test_register_trims_names(monkeypatch):
+    """前後の空白は落とす（" 社内規程 " が別プロジェクトとして並ばないように）。"""
+    calls: list = []
+    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=(1,)))
+    scopes.register("  社内規程  ", "  労務  ")
+
+    assert calls[0][1] == ("社内規程",)
+    assert calls[1][1] == (1, "労務")
+
+
 def test_register_looks_up_id_when_scope_already_exists(monkeypatch):
     """既にある区分は重ねず（ON CONFLICT DO NOTHING）、id は SELECT で引き直す。
 
@@ -172,6 +194,24 @@ def test_create_topic_without_project(monkeypatch):
 
     assert len(calls) == 1  # 親を作らない
     assert calls[0][1] == (None, "労務")
+
+
+def test_create_topic_normalizes_parent_project(monkeypatch):
+    """親プロジェクト名も正規化する（空白だけなら「属さない」扱い）。"""
+    calls: list = []
+    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=(1,)))
+    scopes.create_topic("労務", "   ")
+
+    assert len(calls) == 1  # 空白だけの親は作らない
+    assert calls[0][1] == (None, "労務")
+
+
+def test_create_topic_trims_parent_project(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=(1,)))
+    scopes.create_topic("労務", "  社内規程  ")
+
+    assert calls[0][1] == ("社内規程",)
 
 
 # --- 一覧（マスタを引く） -----------------------------------------------------
