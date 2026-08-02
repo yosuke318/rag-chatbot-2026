@@ -329,7 +329,10 @@ function Sidebar({
             <button
               type="button"
               className={t.id === tab ? "sidebar-tab active" : "sidebar-tab"}
-              aria-current={t.id === tab ? "page" : undefined}
+              // "page" ではなく "true"。ページ遷移はしておらず同一ページ内の
+              // 表示切替なので、aria-current の汎用値（=その集合の現在の項目）が
+              // 実態に合う。
+              aria-current={t.id === tab ? "true" : undefined}
               onClick={() => onTab(t.id)}
             >
               <span className="sidebar-tab-label">{t.label}</span>
