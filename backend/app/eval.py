@@ -90,6 +90,7 @@ import json
 import random
 from pathlib import Path
 
+from app import scopes
 from app.config import IMAGE_INDEX_METHOD, TOP_K
 from app.db import get_conn
 from app.llm import embed_multimodal_queries, embed_texts, generate_answer
@@ -153,6 +154,8 @@ def seed_questions(questions: list[dict] | None = None) -> int:
             ).fetchone()
             if exists:
                 continue
+            # 区分をマスタへ写す（seed で入った質問の区分もセレクタに出す）
+            scopes.register(item.get("project"), item.get("topic"))
             conn.execute(
                 "INSERT INTO eval_questions "
                 "(project, topic, question, expected_source, expected_kind, "

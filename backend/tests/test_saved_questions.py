@@ -77,6 +77,8 @@ def test_save_uses_on_conflict_do_nothing(monkeypatch):
     monkeypatch.setattr(
         saved_questions, "get_conn", lambda: FakeConn(calls, one=(1,))
     )
+    # 区分のマスタ登録は別の関心事（test_scopes.py で見る）なので黙らせる
+    monkeypatch.setattr(saved_questions.scopes, "register", lambda p, t: None)
     assert saved_questions.save("有給は?", "社内規程", "労務") is True
 
     sql, params = calls[0]

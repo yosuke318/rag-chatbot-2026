@@ -13,7 +13,7 @@ import voyageai.error
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from app import apikeys, charts, conversations, saved_questions, storage
+from app import apikeys, charts, conversations, saved_questions, scopes, storage
 from app.config import (
     ADMIN_TOKEN,
     ANSWER_IMAGE_MAX_BYTES,
@@ -64,13 +64,16 @@ from app.schemas import (
     HealthResponse,
     IngestRequest,
     IngestResponse,
+    ProjectRequest,
     ProjectsResponse,
     PublicChatRequest,
     RetrieversResponse,
     SavedQuestionRequest,
     SavedQuestionResponse,
     SavedQuestionsResponse,
+    ScopeResponse,
     SearchResponse,
+    TopicRequest,
     TopicsResponse,
     VerifyReport,
 )
@@ -633,19 +636,36 @@ def retrievers_list():
 def list_projects():
     """登録済みのプロジェクト名の一覧。UIの区分セレクタを埋めるのに使う。
 
-    ★文書(documents)と評価用質問(eval_questions)の和集合★を返す。
-    文書だけを見ると「質問は登録したがまだ文書が無いプロジェクト」が
-    セレクタに出てこず、④の評価対象として選べなくなるため。
-    NULL（＝どこにも属さない共通）は選択肢にならないので除く。
+    ★マスタ(projects)を引く★
+      以前は documents と eval_questions の和集合を都度 DISTINCT していたが、
+      それだと「文書も質問もまだ無いプロジェクト」が存在できなかった。
+      文書・質問に付いた区分は保存時に app.scopes.register でマスタへ写るので、
+      従来どおり「使われている区分」も漏れなく出る。
     """
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT project FROM documents WHERE project IS NOT NULL "
-            "UNION "
-            "SELECT project FROM eval_questions WHERE project IS NOT NULL "
-            "ORDER BY 1"
-        ).fetchall()
-    return {"projects": [r[0] for r in rows]}
+    return {"projects": scopes.list_projects()}
+
+
+@app.post(
+    "/projects",
+    response_model=ScopeResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def add_project(req: ProjectRequest):
+    """プロジェクトを作る。文書を入れる前に区分だけ用意しておくための入口。
+
+    既に同じ名前があれば created=false を返す。これはエラーではなく
+    「重ねなかった」という結果なので 200 のまま返す（/saved-questions と同じ）。
+    """
+    name = _blank_to_none(req.name)
+    if name is None:
+        return _error(
+            400,
+            "invalid_project",
+            "プロジェクト名は必須です。",
+            "name を入力してください。",
+            "",
+        )
+    return {"created": scopes.create_project(name), "name": name, "project": None}
 
 
 @app.get("/topics", response_model=TopicsResponse)
@@ -655,18 +675,34 @@ def list_topics(project: Optional[str] = None):
     UIは「プロジェクトを選ぶ → そのトピックだけが候補になる」という順で使う。
     project 未指定なら全プロジェクトのトピックを返す（絞り込みなし）。
     """
-    project = _blank_to_none(project)
-    scope = "" if project is None else " AND project = %s"
-    params = [] if project is None else [project, project]
-    with get_conn() as conn:
-        rows = conn.execute(
-            f"SELECT topic FROM documents WHERE topic IS NOT NULL{scope} "
-            "UNION "
-            f"SELECT topic FROM eval_questions WHERE topic IS NOT NULL{scope} "
-            "ORDER BY 1",
-            params,
-        ).fetchall()
-    return {"topics": [r[0] for r in rows]}
+    return {"topics": scopes.list_topics(_blank_to_none(project))}
+
+
+@app.post(
+    "/topics",
+    response_model=ScopeResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def add_topic(req: TopicRequest):
+    """トピックを作る。project を付けるとその配下のトピックになる。
+
+    既に同じ組み合わせがあれば created=false（/projects と同じ約束）。
+    """
+    name = _blank_to_none(req.name)
+    if name is None:
+        return _error(
+            400,
+            "invalid_topic",
+            "トピック名は必須です。",
+            "name を入力してください。",
+            "",
+        )
+    project = _blank_to_none(req.project)
+    return {
+        "created": scopes.create_topic(name, project),
+        "name": name,
+        "project": project,
+    }
 
 
 @app.get("/search", response_model=SearchResponse, responses=_ERRORS)
@@ -1165,6 +1201,8 @@ def add_eval_question(req: EvalQuestionRequest):
     # 空欄は NULL に倒す（＝文書単位で判定）。空文字のまま入れるとどのチャンクにも
     # 含まれる空文字で判定することになり、全問正解になってしまう。
     expected_text = _blank_to_none(req.expected_text)
+    # 区分をマスタへ写す（文書がまだ無いプロジェクトでも選択肢に出るように）
+    scopes.register(project, topic)
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO eval_questions "

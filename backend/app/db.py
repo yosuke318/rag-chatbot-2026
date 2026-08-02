@@ -323,3 +323,72 @@ def init_db() -> None:
             END $$;
             """
         )
+        # 区分(project / topic)のマスタ。
+        # これが無かった頃は「documents と eval_questions に実在する値の DISTINCT」を
+        # 選択肢としていたため、★文書も質問も無いプロジェクトは存在できなかった★
+        # （先に区分だけ作っておく、が出来ない）。表記ゆれ（「営業部」と「営業」）も
+        # 気づけない。マスタを正にすることでどちらも解ける。
+        #
+        # 既存の documents.project 等は TEXT のまま残す（名前で参照する）。
+        # id 参照への正規化は、検索の WHERE 句からCLI・フロントまで一斉に変わるので
+        # テナント分離を本格的にやるときに改めて判断する。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+                -- ★名前が主キー★ documents.project 等が持っている値そのもの。
+                -- id を振って参照させ直すのは正規化(方式B)の話で、ここではしない。
+                name       TEXT PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        # トピックは「そのプロジェクト配下の名前」。UIが project → topic の順に
+        # 絞り込むので、同じトピック名が別プロジェクトに在っても構わない。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS topics (
+                -- NULL = プロジェクトに属さないトピック。documents は project と topic を
+                -- 独立に NULL 可で持つため（topic だけ付いた文書が作れる）、マスタ側でも
+                -- その状態を表現できないと既存データを取りこぼす。
+                project    TEXT REFERENCES projects(name) ON UPDATE CASCADE,
+                name       TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        # ★NULLS NOT DISTINCT★ が要るのは saved_questions と同じ理由。
+        # 既定では NULL 同士が「別の値」になり、project なしの同名トピックが
+        # 何行でも入ってしまう（PostgreSQL 15+。compose の pgvector:pg16 は満たす）。
+        # PRIMARY KEY にしないのは、PKが NULL を許さず上の「project なし」を弾くため。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS topics_unique_idx "
+            "ON topics (project, name) NULLS NOT DISTINCT;"
+        )
+        # 既存DBからのマスタ初期投入（冪等）。
+        # これが無いと、マスタ参照に切り替えた瞬間にUIのセレクタが空になり、
+        # 既に取り込んである文書の区分が選べなくなる。
+        # ON CONFLICT DO NOTHING なので、2回目以降は何も足さない。
+        conn.execute(
+            """
+            INSERT INTO projects (name)
+            SELECT project FROM documents WHERE project IS NOT NULL
+            UNION
+            SELECT project FROM eval_questions WHERE project IS NOT NULL
+            UNION
+            SELECT project FROM saved_questions WHERE project IS NOT NULL
+            ON CONFLICT (name) DO NOTHING;
+            """
+        )
+        # トピックは (project, topic) の組で拾う。project 側を先に入れてあるので
+        # topics.project の FK は必ず満たされる。
+        conn.execute(
+            """
+            INSERT INTO topics (project, name)
+            SELECT project, topic FROM documents WHERE topic IS NOT NULL
+            UNION
+            SELECT project, topic FROM eval_questions WHERE topic IS NOT NULL
+            UNION
+            SELECT project, topic FROM saved_questions WHERE topic IS NOT NULL
+            ON CONFLICT DO NOTHING;
+            """
+        )

@@ -17,7 +17,7 @@ import hashlib
 import logging
 import os
 
-from app import parsers, storage
+from app import parsers, scopes, storage
 from app.chunking import Chunk, split_chunks
 from app.config import (
     CHUNK_MAX_CHARS,
@@ -551,6 +551,10 @@ def ingest_text(
         input_type="document",
         retry_waits=embed_retry_waits,
     )
+
+    # 区分をマスタへ写す（app.scopes 参照）。UIのセレクタはマスタを引くので、
+    # ここで登録しないと「文書は入ったのに区分を選べない」状態になる。
+    scopes.register(project, topic)
 
     with get_conn() as conn:
         # 削除と再登録は一括で（途中で失敗しても文書が消えたままにならない）

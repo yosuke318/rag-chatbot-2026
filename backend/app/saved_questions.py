@@ -13,6 +13,7 @@ evalとの違い:
 """
 from __future__ import annotations
 
+from app import scopes
 from app.config import TOP_K
 from app.db import get_conn
 from app.llm import embed_texts
@@ -30,6 +31,9 @@ def save(question: str, project: str | None = None, topic: str | None = None) ->
     question = question.strip()
     if not question:
         return False
+    # 区分をマスタへ写す（app.scopes 参照）。②で新しい区分を指定して検索したとき、
+    # その区分がセレクタに残るようにする。
+    scopes.register(project, topic)
     with get_conn() as conn:
         row = conn.execute(
             "INSERT INTO saved_questions (project, topic, question) "
