@@ -77,11 +77,14 @@ def test_save_uses_on_conflict_do_nothing(monkeypatch):
     monkeypatch.setattr(
         saved_questions, "get_conn", lambda: FakeConn(calls, one=(1,))
     )
+    # 区分のマスタ登録は別の関心事（test_scopes.py で見る）なので固定idを返す
+    monkeypatch.setattr(saved_questions.scopes, "register", lambda p, t: (7, 8))
     assert saved_questions.save("有給は?", "社内規程", "労務") is True
 
     sql, params = calls[0]
-    assert "ON CONFLICT (project, topic, question) DO NOTHING" in sql
-    assert params == ("社内規程", "労務", "有給は?")
+    assert "ON CONFLICT (project_id, topic_id, question) DO NOTHING" in sql
+    # 行に入るのは名前ではなくマスタの id
+    assert params == (7, 8, "有給は?")
 
 
 def test_save_reports_false_when_already_stored(monkeypatch):

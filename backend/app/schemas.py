@@ -210,11 +210,40 @@ class RetrieversResponse(BaseModel):
     fusion_params: List[ParamSpec] = Field(description="融合そのもののパラメータ（RRF k）")
 
 
+class ProjectRequest(BaseModel):
+    """作成するプロジェクト1件。文書を入れる前に区分だけ用意するための入口。"""
+
+    name: str = Field(description="プロジェクト名")
+
+
+class TopicRequest(BaseModel):
+    """作成するトピック1件。"""
+
+    name: str = Field(description="トピック名")
+    # 省略可（既定 None = どのプロジェクトにも属さないトピック）。documents が
+    # project と topic を独立に NULL 可で持つので、マスタ側も同じ形にしてある。
+    project: Optional[str] = Field(
+        default=None, description="親のプロジェクト（任意。未指定=プロジェクトに属さない）"
+    )
+
+
+class ScopeResponse(BaseModel):
+    """区分(プロジェクト/トピック)の作成結果。"""
+
+    created: bool = Field(description="作ったら true。既にあれば false（エラーではない）")
+    name: str = Field(description="作成した（または既にあった）区分の名前")
+    # プロジェクト作成では常に None（親を持たないため）。トピック作成では親の
+    # プロジェクト名か、属さないなら None。
+    project: Optional[str] = Field(
+        default=None, description="トピックの親プロジェクト（プロジェクト作成時は null）"
+    )
+
+
 class ProjectsResponse(BaseModel):
     """登録済みのプロジェクト一覧（UIのセレクタ用）。"""
 
     projects: List[str] = Field(
-        description="文書または評価用質問に付いている project（NULL=共通は含まない）"
+        description="マスタ(projects)に登録されているプロジェクト名"
     )
 
 

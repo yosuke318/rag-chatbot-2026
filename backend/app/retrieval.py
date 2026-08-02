@@ -52,6 +52,14 @@ def _scope_sql(
     未指定＝条件を作らない、で扱いを揃えている（空文字はAPI境界で None に
     正規化済み。app.main._blank_to_none 参照）。
 
+    ★受け取るのは名前、絞るのは id★
+      行が持つのは project_id / topic_id（マスタへの参照）だが、APIの境界は
+      名前のままなので、ここでサブクエリで id に引く。
+      - project: 名前はユニークなのでスカラサブクエリで `=`。無い名前なら
+        NULL になり、`= NULL` は常に偽 ＝ 0件（TEXT時代の「無い名前は0件」と同じ）。
+      - topic: ★同名トピックが複数プロジェクトに在り得る★ ので IN で全部拾う。
+        TEXT時代の `topic = %s` も名前だけの一致だったので挙動は変わらない。
+
     pgvector の HNSW は「近傍を探してから絞る」ため、区分が細かく1区分の割合が
     小さいと候補が不足しうる。個人利用の規模では実害が無いのでそのままにし、
     必要になったら pgvector 0.8+ の iterative scan か区分別の部分インデックスで
@@ -60,10 +68,14 @@ def _scope_sql(
     clauses: list[str] = []
     values: list = []
     if project is not None:
-        clauses.append(f" AND {alias}.project = %s")
+        clauses.append(
+            f" AND {alias}.project_id = (SELECT id FROM projects WHERE name = %s)"
+        )
         values.append(project)
     if topic is not None:
-        clauses.append(f" AND {alias}.topic = %s")
+        clauses.append(
+            f" AND {alias}.topic_id IN (SELECT id FROM topics WHERE name = %s)"
+        )
         values.append(topic)
     return "".join(clauses), values
 

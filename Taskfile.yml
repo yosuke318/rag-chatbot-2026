@@ -22,6 +22,8 @@ tasks:
       # DATABASE_URL は到達不能な値で上書きする: compose の既定は db:5432 を指し、
       # `task up` 済みだと実DBに繋がってしまい「DB非依存」が崩れても気づけない。
       # ここが繋がらない前提なら、DBに触れたテストは即座に失敗して露見する。
+      # eval_corpus も渡す: test_eval_corpus / test_corpus_cli がコーパスの中身
+      # （文書数・紛らわしい文書対など）を直接読むので、無いと FileNotFoundError。
       - >
         docker compose run --rm --no-deps
         -e ANTHROPIC_API_KEY=dummy -e VOYAGE_API_KEY=dummy
@@ -30,6 +32,7 @@ tasks:
         -v "$PWD/backend/tests:/app/tests"
         -v "$PWD/backend/seed_data:/app/seed_data"
         -v "$PWD/backend/seed_docs:/app/seed_docs"
+        -v "$PWD/backend/eval_corpus:/app/eval_corpus"
         -v "$PWD/backend/pytest.ini:/app/pytest.ini"
         -v "$PWD/backend/requirements.txt:/app/requirements.txt"
         -v "$PWD/backend/requirements-dev.txt:/app/requirements-dev.txt"

@@ -149,14 +149,22 @@ export interface paths {
          * List Projects
          * @description 登録済みのプロジェクト名の一覧。UIの区分セレクタを埋めるのに使う。
          *
-         *     ★文書(documents)と評価用質問(eval_questions)の和集合★を返す。
-         *     文書だけを見ると「質問は登録したがまだ文書が無いプロジェクト」が
-         *     セレクタに出てこず、④の評価対象として選べなくなるため。
-         *     NULL（＝どこにも属さない共通）は選択肢にならないので除く。
+         *     ★マスタ(projects)を引く★
+         *       以前は documents と eval_questions の和集合を都度 DISTINCT していたが、
+         *       それだと「文書も質問もまだ無いプロジェクト」が存在できなかった。
+         *       文書・質問に付いた区分は保存時に app.scopes.register でマスタへ写るので、
+         *       従来どおり「使われている区分」も漏れなく出る。
          */
         get: operations["list_projects_projects_get"];
         put?: never;
-        post?: never;
+        /**
+         * Add Project
+         * @description プロジェクトを作る。文書を入れる前に区分だけ用意しておくための入口。
+         *
+         *     既に同じ名前があれば created=false を返す。これはエラーではなく
+         *     「重ねなかった」という結果なので 200 のまま返す（/saved-questions と同じ）。
+         */
+        post: operations["add_project_projects_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -179,7 +187,13 @@ export interface paths {
          */
         get: operations["list_topics_topics_get"];
         put?: never;
-        post?: never;
+        /**
+         * Add Topic
+         * @description トピックを作る。project を付けるとその配下のトピックになる。
+         *
+         *     既に同じ組み合わせがあれば created=false（/projects と同じ約束）。
+         */
+        post: operations["add_topic_topics_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -794,6 +808,11 @@ export interface components {
              * @default any
              */
             expected_kind: string;
+            /**
+             * Expected Text
+             * @description 正解チャンクに必ず含まれる語句（null=文書単位で判定）
+             */
+            expected_text?: string | null;
             /** Project */
             project?: string | null;
             /** Topic */
@@ -822,6 +841,11 @@ export interface components {
              * @default any
              */
             expected_kind: string;
+            /**
+             * Expected Text
+             * @description 正解チャンクに必ず含まれる語句。指定すると「この語句を含むチャンクを引けたときだけ正解」になる（未指定は文書単位）
+             */
+            expected_text?: string | null;
             /**
              * Project
              * @description プロジェクト（未指定は共通）
@@ -910,6 +934,13 @@ export interface components {
             by_kind?: {
                 [key: string]: components["schemas"]["KindSummary"];
             };
+            /**
+             * By Granularity
+             * @description 判定粒度(chunk/document)ごとの内訳。文書単位の設問は当たりやすいので、チャンク品質の改良は chunk の行で見る
+             */
+            by_granularity?: {
+                [key: string]: components["schemas"]["KindSummary"];
+            };
             /** Results */
             results: components["schemas"]["EvalResult"][];
         };
@@ -931,6 +962,17 @@ export interface components {
              * @default any
              */
             expected_kind: string;
+            /**
+             * Expected Text
+             * @description 正解チャンクに含まれるべき語句（null=文書単位で判定した設問）
+             */
+            expected_text?: string | null;
+            /**
+             * Match Granularity
+             * @description この設問をどの粒度で採点したか chunk/document。文書単位の設問は当たりやすいので、平均を読むときに混ぜない
+             * @default document
+             */
+            match_granularity: string;
             /**
              * Hit
              * @description 上位k件に正解が入ったか
@@ -1087,10 +1129,11 @@ export interface components {
         };
         /**
          * KindSummary
-         * @description 正解の種類（本文 / 画像）ごとの成績。
+         * @description 設問を性質で分けたグループ1つ分の成績（正解の種類別・判定粒度別で使う）。
          *
          *     全体平均だけでは図表の検索を評価できない。図表根拠の設問が数問しか無いと、
          *     本文根拠の設問の平均にかき消されて索引方式の差が見えなくなるため。
+         *     判定粒度も同じ理由で分ける（文書単位の設問はチャンク単位より当たりやすい）。
          */
         KindSummary: {
             /**
@@ -1124,13 +1167,24 @@ export interface components {
             description: string;
         };
         /**
+         * ProjectRequest
+         * @description 作成するプロジェクト1件。文書を入れる前に区分だけ用意するための入口。
+         */
+        ProjectRequest: {
+            /**
+             * Name
+             * @description プロジェクト名
+             */
+            name: string;
+        };
+        /**
          * ProjectsResponse
          * @description 登録済みのプロジェクト一覧（UIのセレクタ用）。
          */
         ProjectsResponse: {
             /**
              * Projects
-             * @description 文書または評価用質問に付いている project（NULL=共通は含まない）
+             * @description マスタ(projects)に登録されているプロジェクト名
              */
             projects: string[];
         };
@@ -1277,6 +1331,27 @@ export interface components {
             questions: components["schemas"]["SavedQuestion"][];
         };
         /**
+         * ScopeResponse
+         * @description 区分(プロジェクト/トピック)の作成結果。
+         */
+        ScopeResponse: {
+            /**
+             * Created
+             * @description 作ったら true。既にあれば false（エラーではない）
+             */
+            created: boolean;
+            /**
+             * Name
+             * @description 作成した（または既にあった）区分の名前
+             */
+            name: string;
+            /**
+             * Project
+             * @description トピックの親プロジェクト（プロジェクト作成時は null）
+             */
+            project?: string | null;
+        };
+        /**
          * SearchResponse
          * @description 検索の各段階（Claudeを呼ばない）。
          *
@@ -1328,6 +1403,22 @@ export interface components {
             metric_value: number;
             /** Preview */
             preview: string;
+        };
+        /**
+         * TopicRequest
+         * @description 作成するトピック1件。
+         */
+        TopicRequest: {
+            /**
+             * Name
+             * @description トピック名
+             */
+            name: string;
+            /**
+             * Project
+             * @description 親のプロジェクト（任意。未指定=プロジェクトに属さない）
+             */
+            project?: string | null;
         };
         /**
          * TopicsResponse
@@ -1749,6 +1840,48 @@ export interface operations {
             };
         };
     };
+    add_project_projects_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_topics_topics_get: {
         parameters: {
             query?: {
@@ -1767,6 +1900,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TopicsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_topic_topics_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TopicRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Validation Error */

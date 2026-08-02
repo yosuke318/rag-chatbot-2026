@@ -61,21 +61,29 @@ def test_scope_sql_without_scope_is_empty():
     assert _scope_sql(None, None) == ("", [])
 
 
+# 行が持つのは id 参照（documents.project_id / topic_id）だが、APIの境界は名前の
+# ままなので、_scope_sql はサブクエリで名前を id に引く。
+#   project: 名前ユニーク → スカラサブクエリで =（無い名前は NULL = 常に偽 = 0件）
+#   topic  : 同名が複数プロジェクトに在り得る → IN で全部拾う
+PROJECT_CLAUSE = " AND d.project_id = (SELECT id FROM projects WHERE name = %s)"
+TOPIC_CLAUSE = " AND d.topic_id IN (SELECT id FROM topics WHERE name = %s)"
+
+
 def test_scope_sql_project_only():
     sql, values = _scope_sql("社内規程", None)
-    assert sql == " AND d.project = %s"
+    assert sql == PROJECT_CLAUSE
     assert values == ["社内規程"]
 
 
 def test_scope_sql_topic_only():
     sql, values = _scope_sql(None, "労務")
-    assert sql == " AND d.topic = %s"
+    assert sql == TOPIC_CLAUSE
     assert values == ["労務"]
 
 
 def test_scope_sql_both_axes():
     sql, values = _scope_sql("社内規程", "労務")
-    assert sql == " AND d.project = %s AND d.topic = %s"
+    assert sql == PROJECT_CLAUSE + TOPIC_CLAUSE
     assert values == ["社内規程", "労務"]
 
 
@@ -86,7 +94,7 @@ def test_vector_search_filters_and_orders_params(sql_spy):
     retrieval.vector_search("有給は何日?", k=5, project="社内規程", topic="労務")
 
     sql, params = sql_spy[0]
-    assert "d.project = %s" in sql and "d.topic = %s" in sql
+    assert PROJECT_CLAUSE in sql and TOPIC_CLAUSE in sql
     # 値の並びは SQL 中の %s の並びと一致していないと別の条件になる:
     #   SELECT の距離計算 → WHERE の区分 → ORDER BY の距離計算 → LIMIT
     assert params == ([0.1, 0.2, 0.3], "社内規程", "労務", [0.1, 0.2, 0.3], 5)
@@ -107,7 +115,7 @@ def test_lexical_search_filters_and_orders_params(sql_spy):
     retrieval.lexical_search("有給休暇", k=5, project="社内規程", topic="労務")
 
     sql, params = sql_spy[0]
-    assert "d.project = %s" in sql and "d.topic = %s" in sql
+    assert PROJECT_CLAUSE in sql and TOPIC_CLAUSE in sql
     # 名詞列 → 名詞列・閾値(WHERE) → 区分 → 名詞列(ORDER BY) → LIMIT
     assert params[3] == "社内規程" and params[4] == "労務"
     assert params[-1] == 5
@@ -129,8 +137,8 @@ def test_bm25_scope_applies_before_corpus_stats(sql_spy):
     retrieval.bm25_search("有給休暇", k=5, project="社内規程", topic="労務")
 
     sql, _params = sql_spy[0]
-    assert sql.index("d.project = %s") < sql.index("stats AS")
-    assert sql.index("d.topic = %s") < sql.index("stats AS")
+    assert sql.index(PROJECT_CLAUSE) < sql.index("stats AS")
+    assert sql.index(TOPIC_CLAUSE) < sql.index("stats AS")
 
 
 def test_bm25_params_order_puts_scope_before_constants(sql_spy):
@@ -251,50 +259,10 @@ def test_search_endpoint_treats_blank_scope_as_unspecified(client):
     assert m.call_args.kwargs["topic"] is None
 
 
-def test_projects_endpoint_unions_documents_and_eval_questions(client):
-    """★文書と評価用質問の和集合★（質問だけあるプロジェクトも選べるように）。"""
-    calls: list = []
-    with patch("app.main.get_conn", lambda: FakeConn(calls, [("社内規程",), ("製品",)])):
-        res = client.get("/projects")
-
-    assert res.status_code == 200
-    assert res.json() == {"projects": ["社内規程", "製品"]}
-    sql, _params = calls[0]
-    assert "FROM documents" in sql and "FROM eval_questions" in sql
-    assert "UNION" in sql
-    assert "IS NOT NULL" in sql  # NULL（共通）は選択肢に出さない
-
-
-def test_topics_endpoint_filters_by_project(client):
-    calls: list = []
-    with patch("app.main.get_conn", lambda: FakeConn(calls, [("労務",)])):
-        res = client.get("/topics?project=社内規程")
-
-    assert res.json() == {"topics": ["労務"]}
-    sql, params = calls[0]
-    # UNION の左右それぞれに同じ条件が要るので値は2つ渡す
-    assert sql.count("AND project = %s") == 2
-    assert params == ["社内規程", "社内規程"]
-
-
-def test_topics_endpoint_without_project_returns_all(client):
-    calls: list = []
-    with patch("app.main.get_conn", lambda: FakeConn(calls, [("労務",), ("経理",)])):
-        res = client.get("/topics")
-
-    assert res.json() == {"topics": ["労務", "経理"]}
-    sql, params = calls[0]
-    assert "AND project" not in sql
-    assert params == []
-
-
-def test_topics_endpoint_treats_blank_project_as_unspecified(client):
-    calls: list = []
-    with patch("app.main.get_conn", lambda: FakeConn(calls, [])):
-        client.get("/topics?project=%20")
-
-    sql, params = calls[0]
-    assert "AND project" not in sql and params == []
+# /projects・/topics（＝区分の選択肢）のテストは test_scopes.py にある。
+# 選択肢の出どころが「文書と質問の DISTINCT 導出」からマスタへ移ったため
+# （YOSUKE-35）、ここではなくマスタ側のテストで見る。このファイルが受け持つのは
+# 「選んだ区分が検索の WHERE に効くか」。
 
 
 def test_chat_forwards_scope_to_search(client, monkeypatch):

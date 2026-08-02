@@ -21,16 +21,99 @@ def init_db() -> None:
         # pg_trgm: 字面（トライグラム）一致検索用。日本語もそのまま効く。
         # ※これは厳密なBM25ではなく「文字n-gramの一致度」。retrieval.py 参照。
         conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+        # --- 区分(project / topic)のマスタ ------------------------------------
+        # 文書・質問より先に作る（各テーブルが id を FK 参照するため）。
+        # マスタが正: 「文書か質問に実在する値の DISTINCT」を選択肢にしていた頃は
+        # 文書も質問も無いプロジェクトが存在できず、表記ゆれ（「営業部」と「営業」）
+        # にも気づけなかった。
+        #
+        # 暫定スキーマ（名前が主キーで、各テーブルは名前TEXTを重複保持）からの
+        # 冪等マイグレーション: id カラムが無ければ旧形式なので、一旦 *_v1 に
+        # 退避して作り直し、後で名前を写す。索引を先に消すのは、索引名がDB全体で
+        # 一意なため、旧テーブルに付いたままだと新テーブル側で同名の索引を
+        # 作れないから。
+        conn.execute(
+            """
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables
+                           WHERE table_name = 'projects')
+                   AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                                   WHERE table_name = 'projects'
+                                     AND column_name = 'id')
+                THEN
+                    DROP INDEX IF EXISTS topics_unique_idx;
+                    ALTER TABLE topics RENAME TO topics_v1;
+                    ALTER TABLE projects RENAME TO projects_v1;
+                END IF;
+            END $$;
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+                id         BIGSERIAL PRIMARY KEY,
+                -- 表示も検索の入口も名前で行う（APIは名前を受け取り、ここで id に引く）
+                name       TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        # トピックは「そのプロジェクト配下の名前」。UIが project → topic の順に
+        # 絞り込むので、同じトピック名が別プロジェクトに在っても構わない。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS topics (
+                id         BIGSERIAL PRIMARY KEY,
+                -- NULL = プロジェクトに属さないトピック。documents は project と topic
+                -- を独立に NULL 可で持つため（topic だけ付いた文書が作れる）、マスタ側
+                -- でもその状態を表現できないと既存データを取りこぼす。
+                project_id BIGINT REFERENCES projects(id),
+                name       TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        # ★NULLS NOT DISTINCT★ が要るのは saved_questions と同じ理由。
+        # 既定では NULL 同士が「別の値」になり、project なしの同名トピックが
+        # 何行でも入ってしまう（PostgreSQL 15+。compose の pgvector:pg16 は満たす）。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS topics_unique_idx "
+            "ON topics (project_id, name) NULLS NOT DISTINCT;"
+        )
+        # 暫定スキーマから退避した名前を新テーブルへ写して、退避を消す。
+        # 「文書0件で作った空のプロジェクト」はマスタにしか存在しないので、
+        # ここで写さないと消えてしまう（使用中の値は後段の正規化でも入るが、
+        # 空の区分はそこでは拾えない）。
+        conn.execute(
+            """
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables
+                           WHERE table_name = 'projects_v1')
+                THEN
+                    INSERT INTO projects (name, created_at)
+                        SELECT name, created_at FROM projects_v1
+                        ON CONFLICT (name) DO NOTHING;
+                    INSERT INTO topics (project_id, name, created_at)
+                        SELECT p.id, t.name, t.created_at FROM topics_v1 t
+                        LEFT JOIN projects p ON p.name = t.project
+                        ON CONFLICT DO NOTHING;
+                    DROP TABLE topics_v1;
+                    DROP TABLE projects_v1;
+                END IF;
+            END $$;
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS documents (
                 id         BIGSERIAL PRIMARY KEY,
                 source     TEXT NOT NULL,
                 -- 文書の所属。project(プロジェクト) > topic(トピック) の2階層で、
-                -- NULL = どこにも属さない共通文書。評価(eval_questions)も同じ軸で
-                -- 区切り、「そのプロジェクトの文書 × その質問」で測れるようにする。
-                project    TEXT,
-                topic      TEXT,
+                -- マスタへの id 参照。NULL = どこにも属さない共通文書。
+                -- 評価(eval_questions)も同じ軸で区切り、「そのプロジェクトの文書 ×
+                -- その質問」で測れるようにする。
+                project_id BIGINT REFERENCES projects(id),
+                topic_id   BIGINT REFERENCES topics(id),
                 created_at TIMESTAMPTZ DEFAULT now()
             );
             """
@@ -39,6 +122,9 @@ def init_db() -> None:
         #   旧 category カラムは topic に改名して中身を引き継ぐ（旧名は「分類」の
         #   つもりだったが、実体はトピックだったため名前を実体に合わせた）。
         #   RENAME には IF EXISTS が無いので information_schema で在否を見る。
+        #   この時代のDBは project カラム自体が無いので、ここで TEXT のまま足して
+        #   「TEXT時代のDBは project/topic を両方持つ」に揃える（後段の正規化
+        #   マイグレーションがその前提で組で処理するため）。
         conn.execute(
             """
             DO $$ BEGIN
@@ -46,12 +132,20 @@ def init_db() -> None:
                            WHERE table_name = 'documents' AND column_name = 'category')
                 THEN
                     ALTER TABLE documents RENAME COLUMN category TO topic;
+                    ALTER TABLE documents ADD COLUMN IF NOT EXISTS project TEXT;
                 END IF;
             END $$;
             """
         )
-        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS project TEXT;")
-        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS topic TEXT;")
+        # 既存DB（TEXT時代・区分導入前）向け。値の写しは後段の正規化マイグレーションで行う。
+        conn.execute(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS "
+            "project_id BIGINT REFERENCES projects(id);"
+        )
+        conn.execute(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS "
+            "topic_id BIGINT REFERENCES topics(id);"
+        )
         # 差分検知用（app.ingest.content_hash）。再取り込み時にこれが一致すれば
         # 埋め込みAPIを呼ばずにスキップする。既存行は NULL＝「不明」なので
         # 一度だけ必ず取り込み直され、そこで値が入る。
@@ -63,12 +157,9 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS documents_source_idx ON documents (source);"
         )
-        # 検索の区分絞り込み（retrieval._scope_sql の WHERE d.project/d.topic）用。
-        # project だけの絞り込みでも先頭列として効くので複合1本で足りる。
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS documents_scope_idx "
-            "ON documents (project, topic);"
-        )
+        # 検索の区分絞り込み用の索引(documents_scope_idx)は、正規化マイグレーション
+        # （ファイル末尾）の後で id カラムに対して作る。ここで作ると、TEXT時代の
+        # 同名索引が残っているDBで IF NOT EXISTS が効いてしまい、id 版が作られない。
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS chunks (
@@ -197,20 +288,23 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS saved_questions (
                 id         BIGSERIAL PRIMARY KEY,
-                project    TEXT,   -- NULL = 区分を選ばずに検索したときの質問
-                topic      TEXT,
+                project_id BIGINT REFERENCES projects(id),  -- NULL = 区分を選ばずに検索した質問
+                topic_id   BIGINT REFERENCES topics(id),
                 question   TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
             """
         )
-        # 同じ区分の同じ質問は積み上げない（検索するたびに1行増えると検証が重複だらけになる）。
-        # ★NULLS NOT DISTINCT★ が肝: 既定では NULL 同士は「別の値」と見なされるため、
-        # 区分なし(NULL)の同じ質問が何行でも入ってしまう。PostgreSQL 15+ の機能で、
-        # compose の pgvector/pgvector:pg16 は満たしている。
+        # 既存DB（TEXT時代）向け。値の写しは後段の正規化マイグレーションで行う。
+        # 重複防止のユニーク索引(saved_questions_unique_idx)も同じ理由で後段
+        # （documents_scope_idx と同じ。TEXT時代の同名索引と衝突するため）。
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS saved_questions_unique_idx "
-            "ON saved_questions (project, topic, question) NULLS NOT DISTINCT;"
+            "ALTER TABLE saved_questions ADD COLUMN IF NOT EXISTS "
+            "project_id BIGINT REFERENCES projects(id);"
+        )
+        conn.execute(
+            "ALTER TABLE saved_questions ADD COLUMN IF NOT EXISTS "
+            "topic_id BIGINT REFERENCES topics(id);"
         )
         # 公開API(/v1)のAPIキー。発行・検証は app.apikeys 参照。
         conn.execute(
@@ -269,14 +363,24 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS eval_questions (
                 id              BIGSERIAL PRIMARY KEY,
-                project         TEXT,   -- NULL = プロジェクトをまたぐ共通の質問
-                topic           TEXT,   -- NULL = トピックをまたぐ共通の質問
+                -- NULL = プロジェクト／トピックをまたぐ共通の質問
+                project_id      BIGINT REFERENCES projects(id),
+                topic_id        BIGINT REFERENCES topics(id),
                 question        TEXT NOT NULL,
                 expected_source TEXT NOT NULL,  -- 正解の文書名（documents.source）
                 note            TEXT,
                 created_at      TIMESTAMPTZ DEFAULT now()
             );
             """
+        )
+        # 既存DB（TEXT時代）向け。値の写しは後段の正規化マイグレーションで行う。
+        conn.execute(
+            "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
+            "project_id BIGINT REFERENCES projects(id);"
+        )
+        conn.execute(
+            "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
+            "topic_id BIGINT REFERENCES topics(id);"
         )
         # 正解を「どの種類のチャンクで引けたら正解か」まで下ろす軸（5-2の索引方式の比較評価用）。
         #   'any'（既定） … 文書が上位に来れば正解（従来どおり）
@@ -304,7 +408,8 @@ def init_db() -> None:
             "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS expected_text TEXT;"
         )
         # 既存DB向けの冪等マイグレーション: 会社・部署の2軸は当初の実装で、
-        # 本来の設計軸は project/topic。データを保ったまま改名する。
+        # 本来の設計軸は project/topic。データを保ったまま改名する
+        # （改名後のTEXTカラムは、後段の正規化マイグレーションで id 参照になる）。
         conn.execute(
             """
             DO $$ BEGIN
@@ -322,4 +427,111 @@ def init_db() -> None:
                 END IF;
             END $$;
             """
+        )
+        # --- 区分の正規化マイグレーション（TEXT → id 参照）--------------------
+        # かつて documents / eval_questions / saved_questions は区分を生の TEXT
+        # （project / topic カラム）で重複保持していた。マスタ(projects/topics)を
+        # 正としたので、値をマスタへ写し、各行の参照を id に切り替え、TEXT カラムは
+        # 落とす。リネームは projects.name の UPDATE 1発になり、表記ゆれも
+        # マスタに無い名前として弾ける素地ができる。
+        #
+        # ★テーブルごとに独立した IF で囲む★
+        #   3表のTEXTカラムは別々の時期に生まれたので、「documents にはあるが
+        #   saved_questions は既にid化済み」のようなDBがあり得る。一括で書くと
+        #   その状態で存在しないカラムを参照して落ちる。
+        # 移行済みのDBではカラムが無い＝IFが偽で丸ごとスキップ（冪等）。
+        conn.execute(
+            """
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'documents'
+                             AND column_name = 'project')
+                THEN
+                    INSERT INTO projects (name)
+                        SELECT DISTINCT project FROM documents
+                        WHERE project IS NOT NULL
+                        ON CONFLICT (name) DO NOTHING;
+                    INSERT INTO topics (project_id, name)
+                        SELECT DISTINCT p.id, d.topic FROM documents d
+                        LEFT JOIN projects p ON p.name = d.project
+                        WHERE d.topic IS NOT NULL
+                        ON CONFLICT DO NOTHING;
+                    UPDATE documents d SET project_id = p.id
+                        FROM projects p
+                        WHERE d.project = p.name AND d.project_id IS NULL;
+                    UPDATE documents d SET topic_id = t.id
+                        FROM topics t
+                        WHERE t.name = d.topic
+                          AND t.project_id IS NOT DISTINCT FROM d.project_id
+                          AND d.topic_id IS NULL;
+                    -- 索引(documents_scope_idx)はカラムと一緒に消える。
+                    -- id 版は後段で作り直す。
+                    ALTER TABLE documents DROP COLUMN project;
+                    ALTER TABLE documents DROP COLUMN topic;
+                END IF;
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'eval_questions'
+                             AND column_name = 'project')
+                THEN
+                    INSERT INTO projects (name)
+                        SELECT DISTINCT project FROM eval_questions
+                        WHERE project IS NOT NULL
+                        ON CONFLICT (name) DO NOTHING;
+                    INSERT INTO topics (project_id, name)
+                        SELECT DISTINCT p.id, q.topic FROM eval_questions q
+                        LEFT JOIN projects p ON p.name = q.project
+                        WHERE q.topic IS NOT NULL
+                        ON CONFLICT DO NOTHING;
+                    UPDATE eval_questions q SET project_id = p.id
+                        FROM projects p
+                        WHERE q.project = p.name AND q.project_id IS NULL;
+                    UPDATE eval_questions q SET topic_id = t.id
+                        FROM topics t
+                        WHERE t.name = q.topic
+                          AND t.project_id IS NOT DISTINCT FROM q.project_id
+                          AND q.topic_id IS NULL;
+                    ALTER TABLE eval_questions DROP COLUMN project;
+                    ALTER TABLE eval_questions DROP COLUMN topic;
+                END IF;
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'saved_questions'
+                             AND column_name = 'project')
+                THEN
+                    INSERT INTO projects (name)
+                        SELECT DISTINCT project FROM saved_questions
+                        WHERE project IS NOT NULL
+                        ON CONFLICT (name) DO NOTHING;
+                    INSERT INTO topics (project_id, name)
+                        SELECT DISTINCT p.id, s.topic FROM saved_questions s
+                        LEFT JOIN projects p ON p.name = s.project
+                        WHERE s.topic IS NOT NULL
+                        ON CONFLICT DO NOTHING;
+                    UPDATE saved_questions s SET project_id = p.id
+                        FROM projects p
+                        WHERE s.project = p.name AND s.project_id IS NULL;
+                    UPDATE saved_questions s SET topic_id = t.id
+                        FROM topics t
+                        WHERE t.name = s.topic
+                          AND t.project_id IS NOT DISTINCT FROM s.project_id
+                          AND s.topic_id IS NULL;
+                    -- 重複防止のユニーク索引もカラムと一緒に消える（id 版は後段）。
+                    ALTER TABLE saved_questions DROP COLUMN project;
+                    ALTER TABLE saved_questions DROP COLUMN topic;
+                END IF;
+            END $$;
+            """
+        )
+        # --- 正規化後の索引（TEXT時代と同名。旧索引はカラムDROPで消えている）---
+        # 検索の区分絞り込み（retrieval._scope_sql の WHERE d.project_id/d.topic_id）用。
+        # project だけの絞り込みでも先頭列として効くので複合1本で足りる。
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS documents_scope_idx "
+            "ON documents (project_id, topic_id);"
+        )
+        # 同じ区分の同じ質問は積み上げない。★NULLS NOT DISTINCT★ が肝なのは
+        # TEXT時代と同じ（既定では NULL 同士が「別の値」になり、区分なしの同じ
+        # 質問が何行でも入る。PostgreSQL 15+。compose の pgvector:pg16 は満たす）。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS saved_questions_unique_idx "
+            "ON saved_questions (project_id, topic_id, question) NULLS NOT DISTINCT;"
         )

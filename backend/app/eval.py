@@ -90,6 +90,7 @@ import json
 import random
 from pathlib import Path
 
+from app import scopes
 from app.config import IMAGE_INDEX_METHOD, TOP_K
 from app.db import get_conn
 from app.llm import embed_multimodal_queries, embed_texts, generate_answer
@@ -153,14 +154,18 @@ def seed_questions(questions: list[dict] | None = None) -> int:
             ).fetchone()
             if exists:
                 continue
+            # 区分をマスタへ写して id を得る（seed で入った質問の区分もセレクタに出す）
+            project_id, topic_id = scopes.register(
+                item.get("project"), item.get("topic")
+            )
             conn.execute(
                 "INSERT INTO eval_questions "
-                "(project, topic, question, expected_source, expected_kind, "
+                "(project_id, topic_id, question, expected_source, expected_kind, "
                 "expected_text, note) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
-                    item.get("project"),
-                    item.get("topic"),
+                    project_id,
+                    topic_id,
                     item["question"],
                     item["expected_source"],
                     # 省略時は 'any'（文書が上位に来れば正解）＝ 従来の fixture が
@@ -212,20 +217,26 @@ def load_questions(
     文書(documents)を同じ軸で分ける方針に合わせ、「そのプロジェクトの文書 ×
     その質問」で評価できるようにするための絞り込み。
     """
+    # 行が持つのは id 参照。名前はマスタへの LEFT JOIN で引き、絞り込みも
+    # JOIN 先の名前で行う（LEFT なのは区分なし＝NULL の質問を落とさないため。
+    # 名前絞り込みでNULL行が混ざらないのは NULL の name と `=` が一致しないから）。
     clauses = []
     params: list[str] = []
     if project is not None:
-        clauses.append("project = %s")
+        clauses.append("p.name = %s")
         params.append(project)
     if topic is not None:
-        clauses.append("topic = %s")
+        clauses.append("t.name = %s")
         params.append(topic)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT question, expected_source, note, project, topic, expected_kind, "
-            f"expected_text FROM eval_questions {where} ORDER BY id",
+            f"SELECT q.question, q.expected_source, q.note, p.name, t.name, "
+            f"q.expected_kind, q.expected_text FROM eval_questions q "
+            f"LEFT JOIN projects p ON p.id = q.project_id "
+            f"LEFT JOIN topics t ON t.id = q.topic_id "
+            f"{where} ORDER BY q.id",
             params,
         ).fetchall()
     return [

@@ -57,7 +57,7 @@ class FakeConn:
     """ingest_text が発行するSQLだけを解釈する偽コネクション。
 
     existing: documents の既存行として SELECT が返すタプル
-      (id, content_hash, project, topic)。None なら未登録。
+      (id, content_hash, project_id, topic_id)。None なら未登録。
     chunk_count: スキップ時に数える既存チャンク数。
     """
 
@@ -123,8 +123,25 @@ def calls(monkeypatch):
     return counts
 
 
-def _existing(hash_value, project=None, topic=None):
-    return (42, hash_value, project, topic)
+def _existing(hash_value, project_id=None, topic_id=None):
+    return (42, hash_value, project_id, topic_id)
+
+
+@pytest.fixture
+def scope_ids(monkeypatch):
+    """scopes.register を固定idを返す偽物に差し替える。
+
+    ingest_text は区分名をマスタへ写して id を得てから documents に入れる。
+    マスタ側の挙動は test_scopes.py の関心事なので、ここでは
+    「社内規程→1 / 労務→2」を返すだけにして本体（差分検知）に集中する。
+    """
+    ids = {"社内規程": 1, "労務": 2}
+    monkeypatch.setattr(
+        ingest_module.scopes,
+        "register",
+        lambda p, t: (ids.get(p), ids.get(t)),
+    )
+    return ids
 
 
 # --- content_hash 単体 -------------------------------------------------
@@ -239,10 +256,10 @@ def test_legacy_row_without_hash_is_reingested(monkeypatch, calls):
     assert result["skipped"] is False
 
 
-def test_scope_only_change_updates_row_without_embedding(monkeypatch, calls):
+def test_scope_only_change_updates_row_without_embedding(monkeypatch, calls, scope_ids):
     """本文は同じで区分だけ変えた場合、埋め込みは使い回して documents だけ更新。"""
     conn = FakeConn(
-        existing=_existing(content_hash(TEXT, False), project=None, topic=None)
+        existing=_existing(content_hash(TEXT, False), project_id=None, topic_id=None)
     )
     monkeypatch.setattr(ingest_module, "get_conn", conn)
 
@@ -252,13 +269,14 @@ def test_scope_only_change_updates_row_without_embedding(monkeypatch, calls):
     assert result["skipped"] is True
     update_sql, update_params = conn.statements("UPDATE")[0]
     assert "documents" in update_sql
-    assert update_params == ("社内規程", "労務", 42)
+    # 行に入るのは名前ではなくマスタの id（社内規程→1 / 労務→2）
+    assert update_params == (1, 2, 42)
 
 
-def test_same_scope_does_not_update(monkeypatch, calls):
+def test_same_scope_does_not_update(monkeypatch, calls, scope_ids):
     """区分も同じなら UPDATE も出さない（完全な no-op）。"""
     conn = FakeConn(
-        existing=_existing(content_hash(TEXT, False), project="社内規程", topic="労務")
+        existing=_existing(content_hash(TEXT, False), project_id=1, topic_id=2)
     )
     monkeypatch.setattr(ingest_module, "get_conn", conn)
 

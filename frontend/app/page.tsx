@@ -323,6 +323,8 @@ export default function Home() {
   const [docTopic, setDocTopic] = useState("");
   const docTopics = useTopics(docProject, scopeVersion);
   const [ingestStatus, setIngestStatus] = useState("");
+  // 「区分だけ登録」の結果表示（文書の取り込み結果とは別に出す）
+  const [scopeStatus, setScopeStatus] = useState("");
   // ファイルのドラッグ&ドロップ登録（/ingest-file）
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -598,6 +600,49 @@ export default function Home() {
     }
   }
 
+  /** 入力欄の区分だけをマスタに登録する（文書は入れない）。
+   *
+   * ★文書が無くても区分を作れるようにするための入口★
+   * 以前は選択肢が「文書か質問に実在する値」だったので、先に区分だけ用意して
+   * おくことができなかった。トピックだけ打った場合は、その上のプロジェクト
+   * （空ならプロジェクトなし）の配下に作る。
+   */
+  async function createScope() {
+    const project = docProject.trim();
+    const topic = docTopic.trim();
+    if (!project && !topic) return;
+    setScopeStatus("登録中…");
+    try {
+      // トピックを作るときは親のプロジェクトも一緒に送るので、
+      // プロジェクト単独の登録が要るのは「プロジェクトだけ打った」ときだけ。
+      const res = topic
+        ? await fetch("/api/backend/topics", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: topic, project: project || null }),
+          })
+        : await fetch("/api/backend/projects", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: project }),
+          });
+      const err = await errorMessage(res);
+      if (err) {
+        setScopeStatus(err);
+        return;
+      }
+      const data = await res.json();
+      const label = topic ? `${project || "（プロジェクトなし）"} / ${topic}` : project;
+      // created=false は「既にあった」＝エラーではない
+      setScopeStatus(
+        data.created ? `区分「${label}」を作りました` : `区分「${label}」は既にあります`,
+      );
+      setScopeVersion((v) => v + 1); // 各パネルのセレクタに出す
+    } catch (e) {
+      setScopeStatus(`エラー: ${String(e)}`);
+    }
+  }
+
   /** D&D/選択したファイルをステージに追加する（即アップロードはしない）。
    * 同じファイル（名前・サイズ・更新日時が一致）は重複追加しない。 */
   function addPendingFiles(files: File[]) {
@@ -852,6 +897,24 @@ export default function Home() {
           区分は下の<strong>テキスト登録・ファイル登録の両方</strong>に付きます（空欄なら区分なし）。
           既存の区分は入力欄から選べます。新しい名前を打てばその区分が作られます。
         </p>
+        {/* 文書を入れずに区分だけ用意する入口。
+            「まず部署を作ってから資料を集める」という順で使えるようにするため。 */}
+        <div className="verify-controls">
+          <button
+            onClick={createScope}
+            disabled={!docProject.trim() && !docTopic.trim()}
+          >
+            区分だけ登録する
+          </button>
+          <span className="hint">
+            <Tip label="文書が無くても区分を作れます">
+              上の入力欄に打った区分を<strong>マスタにだけ</strong>登録します。
+              文書やファイルは登録しません。作った区分は各パネルのセレクタに出るので、
+              「先に部署を作っておいて、資料は後から入れる」という順で使えます。
+            </Tip>
+          </span>
+        </div>
+        {scopeStatus && <p className="hint ingest-status">{scopeStatus}</p>}
 
         <input
           placeholder="文書名（例: 有給休暇.txt）"
