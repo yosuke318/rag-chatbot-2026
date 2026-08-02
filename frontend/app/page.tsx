@@ -1,6 +1,9 @@
 "use client";
 
+import { AutoComplete, Select } from "antd";
 import { Fragment, useEffect, useRef, useState } from "react";
+
+import { LIST_HEIGHT } from "./antd";
 
 // ★型はバックエンドの OpenAPI スキーマから自動生成したものを使う★
 //   再生成: npm run gen:types （backend が :8000 で起動している状態で）
@@ -188,10 +191,51 @@ function useTopics(project: string, reloadKey: number): string[] {
   return topics;
 }
 
+/** その区分に属する文書名を取ってくる（GET /documents）。
+ *
+ * 「評価用の質問の正解文書」を選ばせるための候補。★区分の絞り込みは検索側と
+ * 同じ規則★（未指定＝絞らない、指定＝その区分だけで NULL の共通文書は含まない）
+ * なので、ここに出る文書は「その区分で評価したときに実際に引ける文書」と一致する。
+ * 出ない文書を正解に指定できてしまうと、その設問は永久に不正解になる。
+ */
+function useDocuments(
+  project: string,
+  topic: string,
+  reloadKey: number,
+): string[] {
+  const [sources, setSources] = useState<string[]>([]);
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (project.trim()) params.set("project", project.trim());
+    if (topic.trim()) params.set("topic", topic.trim());
+    // 区分を続けて変えると応答が前後するので、古い結果は捨てる（useTopics と同じ）
+    let current = true;
+    fetch(`/api/backend/documents?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (current) {
+          setSources(
+            (d.documents ?? []).map((doc: { source: string }) => doc.source),
+          );
+        }
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [project, topic, reloadKey]);
+  return sources;
+}
+
 /** 選択肢に無い値（他パネルで打った新規の区分など）も候補に残す。 */
 function withCurrent(options: string[], value: string): string[] {
   const v = value.trim();
   return v && !options.includes(v) ? [...options, v] : options;
+}
+
+/** 文字列の候補を antd の options 形（{value,label}）にする。 */
+function toOptions(values: string[]): { value: string; label: string }[] {
+  return values.map((v) => ({ value: v, label: v }));
 }
 
 type ScopeProps = {
@@ -201,14 +245,22 @@ type ScopeProps = {
   topics: string[];
   onProject: (v: string) => void;
   onTopic: (v: string) => void;
+  /** 同じ画面に複数置くので、ラベルと入力欄を結ぶ id を置き場所ごとに変える。 */
+  idPrefix: string;
 };
 
 /** 検索・質問・評価で使う区分の絞り込み。未選択（すべて）＝絞り込まない。
  *
- * ここは「既存の区分から選ぶ」場面なので select にしてある（打ち間違いで
+ * ここは「既存の区分から選ぶ」場面なので Select にしてある（打ち間違いで
  * 0件になるのを防ぐ）。新しい区分を作れるのは登録側だけ（ScopeInput）。
  * プロジェクトを変えたらトピックは外す: 別プロジェクトのトピックが残ると
  * 存在しない組み合わせになり、黙って0件になるため。
+ *
+ * ★ネイティブの <select> ではなく antd の Select★
+ *   候補（区分マスタ）は運用で増えていく一方だが、ネイティブのポップアップは
+ *   OS が描くので高さも配色も指定できない——候補が増えると画面いっぱいに開き、
+ *   ダークテーマでもリストだけ OS 側の色で出る。listHeight で上限を決めて
+ *   スクロールさせられるのと、ConfigProvider の色が効くのがここでの利点。
  */
 function ScopeSelect({
   project,
@@ -217,45 +269,58 @@ function ScopeSelect({
   topics,
   onProject,
   onTopic,
+  idPrefix,
 }: ScopeProps) {
   return (
     <div className="scope-row">
-      <label className="scope-field">
-        <span className="scope-label">プロジェクト（任意）</span>
-        <select
-          value={project}
-          onChange={(e) => {
-            onProject(e.target.value);
+      <div className="scope-field">
+        <label className="scope-label" htmlFor={`${idPrefix}-project`}>
+          プロジェクト（任意）
+        </label>
+        <Select
+          id={`${idPrefix}-project`}
+          // 空文字は「すべて」= 絞り込まない、を意味する内部表現。Select には
+          // 空の選択肢を作らず undefined を渡して placeholder を出す。
+          value={project || undefined}
+          placeholder="すべて"
+          options={toOptions(withCurrent(projects, project))}
+          onChange={(v?: string) => {
+            onProject(v ?? "");
             onTopic("");
           }}
-        >
-          <option value="">すべて</option>
-          {withCurrent(projects, project).map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="scope-field">
-        <span className="scope-label">トピック（任意）</span>
-        <select value={topic} onChange={(e) => onTopic(e.target.value)}>
-          <option value="">すべて</option>
-          {withCurrent(topics, topic).map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </label>
+          onClear={() => {
+            onProject("");
+            onTopic("");
+          }}
+          allowClear
+          showSearch
+          listHeight={LIST_HEIGHT}
+        />
+      </div>
+      <div className="scope-field">
+        <label className="scope-label" htmlFor={`${idPrefix}-topic`}>
+          トピック（任意）
+        </label>
+        <Select
+          id={`${idPrefix}-topic`}
+          value={topic || undefined}
+          placeholder="すべて"
+          options={toOptions(withCurrent(topics, topic))}
+          onChange={(v?: string) => onTopic(v ?? "")}
+          allowClear
+          showSearch
+          listHeight={LIST_HEIGHT}
+        />
+      </div>
     </div>
   );
 }
 
-/** 登録側の区分入力。既存の候補を出しつつ、新しい区分も打てる（datalist）。
+/** 登録側の区分入力。既存の候補を出しつつ、新しい区分も打てる（AutoComplete）。
  *
- * 登録は「まだ無いプロジェクトを作る」入口でもあるので select にはできない。
- * idPrefix: datalist の id はページ内で一意である必要があるため、置く場所ごとに変える。
+ * 登録は「まだ無いプロジェクトを作る」入口でもあるので、選ぶだけの Select には
+ * できない。絞り込み側（ScopeSelect）と見た目は揃え、★自由入力の可否だけ★を
+ * 変えるために AutoComplete を使う。
  */
 function ScopeInput({
   project,
@@ -265,31 +330,45 @@ function ScopeInput({
   onProject,
   onTopic,
   idPrefix,
-}: ScopeProps & { idPrefix: string }) {
+}: ScopeProps) {
   return (
     <div className="scope-row">
-      <input
-        list={`${idPrefix}-projects`}
-        placeholder="プロジェクト（任意）"
-        value={project}
-        onChange={(e) => onProject(e.target.value)}
-      />
-      <datalist id={`${idPrefix}-projects`}>
-        {projects.map((p) => (
-          <option key={p} value={p} />
-        ))}
-      </datalist>
-      <input
-        list={`${idPrefix}-topics`}
-        placeholder="トピック（任意）"
-        value={topic}
-        onChange={(e) => onTopic(e.target.value)}
-      />
-      <datalist id={`${idPrefix}-topics`}>
-        {topics.map((t) => (
-          <option key={t} value={t} />
-        ))}
-      </datalist>
+      <div className="scope-field">
+        <label className="scope-label" htmlFor={`${idPrefix}-project`}>
+          プロジェクト（任意）
+        </label>
+        <AutoComplete
+          id={`${idPrefix}-project`}
+          value={project}
+          placeholder="プロジェクト（新規も可）"
+          options={toOptions(projects)}
+          onChange={(v: string) => onProject(v ?? "")}
+          // 既定は「打った文字で始まる候補」だけ。部分一致にしておかないと、
+          // 「〇〇規程」のように後ろが同じ区分を探せない。
+          filterOption={(input, option) =>
+            (option?.value ?? "").toLowerCase().includes(input.toLowerCase())
+          }
+          allowClear
+          listHeight={LIST_HEIGHT}
+        />
+      </div>
+      <div className="scope-field">
+        <label className="scope-label" htmlFor={`${idPrefix}-topic`}>
+          トピック（任意）
+        </label>
+        <AutoComplete
+          id={`${idPrefix}-topic`}
+          value={topic}
+          placeholder="トピック（新規も可）"
+          options={toOptions(topics)}
+          onChange={(v: string) => onTopic(v ?? "")}
+          filterOption={(input, option) =>
+            (option?.value ?? "").toLowerCase().includes(input.toLowerCase())
+          }
+          allowClear
+          listHeight={LIST_HEIGHT}
+        />
+      </div>
     </div>
   );
 }
@@ -308,6 +387,20 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
+
+/** ④ の配下タブ。
+ *
+ * ④ は「正解ラベル付きの質問を貯める」と「貯めた質問集で数字を出す」という、
+ * 使う頻度も見たいものも違う2つが1画面に縦積みになっていた（登録フォームを
+ * 毎回読み飛ばして下のスコアまでスクロールすることになる）。同じ
+ * eval_questions を扱う一続きの作業なので別タブには割らず、④ の配下で切り替える。
+ */
+const EVAL_SUBTABS = [
+  { id: "add", label: "質問を追加", hint: "/eval-questions" },
+  { id: "run", label: "質問集を評価", hint: "/eval" },
+] as const;
+
+type EvalSubTab = (typeof EVAL_SUBTABS)[number]["id"];
 
 const THEME_CHOICES: { id: ThemeChoice; label: string; title: string }[] = [
   { id: "auto", label: "自動", title: "OSの設定に合わせる" },
@@ -387,9 +480,13 @@ function ThemeToggle() {
 function Sidebar({
   tab,
   onTab,
+  evalSubTab,
+  onEvalSubTab,
 }: {
   tab: TabId;
   onTab: (id: TabId) => void;
+  evalSubTab: EvalSubTab;
+  onEvalSubTab: (id: EvalSubTab) => void;
 }) {
   return (
     <nav className="sidebar" aria-label="機能">
@@ -413,6 +510,30 @@ function Sidebar({
               <span className="sidebar-tab-label">{t.label}</span>
               <code className="sidebar-tab-hint">{t.hint}</code>
             </button>
+            {/* ④ の配下タブは、④ を選んでいるときだけ開く。常に出しておくと
+                他の機能を見ている間もサイドバーが1段深く見えて、どれが今の
+                画面なのか読み取りづらくなる。 */}
+            {t.id === "eval" && tab === "eval" && (
+              <ul className="sidebar-subtabs">
+                {EVAL_SUBTABS.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      className={
+                        s.id === evalSubTab
+                          ? "sidebar-subtab active"
+                          : "sidebar-subtab"
+                      }
+                      aria-current={s.id === evalSubTab ? "true" : undefined}
+                      onClick={() => onEvalSubTab(s.id)}
+                    >
+                      <span className="sidebar-tab-label">{s.label}</span>
+                      <code className="sidebar-tab-hint">{s.hint}</code>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </li>
         ))}
       </ul>
@@ -438,6 +559,9 @@ export default function Home() {
   // タブ切り替えで消えるのは描画だけなので、検索結果・チャット履歴・評価
   // レポートは戻ってきたときにそのまま残る。
   const [tab, setTab] = useState<TabId>("ingest");
+  // ④ の中で見ている面。既定は「質問集を評価」＝ ④ の本題（スコアを見る）。
+  // 質問を足すのは準備なので、必要なときに配下タブで開く。
+  const [evalSubTab, setEvalSubTab] = useState<EvalSubTab>("run");
 
   // --- 区分（project / topic）の候補 -------------------------------------
   // プロジェクトはページで1つ持ち、トピックはパネルごとに「選択中のプロジェクト
@@ -610,6 +734,9 @@ export default function Home() {
   const [newQProject, setNewQProject] = useState("");
   const [newQTopic, setNewQTopic] = useState("");
   const newQTopics = useTopics(newQProject, scopeVersion);
+  // 正解に指定できる文書の候補。選んでいる区分で絞る（scopeVersion は取り込みでも
+  // 上がるので、①で文書を入れたらここの候補にもすぐ出る）。
+  const newQDocs = useDocuments(newQProject, newQTopic, scopeVersion);
   const [newQNote, setNewQNote] = useState("");
   const [addQStatus, setAddQStatus] = useState("");
   const [addingQ, setAddingQ] = useState(false);
@@ -958,7 +1085,12 @@ export default function Home() {
 
   return (
     <div className="layout">
-      <Sidebar tab={tab} onTab={setTab} />
+      <Sidebar
+        tab={tab}
+        onTab={setTab}
+        evalSubTab={evalSubTab}
+        onEvalSubTab={setEvalSubTab}
+      />
 
       {/* 選択中のタブの中身。stateはこの外（Home直下）にあるので、
           切り替えで描画が消えても入力や結果は保持される。 */}
@@ -1163,6 +1295,7 @@ export default function Home() {
 
         {/* 検索対象の区分。BM25の統計（IDF）もこの範囲で計算される */}
         <ScopeSelect
+          idPrefix="search"
           project={searchProject}
           topic={searchTopic}
           projects={projects}
@@ -1374,6 +1507,7 @@ export default function Home() {
 
         {/* 回答の根拠にする文書の区分。②と同じ絞り込みが検索に効く */}
         <ScopeSelect
+          idPrefix="chat"
           project={chatProject}
           topic={chatTopic}
           projects={projects}
@@ -1534,19 +1668,74 @@ export default function Home() {
           （/eval・Voyageキー必要 / リランク時のみAnthropic）
         </h2>
 
-        {/* 評価用の質問を登録する（正解ラベル付き） */}
+        {/* ★④と⑤の違いは常に見えるところに出す★
+            説明は上の Tip にも書いてあるが、Tipは開かないと読めないので
+            「どっちがどっちだったか」を毎回思い出せない。2つのタブを行き来する
+            たびに読み返す種類の情報なので、開かずに読める位置に1行で置く。 */}
+        <p className="hint panel-note">
+          ここは<strong>正解ラベル付きの質問集</strong>（<code>eval_questions</code>）を
+          Hit@k / MRR で<strong>採点</strong>する場所。
+          ②の検索で自動的に貯まった質問（<code>saved_questions</code>）を、
+          採点せずに並びだけ確かめたいときは <strong>⑤ 保管質問の検証</strong>。
+        </p>
+
+        {/* 評価用の質問を登録する（正解ラベル付き）。
+            ★入力の順番は「区分 → 質問 → 正解文書」★ 正解文書の候補を区分で
+            絞るので、絞る材料の区分を先に置く。区分が後ろにあると、候補を
+            絞り込めないまま長い一覧から文書を探すことになる。 */}
+        {evalSubTab === "add" && (
         <div className="eval-add">
           <h3 className="stage-title">評価用の質問を登録（/eval-questions）</h3>
+          <ScopeSelect
+            idPrefix="newq"
+            project={newQProject}
+            topic={newQTopic}
+            projects={projects}
+            topics={newQTopics}
+            onProject={(v) => {
+              setNewQProject(v);
+              // 区分を変えると下の文書候補が入れ替わる。選び直させないと
+              // 「その区分では引けない文書」を正解に指定した質問ができる。
+              setNewExpected("");
+            }}
+            onTopic={(v) => {
+              setNewQTopic(v);
+              setNewExpected("");
+            }}
+          />
+          <p className="hint">
+            区分を選ぶと、下の<strong>正解の文書</strong>もその区分の文書だけになります
+            （「すべて」なら全件）。評価は<strong>同じ区分の文書だけを検索</strong>するので、
+            区分をまたいだ組み合わせは正解になりません。
+          </p>
           <input
             placeholder="質問（例: 有給は入社何ヶ月で何日？）"
             value={newQ}
             onChange={(e) => setNewQ(e.target.value)}
           />
-          <input
-            placeholder="正解の文書名（例: 有給休暇.txt）"
-            value={newExpected}
-            onChange={(e) => setNewExpected(e.target.value)}
-          />
+          <div className="scope-field">
+            <label className="scope-label" htmlFor="newq-expected">
+              正解の文書（この文書が上位に来れば正解）
+            </label>
+            {/* ★手入力させない★ ここは documents.source を指す値なので、実在
+                しない名前を入れるとその設問は何をやっても不正解になる（引ける
+                文書が無いので当然当たらない）。候補から選ぶ形にして防ぐ。 */}
+            <Select
+              id="newq-expected"
+              value={newExpected || undefined}
+              placeholder={
+                newQDocs.length === 0
+                  ? "この区分に文書がありません（① 文書を登録 から）"
+                  : "文書を選ぶ（例: 有給休暇.txt）"
+              }
+              options={toOptions(newQDocs)}
+              onChange={(v?: string) => setNewExpected(v ?? "")}
+              disabled={newQDocs.length === 0}
+              allowClear
+              showSearch
+              listHeight={LIST_HEIGHT}
+            />
+          </div>
           <input
             placeholder="正解チャンクに含まれる語句（任意・例: 1日2時間を超える場合）"
             value={newExpectedText}
@@ -1557,29 +1746,24 @@ export default function Home() {
             引けたときだけ正解）。空欄なら<strong>文書単位</strong>＝その文書のどのチャンクでも
             正解になり、分割やcontextualの改良は<strong>数字に出ない</strong>。
           </p>
-          <ScopeInput
-            idPrefix="newq"
-            project={newQProject}
-            topic={newQTopic}
-            projects={projects}
-            topics={newQTopics}
-            onProject={setNewQProject}
-            onTopic={setNewQTopic}
-          />
           <input
             placeholder="メモ（任意・何を確かめる質問か）"
             value={newQNote}
             onChange={(e) => setNewQNote(e.target.value)}
           />
-          <button onClick={addEvalQuestion} disabled={addingQ}>
+          <button onClick={addEvalQuestion} disabled={addingQ || !newExpected}>
             {addingQ ? "登録中…" : "質問を追加"}
           </button>
           {addQStatus && <p className="hint">{addQStatus}</p>}
         </div>
+        )}
 
         {/* 評価対象の絞り込みと手法選択 */}
+        {evalSubTab === "run" && (
+        <>
         <div className="eval-controls">
           <ScopeSelect
+            idPrefix="eval"
             project={evalProject}
             topic={evalTopic}
             projects={projects}
@@ -1699,7 +1883,16 @@ export default function Home() {
                     {evalReport.hit_at_k.toFixed(3)}
                   </span>
                   <span className="eval-metric-label">
-                    Hit@{evalReport.top_k}（上位{evalReport.top_k}件に正解が入った割合）
+                    <Tip label={`Hit@${evalReport.top_k}`}>
+                      上位{evalReport.top_k}件に正解が<strong>入ったか</strong>だけを見て、
+                      入った質問の割合を出した値。1.0 = 全問で拾えている。
+                      <br />
+                      <br />
+                      何位で拾えたかは見ないので、<strong>1位でも{evalReport.top_k}位でも
+                      同じ1点</strong>。並び順を良くする改良（リランクなど）は
+                      この数字には出にくい ＝ 隣の MRR で見る。
+                    </Tip>
+                    （上位{evalReport.top_k}件に正解が入った割合）
                   </span>
                 </div>
                 <div className="eval-metric">
@@ -1707,7 +1900,22 @@ export default function Home() {
                     {evalReport.mrr.toFixed(3)}
                   </span>
                   <span className="eval-metric-label">
-                    MRR（正解順位の逆数平均・1.0が満点）
+                    <Tip label="MRR">
+                      正解を<strong>何位で</strong>拾えたかの平均点。
+                      1位なら1、2位なら0.5、3位なら0.33…（順位の逆数）を全問で平均する。
+                      1.0 = 全問で正解が1位。
+                      <br />
+                      <br />
+                      たとえば2問で「1位・3位」なら (1 + 0.33) / 2 = 0.67。
+                      圏外（上位{evalReport.top_k}件に無い）の質問は0点として数える。
+                      <br />
+                      <br />
+                      隣の <strong>Hit@{evalReport.top_k}</strong> が「入ったか / 入らないか」
+                      なのに対し、こちらは<strong>順位の良さ</strong>を見る。
+                      Hit@{evalReport.top_k}が同じでMRRだけ上がったら、
+                      「拾える文書は同じだが、より上位に来るようになった」という意味。
+                    </Tip>
+                    （正解順位の逆数平均・1.0が満点）
                   </span>
                 </div>
                 <div className="eval-meta">
@@ -1779,6 +1987,8 @@ export default function Home() {
               </p>
             </>
           ))}
+        </>
+        )}
       </section>
       )}
 
@@ -1806,8 +2016,18 @@ export default function Home() {
           （/verify・Voyageキー必要）
         </h2>
 
+        {/* ④ 側と対になる1行（あちらの panel-note と揃えてある）。
+            どちらのタブから来ても、開かずに違いが読めるようにしておく。 */}
+        <p className="hint panel-note">
+          ここは②の検索で<strong>自動的に貯まった質問</strong>（
+          <code>saved_questions</code>）を引き直して、
+          <strong>並びだけ</strong>を確かめる場所（正解ラベルが無いので○×は付かない）。
+          正解ラベル付きの質問集を数字で採点したいときは <strong>④ 評価する</strong>。
+        </p>
+
         <div className="eval-controls">
           <ScopeSelect
+            idPrefix="verify"
             project={verifyProject}
             topic={verifyTopic}
             projects={projects}

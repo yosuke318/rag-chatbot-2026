@@ -255,6 +255,26 @@ class TopicsResponse(BaseModel):
     )
 
 
+class DocumentInfo(BaseModel):
+    """登録済みの文書1件。区分セレクタと同じく「選択肢を埋める」ための最小の情報。"""
+
+    source: str = Field(description="文書名。検索結果や eval_questions が指す名前")
+    project: Optional[str] = Field(
+        default=None, description="所属プロジェクト（null=区分なしの共通文書）"
+    )
+    topic: Optional[str] = Field(
+        default=None, description="所属トピック（null=区分なしの共通文書）"
+    )
+
+
+class DocumentsResponse(BaseModel):
+    """登録済みの文書一覧（UIの「正解の文書名」セレクタ用）。"""
+
+    documents: List[DocumentInfo] = Field(
+        description="?project= / ?topic= を付けるとその区分の文書だけになる"
+    )
+
+
 class SearchResponse(BaseModel):
     """検索の各段階（Claudeを呼ばない）。
 

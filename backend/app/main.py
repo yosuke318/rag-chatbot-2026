@@ -54,6 +54,7 @@ from app.schemas import (
     ChartReadResponse,
     ChatRequest,
     ChatResponse,
+    DocumentsResponse,
     ErrorResponse,
     EvalQuestion,
     EvalQuestionRequest,
@@ -676,6 +677,50 @@ def list_topics(project: Optional[str] = None):
     project 未指定なら全プロジェクトのトピックを返す（絞り込みなし）。
     """
     return {"topics": scopes.list_topics(_blank_to_none(project))}
+
+
+@app.get("/documents", response_model=DocumentsResponse)
+def list_documents(project: Optional[str] = None, topic: Optional[str] = None):
+    """登録済みの文書名の一覧。project/topic を付けるとその区分の文書だけに絞る。
+
+    ★何のために要るか★
+      評価用の質問（eval_questions.expected_source）は「正解の文書名」を持つが、
+      これは documents.source を指している前提の値。UIが手入力だと、実在しない
+      名前でも登録できてしまい、その設問は何をやっても永久に不正解になる
+      （検索で引けるはずの文書が無いので当然当たらない）。候補を返して
+      選ばせるための入口。
+
+      /projects や /topics と同じ「UIのセレクタを埋める」用途なので、返すのは
+      名前と区分だけ。チャンク数や取り込み日時が要る一覧画面は別途。
+
+    同じ source の行が複数あるDB（documents.source は UNIQUE ではない）でも
+    候補が重複しないよう、source ごとに1件（新しい行）へ寄せる。
+    """
+    project = _blank_to_none(project)
+    topic = _blank_to_none(topic)
+    # 区分は id 参照なので名前はマスタへの LEFT JOIN で引く（LEFT なのは
+    # 区分なし＝NULL の文書を落とさないため。list_eval_questions と同じ形）。
+    clauses = []
+    params: list = []
+    if project is not None:
+        clauses.append("p.name = %s")
+        params.append(project)
+    if topic is not None:
+        clauses.append("t.name = %s")
+        params.append(topic)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT ON (d.source) d.source, p.name, t.name FROM documents d "
+            f"LEFT JOIN projects p ON p.id = d.project_id "
+            f"LEFT JOIN topics t ON t.id = d.topic_id "
+            f"{where} ORDER BY d.source, d.id DESC",
+            params,
+        ).fetchall()
+    return {
+        "documents": [{"source": r[0], "project": r[1], "topic": r[2]} for r in rows]
+    }
 
 
 @app.post(
