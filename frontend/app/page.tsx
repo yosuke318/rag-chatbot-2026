@@ -10,6 +10,12 @@ import type { components } from "./api-types";
 // ストリームの境界やマーカーの対応付けは目視で試しにくいので、単体テストを付けてある。
 import { citationHref, splitAnswer, type Citation } from "./citations";
 import { readSSE } from "./sse";
+import {
+  applyTheme,
+  readThemeChoice,
+  THEME_STORAGE_KEY,
+  type ThemeChoice,
+} from "./theme";
 
 type SearchStages = components["schemas"]["SearchResponse"];
 type VerifyReport = components["schemas"]["VerifyReport"];
@@ -303,6 +309,75 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
+const THEME_CHOICES: { id: ThemeChoice; label: string; title: string }[] = [
+  { id: "auto", label: "自動", title: "OSの設定に合わせる" },
+  { id: "light", label: "ライト", title: "常にライトテーマ" },
+  { id: "dark", label: "ダーク", title: "常にダークテーマ" },
+];
+
+/** テーマ切り替え（サイドバー最下部）。
+ *
+ * 色そのものは globals.css の CSS変数が持っていて、ここは
+ * <html data-theme> を差し替えるだけ。初回描画のちらつきは layout.tsx の
+ * インラインスクリプトが先に属性を立てることで防いでいる。
+ */
+function ThemeToggle() {
+  // サーバー描画の時点では localStorage を読めない＝選択が分からないので、
+  // いったん既定の auto で描いてマウント後に実際の選択で上書きする。
+  // 画面全体の色は init スクリプトが当て済みなので、ここがずれても
+  // ちらつくのはこのボタンの選択表示だけ。
+  const [choice, setChoice] = useState<ThemeChoice>("auto");
+
+  useEffect(() => {
+    setChoice(readThemeChoice());
+  }, []);
+
+  // 「自動」のときだけ OS 設定の変更に追従する（明示的に選んでいる間は無視）。
+  useEffect(() => {
+    if (choice !== "auto") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => applyTheme("auto");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [choice]);
+
+  function pick(next: ThemeChoice) {
+    setChoice(next);
+    applyTheme(next);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // 保存できなくても今の表示は切り替わる（再訪時に既定へ戻るだけ）
+    }
+  }
+
+  return (
+    <div className="theme-switch">
+      <span className="theme-switch-label" id="theme-switch-label">
+        テーマ
+      </span>
+      <div
+        className="theme-switch-options"
+        role="group"
+        aria-labelledby="theme-switch-label"
+      >
+        {THEME_CHOICES.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            className={c.id === choice ? "theme-option active" : "theme-option"}
+            title={c.title}
+            aria-pressed={c.id === choice}
+            onClick={() => pick(c.id)}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** 機能を切り替える左サイドバー。
  *
  * 1ページに縦積みしていた頃は、目的の機能まで延々スクロールする必要があった。
@@ -341,6 +416,7 @@ function Sidebar({
           </li>
         ))}
       </ul>
+      <ThemeToggle />
     </nav>
   );
 }
