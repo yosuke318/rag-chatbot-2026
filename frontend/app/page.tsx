@@ -294,7 +294,7 @@ function ScopeInput({
  * 想定の順路。番号を振っておくと、説明文から他タブを指すときに短く書ける。
  */
 const TABS = [
-  { id: "ingest", label: "① 文書を登録", hint: "/ingest" },
+  { id: "ingest", label: "① 文書を登録", hint: "/ingest-file" },
   { id: "search", label: "② 検索の内訳", hint: "/search" },
   { id: "chat", label: "③ 質問する", hint: "/chat" },
   { id: "eval", label: "④ 評価する", hint: "/eval" },
@@ -374,11 +374,9 @@ export default function Home() {
       .catch(() => {});
   }, [scopeVersion]);
 
-  // --- 取り込みパネル（/ingest = 書き込みフロー）---
-  const [source, setSource] = useState("");
-  const [docText, setDocText] = useState("");
-  // 文書の区分。テキスト貼り付け・ファイルD&Dの両方に効かせる（同じパネルなので
-  // 入力欄は1組だけ持つ）。空欄は送らない＝区分なし(NULL)の共通文書として登録。
+  // --- 取り込みパネル（/ingest-file = 書き込みフロー）---
+  // 文書の区分。登録するファイルすべてに付く。
+  // 空欄は送らない＝区分なし(NULL)の共通文書として登録。
   const [docProject, setDocProject] = useState("");
   const [docTopic, setDocTopic] = useState("");
   const docTopics = useTopics(docProject, scopeVersion);
@@ -622,46 +620,6 @@ export default function Home() {
       setEvalError(`通信に失敗しました: ${String(e)}`);
     } finally {
       setEvalRunning(false);
-    }
-  }
-
-  async function ingest() {
-    if (!source.trim() || !docText.trim()) return;
-    setIngestStatus("取り込み中…");
-    try {
-      const res = await fetch("/api/backend/ingest", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          source,
-          text: docText,
-          project: docProject.trim() || null,
-          topic: docTopic.trim() || null,
-        }),
-      });
-      const err = await errorMessage(res);
-      if (err) {
-        setIngestStatus(err);
-        return;
-      }
-      const data = await res.json();
-      // skipped = 内容が同じなので埋め込みをやり直していない（差分検知）
-      if (data.skipped) {
-        setIngestStatus(
-          `「${source}」は前回と同じ内容のため、埋め込みをやり直しませんでした` +
-            `（${data.chunks_created} チャンクのまま）`,
-        );
-      } else {
-        // replaced > 0 = 同名の既存文書を置き換えた
-        const note = data.replaced ? "（同名の既存文書を置き換えました）" : "";
-        setIngestStatus(
-          `「${source}」を ${data.chunks_created} チャンクで登録しました${note}`,
-        );
-      }
-      setDocText("");
-      setScopeVersion((v) => v + 1); // 新しい区分で登録したら各パネルの候補に出す
-    } catch (e) {
-      setIngestStatus(`エラー: ${String(e)}`);
     }
   }
 
@@ -950,10 +908,10 @@ export default function Home() {
       {/* 書き込みフロー: text → chunk → embed → pgvector */}
       {tab === "ingest" && (
       <section className="panel">
-        <h2>① 文書を登録（/ingest・Voyageキー必要）</h2>
+        <h2>① 文書を登録（/ingest-file・Voyageキー必要）</h2>
 
-        {/* 文書の区分。テキスト貼り付けとファイル登録の両方に付くので、
-            どちらか一方の入力欄に見えないようパネルの先頭に置く。 */}
+        {/* 文書の区分。登録するファイルすべてに付くので、
+            ドロップゾーンの中ではなくパネルの先頭に置く。 */}
         <ScopeInput
           idPrefix="doc"
           project={docProject}
@@ -964,7 +922,7 @@ export default function Home() {
           onTopic={setDocTopic}
         />
         <p className="hint">
-          区分は下の<strong>テキスト登録・ファイル登録の両方</strong>に付きます（空欄なら区分なし）。
+          区分は下で<strong>登録するファイルすべて</strong>に付きます（空欄なら区分なし）。
           既存の区分は入力欄から選べます。新しい名前を打てばその区分が作られます。
         </p>
         {/* 文書を入れずに区分だけ用意する入口。
@@ -986,24 +944,14 @@ export default function Home() {
         </div>
         {scopeStatus && <p className="hint ingest-status">{scopeStatus}</p>}
 
-        <input
-          placeholder="文書名（例: 有給休暇.txt）"
-          value={source}
-          onChange={(e) => setSource(e.target.value)}
-        />
-        <textarea
-          placeholder="本文を貼り付け…"
-          value={docText}
-          onChange={(e) => setDocText(e.target.value)}
-        />
-        <button onClick={ingest} disabled={!source.trim() || !docText.trim()}>
-          登録する
-        </button>
-
         {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
             D&D/クリックでファイルをステージに追加し、「登録する」で確定する。
-            誤ってドロップしても「キャンセル」や個別×で取り消せる。複数可。 */}
-        <div className="dz-divider">またはファイルを登録</div>
+            誤ってドロップしても「キャンセル」や個別×で取り消せる。複数可。
+
+            本文を貼り付けて登録するフォーム（POST /ingest）は画面から外した。
+            実文書はファイルで入るのが常で、貼り付けは使われないため。
+            APIとしての /ingest は残してある（seed や外部スクリプトが使う）。 */}
+        <div className="dz-divider">ファイルを登録</div>
         <div
           className={`dropzone${dragging ? " dragover" : ""}${uploading ? " busy" : ""}`}
           onClick={() => !uploading && fileInputRef.current?.click()}
