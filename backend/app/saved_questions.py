@@ -31,15 +31,15 @@ def save(question: str, project: str | None = None, topic: str | None = None) ->
     question = question.strip()
     if not question:
         return False
-    # 区分をマスタへ写す（app.scopes 参照）。②で新しい区分を指定して検索したとき、
-    # その区分がセレクタに残るようにする。
-    scopes.register(project, topic)
+    # 区分をマスタへ写して id を得る（app.scopes 参照）。②で新しい区分を指定して
+    # 検索したとき、その区分がセレクタに残るようにする。
+    project_id, topic_id = scopes.register(project, topic)
     with get_conn() as conn:
         row = conn.execute(
-            "INSERT INTO saved_questions (project, topic, question) "
+            "INSERT INTO saved_questions (project_id, topic_id, question) "
             "VALUES (%s, %s, %s) "
-            "ON CONFLICT (project, topic, question) DO NOTHING RETURNING id",
-            (project, topic, question),
+            "ON CONFLICT (project_id, topic_id, question) DO NOTHING RETURNING id",
+            (project_id, topic_id, question),
         ).fetchone()
     return row is not None
 
@@ -48,20 +48,26 @@ def load(project: str | None = None, topic: str | None = None) -> list[dict]:
     """保管済みの質問を返す。project/topic を指定するとその区分だけに絞る。
 
     指定しなかった軸は絞り込まない（app.eval.load_questions と同じ約束）。
+    行が持つのは id 参照なので、名前はマスタへの LEFT JOIN で引く（LEFT なのは
+    区分なし＝NULL の質問を落とさないため）。絞り込みも JOIN 先の名前で行う:
+    名前での絞り込み時に区分なしの行が混ざらないのは、NULL の name と `=` が
+    一致しないから（TEXT時代の挙動と同じ）。
     """
     clauses: list[str] = []
     params: list = []
     if project is not None:
-        clauses.append("project = %s")
+        clauses.append("p.name = %s")
         params.append(project)
     if topic is not None:
-        clauses.append("topic = %s")
+        clauses.append("t.name = %s")
         params.append(topic)
     where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT id, question, project, topic FROM saved_questions {where}"
-            "ORDER BY id",
+            f"SELECT sq.id, sq.question, p.name, t.name FROM saved_questions sq "
+            f"LEFT JOIN projects p ON p.id = sq.project_id "
+            f"LEFT JOIN topics t ON t.id = sq.topic_id "
+            f"{where}ORDER BY sq.id",
             params,
         ).fetchall()
     return [

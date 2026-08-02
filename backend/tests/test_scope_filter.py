@@ -61,21 +61,29 @@ def test_scope_sql_without_scope_is_empty():
     assert _scope_sql(None, None) == ("", [])
 
 
+# 行が持つのは id 参照（documents.project_id / topic_id）だが、APIの境界は名前の
+# ままなので、_scope_sql はサブクエリで名前を id に引く。
+#   project: 名前ユニーク → スカラサブクエリで =（無い名前は NULL = 常に偽 = 0件）
+#   topic  : 同名が複数プロジェクトに在り得る → IN で全部拾う
+PROJECT_CLAUSE = " AND d.project_id = (SELECT id FROM projects WHERE name = %s)"
+TOPIC_CLAUSE = " AND d.topic_id IN (SELECT id FROM topics WHERE name = %s)"
+
+
 def test_scope_sql_project_only():
     sql, values = _scope_sql("社内規程", None)
-    assert sql == " AND d.project = %s"
+    assert sql == PROJECT_CLAUSE
     assert values == ["社内規程"]
 
 
 def test_scope_sql_topic_only():
     sql, values = _scope_sql(None, "労務")
-    assert sql == " AND d.topic = %s"
+    assert sql == TOPIC_CLAUSE
     assert values == ["労務"]
 
 
 def test_scope_sql_both_axes():
     sql, values = _scope_sql("社内規程", "労務")
-    assert sql == " AND d.project = %s AND d.topic = %s"
+    assert sql == PROJECT_CLAUSE + TOPIC_CLAUSE
     assert values == ["社内規程", "労務"]
 
 
@@ -86,7 +94,7 @@ def test_vector_search_filters_and_orders_params(sql_spy):
     retrieval.vector_search("有給は何日?", k=5, project="社内規程", topic="労務")
 
     sql, params = sql_spy[0]
-    assert "d.project = %s" in sql and "d.topic = %s" in sql
+    assert PROJECT_CLAUSE in sql and TOPIC_CLAUSE in sql
     # 値の並びは SQL 中の %s の並びと一致していないと別の条件になる:
     #   SELECT の距離計算 → WHERE の区分 → ORDER BY の距離計算 → LIMIT
     assert params == ([0.1, 0.2, 0.3], "社内規程", "労務", [0.1, 0.2, 0.3], 5)
@@ -107,7 +115,7 @@ def test_lexical_search_filters_and_orders_params(sql_spy):
     retrieval.lexical_search("有給休暇", k=5, project="社内規程", topic="労務")
 
     sql, params = sql_spy[0]
-    assert "d.project = %s" in sql and "d.topic = %s" in sql
+    assert PROJECT_CLAUSE in sql and TOPIC_CLAUSE in sql
     # 名詞列 → 名詞列・閾値(WHERE) → 区分 → 名詞列(ORDER BY) → LIMIT
     assert params[3] == "社内規程" and params[4] == "労務"
     assert params[-1] == 5
@@ -129,8 +137,8 @@ def test_bm25_scope_applies_before_corpus_stats(sql_spy):
     retrieval.bm25_search("有給休暇", k=5, project="社内規程", topic="労務")
 
     sql, _params = sql_spy[0]
-    assert sql.index("d.project = %s") < sql.index("stats AS")
-    assert sql.index("d.topic = %s") < sql.index("stats AS")
+    assert sql.index(PROJECT_CLAUSE) < sql.index("stats AS")
+    assert sql.index(TOPIC_CLAUSE) < sql.index("stats AS")
 
 
 def test_bm25_params_order_puts_scope_before_constants(sql_spy):

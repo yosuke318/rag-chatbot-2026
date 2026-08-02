@@ -493,24 +493,31 @@ def ingest_text(
     use_contextual = USE_CONTEXTUAL_CHUNKING if contextual is None else contextual
     new_hash = content_hash(text, use_contextual)
 
+    # 区分をマスタへ写して id を得る（app.scopes 参照）。UIのセレクタはマスタを
+    # 引くので、ここで登録しないと「文書は入ったのに区分を選べない」状態になる。
+    # 差分検知の前に済ませるのは、スキップ経路でも区分の比較・更新に id が要るため。
+    project_id, topic_id = scopes.register(project, topic)
+
     # 差分検知。分割より先に済ませ、変化が無ければ以降の処理ごと省く。
     # 接続はここで一度閉じる（この後の埋め込みAPIは秒単位で待つことがあり、
     # その間コネクションを掴んだままにしない）。
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT id, content_hash, project, topic FROM documents WHERE source = %s",
+            "SELECT id, content_hash, project_id, topic_id "
+            "FROM documents WHERE source = %s",
             (source,),
         ).fetchone()
         # content_hash が NULL の行＝この機能より前に入った文書。作り直して値を入れる。
         unchanged = existing is not None and existing[1] == new_hash
         if unchanged:
-            document_id, _, current_project, current_topic = existing
+            document_id, _, current_project_id, current_topic_id = existing
             # 本文は同じで区分だけ変えた場合（登録し直しでの分類修正）。
             # 埋め込みは使い回せるので documents の行だけ更新する。
-            if (current_project, current_topic) != (project, topic):
+            if (current_project_id, current_topic_id) != (project_id, topic_id):
                 conn.execute(
-                    "UPDATE documents SET project = %s, topic = %s WHERE id = %s",
-                    (project, topic, document_id),
+                    "UPDATE documents SET project_id = %s, topic_id = %s "
+                    "WHERE id = %s",
+                    (project_id, topic_id, document_id),
                 )
             # チャンク数はスキップ時の戻り値にしか要らないので、ここでだけ数える
             # （作り直す場合は数えても捨てるだけなので、上のSELECTには含めない）。
@@ -552,10 +559,6 @@ def ingest_text(
         retry_waits=embed_retry_waits,
     )
 
-    # 区分をマスタへ写す（app.scopes 参照）。UIのセレクタはマスタを引くので、
-    # ここで登録しないと「文書は入ったのに区分を選べない」状態になる。
-    scopes.register(project, topic)
-
     with get_conn() as conn:
         # 削除と再登録は一括で（途中で失敗しても文書が消えたままにならない）
         with conn.transaction():
@@ -564,9 +567,9 @@ def ingest_text(
             ).rowcount
 
             document_id = conn.execute(
-                "INSERT INTO documents (source, project, topic, content_hash) "
+                "INSERT INTO documents (source, project_id, topic_id, content_hash) "
                 "VALUES (%s, %s, %s, %s) RETURNING id",
-                (source, project, topic, new_hash),
+                (source, project_id, topic_id, new_hash),
             ).fetchone()[0]
 
             with conn.cursor() as cur:

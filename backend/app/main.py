@@ -1201,17 +1201,17 @@ def add_eval_question(req: EvalQuestionRequest):
     # 空欄は NULL に倒す（＝文書単位で判定）。空文字のまま入れるとどのチャンクにも
     # 含まれる空文字で判定することになり、全問正解になってしまう。
     expected_text = _blank_to_none(req.expected_text)
-    # 区分をマスタへ写す（文書がまだ無いプロジェクトでも選択肢に出るように）
-    scopes.register(project, topic)
+    # 区分をマスタへ写して id を得る（文書がまだ無いプロジェクトでも選択肢に出るように）
+    project_id, topic_id = scopes.register(project, topic)
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO eval_questions "
-            "(project, topic, question, expected_source, expected_kind, "
+            "(project_id, topic_id, question, expected_source, expected_kind, "
             "expected_text, note) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
-                project,
-                topic,
+                project_id,
+                topic_id,
                 req.question,
                 req.expected_source,
                 req.expected_kind,
@@ -1305,20 +1305,25 @@ def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = No
     """
     project = _blank_to_none(project)
     topic = _blank_to_none(topic)
+    # 行が持つのは id 参照。名前はマスタへの LEFT JOIN で引く（app.eval.load_questions
+    # と同じ形。LEFT なのは区分なし＝NULL の質問を落とさないため）。
     clauses = []
     params: list = []
     if project is not None:
-        clauses.append("project = %s")
+        clauses.append("p.name = %s")
         params.append(project)
     if topic is not None:
-        clauses.append("topic = %s")
+        clauses.append("t.name = %s")
         params.append(topic)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT id, question, expected_source, project, topic, note, "
-            f"expected_kind, expected_text FROM eval_questions {where} ORDER BY id",
+            f"SELECT q.id, q.question, q.expected_source, p.name, t.name, q.note, "
+            f"q.expected_kind, q.expected_text FROM eval_questions q "
+            f"LEFT JOIN projects p ON p.id = q.project_id "
+            f"LEFT JOIN topics t ON t.id = q.topic_id "
+            f"{where} ORDER BY q.id",
             params,
         ).fetchall()
     return {

@@ -128,7 +128,8 @@ def test_eval_questions_real_value_filters(client):
         client.get("/eval-questions?project=社内規程")
 
     sql, params = rows[0]
-    assert "project = %s" in sql
+    # 絞り込みはマスタへの JOIN 先の名前で行う（行が持つのは project_id）
+    assert "p.name = %s" in sql
     assert params == ["社内規程"]
 
 

@@ -62,23 +62,24 @@ def client():
 
 
 def test_register_inserts_project_before_topic(monkeypatch):
-    """★projects が先★ topics.project は projects(name) を参照するので、
-    順が逆だと新しいプロジェクト配下のトピックが FK 違反で入らない。"""
+    """★projects が先★ topics.project_id は projects(id) を参照するので、
+    プロジェクトの id を得てからでないと配下のトピックを入れられない。"""
     calls: list = []
-    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls))
-    scopes.register("社内規程", "労務")
+    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=(1,)))
+    assert scopes.register("社内規程", "労務") == (1, 1)
 
     assert len(calls) == 2
     assert "INSERT INTO projects" in calls[0][0] and calls[0][1] == ("社内規程",)
-    assert "INSERT INTO topics" in calls[1][0] and calls[1][1] == ("社内規程", "労務")
+    # トピックには親プロジェクトの id を渡す（名前ではなく）
+    assert "INSERT INTO topics" in calls[1][0] and calls[1][1] == (1, "労務")
 
 
 def test_register_allows_topic_without_project(monkeypatch):
     """documents は project と topic を独立に NULL 可で持つ（topic だけの文書が
     作れる）ので、マスタ側もその組み合わせを受けられないと取りこぼす。"""
     calls: list = []
-    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls))
-    scopes.register(None, "労務")
+    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=(5,)))
+    assert scopes.register(None, "労務") == (None, 5)
 
     assert len(calls) == 1
     assert "INSERT INTO topics" in calls[0][0] and calls[0][1] == (None, "労務")
@@ -89,16 +90,37 @@ def test_register_does_not_touch_db_without_scope(monkeypatch):
     monkeypatch.setattr(
         scopes, "get_conn", lambda: pytest.fail("区分が無いのにDBを触ってはいけない")
     )
-    scopes.register(None, None)
+    assert scopes.register(None, None) == (None, None)
 
 
-def test_register_uses_do_nothing_for_existing_scope(monkeypatch):
-    """既にある区分は重ねない。連打時の競合を避けるためDBに任せる。"""
+def test_register_looks_up_id_when_scope_already_exists(monkeypatch):
+    """既にある区分は重ねず（ON CONFLICT DO NOTHING）、id は SELECT で引き直す。
+
+    INSERT を先に打つのは連打時の競合をDBに任せるため。ON CONFLICT のときは
+    RETURNING が空になるので、SELECT で既存行の id を得る。
+    """
     calls: list = []
-    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls))
-    scopes.register("社内規程", None)
+
+    class ConflictConn(FakeConn):
+        # INSERT は競合（RETURNING なし）、SELECT は既存 id を返す
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params))
+            outer = self
+            head = sql.strip().split()[0].upper()
+            return type(
+                "R",
+                (),
+                {
+                    "fetchone": lambda _s: (9,) if head == "SELECT" else None,
+                    "fetchall": lambda _s: outer.all_rows,
+                },
+            )()
+
+    monkeypatch.setattr(scopes, "get_conn", lambda: ConflictConn(calls))
+    assert scopes.register("社内規程", None) == (9, None)
 
     assert "ON CONFLICT (name) DO NOTHING" in calls[0][0]
+    assert "SELECT id FROM projects" in calls[1][0]
 
 
 # --- 作成（create_project / create_topic） ------------------------------------
@@ -133,18 +155,19 @@ def test_create_project_rejects_blank(monkeypatch):
 
 
 def test_create_topic_creates_parent_project_first(monkeypatch):
-    """親が未登録でも FK 違反で落ちるのではなく、意図どおり作れるようにする。"""
+    """親が未登録でも存在しない親で落ちるのではなく、意図どおり作れるようにする。"""
     calls: list = []
-    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=("労務",)))
+    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=(1,)))
     assert scopes.create_topic("労務", "社内規程") is True
 
     assert "INSERT INTO projects" in calls[0][0]
-    assert "INSERT INTO topics" in calls[1][0] and calls[1][1] == ("社内規程", "労務")
+    # トピックには親プロジェクトの id を渡す（名前ではなく）
+    assert "INSERT INTO topics" in calls[1][0] and calls[1][1] == (1, "労務")
 
 
 def test_create_topic_without_project(monkeypatch):
     calls: list = []
-    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=("労務",)))
+    monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, one=(1,)))
     scopes.create_topic("労務")
 
     assert len(calls) == 1  # 親を作らない
@@ -168,11 +191,13 @@ def test_list_projects_reads_master(monkeypatch):
 
 
 def test_list_topics_filters_by_project(monkeypatch):
+    """絞り込みは親プロジェクトの名前を JOIN で引いて行う。"""
     calls: list = []
     monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, all_rows=[("労務",)]))
     assert scopes.list_topics("社内規程") == ["労務"]
-    assert "WHERE project = %s" in calls[0][0]
-    assert calls[0][1] == ["社内規程"]
+    sql, params = calls[0]
+    assert "JOIN projects" in sql and "WHERE p.name = %s" in sql
+    assert params == ("社内規程",)
 
 
 def test_list_topics_without_project_does_not_filter(monkeypatch):
@@ -180,7 +205,6 @@ def test_list_topics_without_project_does_not_filter(monkeypatch):
     monkeypatch.setattr(scopes, "get_conn", lambda: FakeConn(calls, all_rows=[]))
     scopes.list_topics()
     assert "WHERE" not in calls[0][0]
-    assert calls[0][1] == []
 
 
 # --- エンドポイント -----------------------------------------------------------
@@ -256,9 +280,12 @@ def test_post_topic_rejects_blank_name(client):
 def test_saving_question_registers_its_scope(monkeypatch):
     """②で新しい区分を指定して検索したら、その区分がセレクタに残る。"""
     seen: list = []
-    monkeypatch.setattr(
-        saved_questions.scopes, "register", lambda p, t: seen.append((p, t))
-    )
+
+    def fake_register(p, t):
+        seen.append((p, t))
+        return (1, 2)
+
+    monkeypatch.setattr(saved_questions.scopes, "register", fake_register)
     monkeypatch.setattr(saved_questions, "get_conn", lambda: FakeConn([], one=(1,)))
     saved_questions.save("有給は?", "社内規程", "労務")
 
@@ -267,8 +294,9 @@ def test_saving_question_registers_its_scope(monkeypatch):
 
 def test_posting_eval_question_registers_its_scope(client):
     """質問だけ登録したプロジェクトも④の評価対象として選べる必要がある。"""
-    with patch.object(main_module, "get_conn", lambda: FakeConn([], one=(1,))), \
-         patch.object(scopes, "register") as register:
+    calls: list = []
+    with patch.object(main_module, "get_conn", lambda: FakeConn(calls, one=(1,))), \
+         patch.object(scopes, "register", return_value=(1, 2)) as register:
         res = client.post(
             "/eval-questions",
             json={
@@ -281,3 +309,7 @@ def test_posting_eval_question_registers_its_scope(client):
 
     assert res.status_code == 200
     assert register.call_args.args == ("社内規程", "労務")
+    # 行に入るのは register が返した id（名前ではなく）
+    sql, params = calls[0]
+    assert "INSERT INTO eval_questions" in sql and "project_id" in sql
+    assert params[0] == 1 and params[1] == 2
