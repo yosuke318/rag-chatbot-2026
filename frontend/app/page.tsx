@@ -288,6 +288,63 @@ function ScopeInput({
   );
 }
 
+/** 左サイドバーのタブ。順番がそのまま画面の並びになる。
+ *
+ * ①〜⑤ の番号は「文書を入れる → 検索を見る → 質問する → 数字で測る」という
+ * 想定の順路。番号を振っておくと、説明文から他タブを指すときに短く書ける。
+ */
+const TABS = [
+  { id: "ingest", label: "① 文書を登録", hint: "/ingest-file" },
+  { id: "search", label: "② 検索の内訳", hint: "/search" },
+  { id: "chat", label: "③ 質問する", hint: "/chat" },
+  { id: "eval", label: "④ 評価する", hint: "/eval" },
+  { id: "verify", label: "⑤ 保管質問の検証", hint: "/verify" },
+] as const;
+
+type TabId = (typeof TABS)[number]["id"];
+
+/** 機能を切り替える左サイドバー。
+ *
+ * 1ページに縦積みしていた頃は、目的の機能まで延々スクロールする必要があった。
+ * 選択中のタブ以外は描画しないが、★stateはページ直下に置いたまま★なので
+ * 切り替えても検索結果・チャット履歴・評価レポートは消えない。
+ */
+function Sidebar({
+  tab,
+  onTab,
+}: {
+  tab: TabId;
+  onTab: (id: TabId) => void;
+}) {
+  return (
+    <nav className="sidebar" aria-label="機能">
+      {/* ページの見出しはここ1つ。本文側は各機能の h2 から始まる */}
+      <div className="sidebar-brand">
+        <h1>RAG Inspector</h1>
+        <span>RAG検証ラボ</span>
+      </div>
+      <ul className="sidebar-tabs">
+        {TABS.map((t) => (
+          <li key={t.id}>
+            <button
+              type="button"
+              className={t.id === tab ? "sidebar-tab active" : "sidebar-tab"}
+              // "page" ではなく "true"。ページ遷移はしておらず同一ページ内の
+              // 表示切替なので、aria-current の汎用値（=その集合の現在の項目）が
+              // 実態に合う。
+              aria-current={t.id === tab ? "true" : undefined}
+              onClick={() => onTab(t.id)}
+            >
+              <span className="sidebar-tab-label">{t.label}</span>
+              <code className="sidebar-tab-hint">{t.hint}</code>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
 // 見出しにカーソルを当てると説明が出る。tabIndexでキーボード操作でも開く。
 function Tip({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
@@ -300,6 +357,12 @@ function Tip({ label, children }: { label?: string; children: React.ReactNode })
 }
 
 export default function Home() {
+  // --- 表示中の機能（左サイドバーのタブ）---------------------------------
+  // ★stateはすべてこのコンポーネント直下に置く★
+  // タブ切り替えで消えるのは描画だけなので、検索結果・チャット履歴・評価
+  // レポートは戻ってきたときにそのまま残る。
+  const [tab, setTab] = useState<TabId>("ingest");
+
   // --- 区分（project / topic）の候補 -------------------------------------
   // プロジェクトはページで1つ持ち、トピックはパネルごとに「選択中のプロジェクト
   // 配下だけ」を引く（useTopics）。scopeVersion を増やすと両方を取り直す
@@ -314,11 +377,9 @@ export default function Home() {
       .catch(() => {});
   }, [scopeVersion]);
 
-  // --- 取り込みパネル（/ingest = 書き込みフロー）---
-  const [source, setSource] = useState("");
-  const [docText, setDocText] = useState("");
-  // 文書の区分。テキスト貼り付け・ファイルD&Dの両方に効かせる（同じパネルなので
-  // 入力欄は1組だけ持つ）。空欄は送らない＝区分なし(NULL)の共通文書として登録。
+  // --- 取り込みパネル（/ingest-file = 書き込みフロー）---
+  // 文書の区分。登録するファイルすべてに付く。
+  // 空欄は送らない＝区分なし(NULL)の共通文書として登録。
   const [docProject, setDocProject] = useState("");
   const [docTopic, setDocTopic] = useState("");
   const docTopics = useTopics(docProject, scopeVersion);
@@ -403,9 +464,14 @@ export default function Home() {
   const [evalTopic, setEvalTopic] = useState("");
   const evalTopics = useTopics(evalProject, scopeVersion);
 
-  // --- 保管質問の検証（/verify = ②で検索した質問をまとめて引き直す）---
-  // 区分セレクタは評価(/eval)と共用する。どちらも「④のこの区分について見る」
-  // という同じ意味なので、選び直す手間を増やさない。
+  // --- 保管質問の検証（⑤ /verify = ②で検索した質問をまとめて引き直す）---
+  // ★評価(④)とは別タブ・別state★
+  //   扱うテーブルが違う（saved_questions / eval_questions）うえ、正解ラベルの
+  //   要否も出力も別物なので機能として分けてある。区分セレクタを④と共用すると、
+  //   タブを跨いだ相手の選択が見えないまま結果が変わることになるため独立させる。
+  const [verifyProject, setVerifyProject] = useState("");
+  const [verifyTopic, setVerifyTopic] = useState("");
+  const verifyTopics = useTopics(verifyProject, scopeVersion);
   const [verifyReport, setVerifyReport] = useState<VerifyReport | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState("");
@@ -417,8 +483,8 @@ export default function Home() {
 
   useEffect(() => {
     const params = new URLSearchParams();
-    if (evalProject.trim()) params.set("project", evalProject.trim());
-    if (evalTopic.trim()) params.set("topic", evalTopic.trim());
+    if (verifyProject.trim()) params.set("project", verifyProject.trim());
+    if (verifyTopic.trim()) params.set("topic", verifyTopic.trim());
     let current = true;
     fetch(`/api/backend/saved-questions?${params}`)
       .then((r) => r.json())
@@ -429,7 +495,7 @@ export default function Home() {
     return () => {
       current = false;
     };
-  }, [evalProject, evalTopic, savedVersion]);
+  }, [verifyProject, verifyTopic, savedVersion]);
 
   async function runVerify() {
     if (verifying) return;
@@ -437,8 +503,8 @@ export default function Home() {
     setVerifyError("");
     try {
       const params = new URLSearchParams({ top_k: "4" });
-      if (evalProject.trim()) params.set("project", evalProject.trim());
-      if (evalTopic.trim()) params.set("topic", evalTopic.trim());
+      if (verifyProject.trim()) params.set("project", verifyProject.trim());
+      if (verifyTopic.trim()) params.set("topic", verifyTopic.trim());
       const res = await fetch(`/api/backend/verify?${params}`);
       const err = await errorMessage(res);
       if (err) {
@@ -457,7 +523,7 @@ export default function Home() {
   const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
   const [evalError, setEvalError] = useState("");
-  // 評価用の数値パラメータ。②と同じキー（rrf_k / trgm_min_similarity / bm25_k1 / bm25_b）
+  // 評価用の数値パラメータ。②検索と同じキー（rrf_k / trgm_min_similarity / bm25_k1 / bm25_b）
   const [evalParamValues, setEvalParamValues] = useState<Record<string, string>>({});
 
   // 評価用の質問を登録するフォーム（POST /eval-questions）
@@ -557,46 +623,6 @@ export default function Home() {
       setEvalError(`通信に失敗しました: ${String(e)}`);
     } finally {
       setEvalRunning(false);
-    }
-  }
-
-  async function ingest() {
-    if (!source.trim() || !docText.trim()) return;
-    setIngestStatus("取り込み中…");
-    try {
-      const res = await fetch("/api/backend/ingest", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          source,
-          text: docText,
-          project: docProject.trim() || null,
-          topic: docTopic.trim() || null,
-        }),
-      });
-      const err = await errorMessage(res);
-      if (err) {
-        setIngestStatus(err);
-        return;
-      }
-      const data = await res.json();
-      // skipped = 内容が同じなので埋め込みをやり直していない（差分検知）
-      if (data.skipped) {
-        setIngestStatus(
-          `「${source}」は前回と同じ内容のため、埋め込みをやり直しませんでした` +
-            `（${data.chunks_created} チャンクのまま）`,
-        );
-      } else {
-        // replaced > 0 = 同名の既存文書を置き換えた
-        const note = data.replaced ? "（同名の既存文書を置き換えました）" : "";
-        setIngestStatus(
-          `「${source}」を ${data.chunks_created} チャンクで登録しました${note}`,
-        );
-      }
-      setDocText("");
-      setScopeVersion((v) => v + 1); // 新しい区分で登録したら各パネルの候補に出す
-    } catch (e) {
-      setIngestStatus(`エラー: ${String(e)}`);
     }
   }
 
@@ -745,7 +771,7 @@ export default function Home() {
         return;
       }
       setStages(await res.json());
-      // 検索が通ると質問が保管されるので、④の件数を取り直す
+      // 検索が通ると質問が保管されるので、⑤の件数を取り直す
       setSavedVersion((v) => v + 1);
     } catch (e) {
       setStages(null);
@@ -855,35 +881,40 @@ export default function Home() {
   }
 
   return (
-    <div className="container">
-      <h1>RAG Inspector（RAG検証ラボ）</h1>
-      <p className="sub">
-        埋め込み・検索・回答生成の挙動を観察するRAG検証ツール。
-        文書を登録し、検索の内訳（cos類似度 / 字面類似度 / RRF融合）を確かめてから質問できる。
-      </p>
+    <div className="layout">
+      <Sidebar tab={tab} onTab={setTab} />
 
-      {/* どの操作にどのAPIキーが要るか。混同しやすいのでここで一度だけ説明する */}
-      <div className="keys-note">
-        <strong>APIキーの要否</strong>
-        <ul>
-          <li>
-            <code>VOYAGE_API_KEY</code>（埋め込み）… <b>登録と検索の両方で必要</b>。
-            文書も質問も同じモデルでベクトル化するため、検索のたびに1回呼ぶ
-            （消費するのは質問文ぶんの数十トークン）
-          </li>
-          <li>
-            <code>ANTHROPIC_API_KEY</code>（生成）… <b>回答生成のみ</b>。
-            検索の内訳を見るだけなら不要（リランクも既定はVoyageの専用APIなので不要）
-          </li>
-        </ul>
-      </div>
+      {/* 選択中のタブの中身。stateはこの外（Home直下）にあるので、
+          切り替えで描画が消えても入力や結果は保持される。 */}
+      <main className="container">
+        <p className="sub">
+          埋め込み・検索・回答生成の挙動を観察するRAG検証ツール。
+          文書を登録し、検索の内訳（cos類似度 / 字面類似度 / RRF融合）を確かめてから質問できる。
+        </p>
+
+        {/* どの操作にどのAPIキーが要るか。混同しやすいのでここで一度だけ説明する */}
+        <div className="keys-note">
+          <strong>APIキーの要否</strong>
+          <ul>
+            <li>
+              <code>VOYAGE_API_KEY</code>（埋め込み）… <b>登録と検索の両方で必要</b>。
+              文書も質問も同じモデルでベクトル化するため、検索のたびに1回呼ぶ
+              （消費するのは質問文ぶんの数十トークン）
+            </li>
+            <li>
+              <code>ANTHROPIC_API_KEY</code>（生成）… <b>回答生成のみ</b>。
+              検索の内訳を見るだけなら不要（リランクも既定はVoyageの専用APIなので不要）
+            </li>
+          </ul>
+        </div>
 
       {/* 書き込みフロー: text → chunk → embed → pgvector */}
+      {tab === "ingest" && (
       <section className="panel">
-        <h2>① 文書を登録（/ingest・Voyageキー必要）</h2>
+        <h2>① 文書を登録（/ingest-file・Voyageキー必要）</h2>
 
-        {/* 文書の区分。テキスト貼り付けとファイル登録の両方に付くので、
-            どちらか一方の入力欄に見えないようパネルの先頭に置く。 */}
+        {/* 文書の区分。登録するファイルすべてに付くので、
+            ドロップゾーンの中ではなくパネルの先頭に置く。 */}
         <ScopeInput
           idPrefix="doc"
           project={docProject}
@@ -894,7 +925,7 @@ export default function Home() {
           onTopic={setDocTopic}
         />
         <p className="hint">
-          区分は下の<strong>テキスト登録・ファイル登録の両方</strong>に付きます（空欄なら区分なし）。
+          区分は下で<strong>登録するファイルすべて</strong>に付きます（空欄なら区分なし）。
           既存の区分は入力欄から選べます。新しい名前を打てばその区分が作られます。
         </p>
         {/* 文書を入れずに区分だけ用意する入口。
@@ -916,24 +947,14 @@ export default function Home() {
         </div>
         {scopeStatus && <p className="hint ingest-status">{scopeStatus}</p>}
 
-        <input
-          placeholder="文書名（例: 有給休暇.txt）"
-          value={source}
-          onChange={(e) => setSource(e.target.value)}
-        />
-        <textarea
-          placeholder="本文を貼り付け…"
-          value={docText}
-          onChange={(e) => setDocText(e.target.value)}
-        />
-        <button onClick={ingest} disabled={!source.trim() || !docText.trim()}>
-          登録する
-        </button>
-
         {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
             D&D/クリックでファイルをステージに追加し、「登録する」で確定する。
-            誤ってドロップしても「キャンセル」や個別×で取り消せる。複数可。 */}
-        <div className="dz-divider">またはファイルを登録</div>
+            誤ってドロップしても「キャンセル」や個別×で取り消せる。複数可。
+
+            本文を貼り付けて登録するフォーム（POST /ingest）は画面から外した。
+            実文書はファイルで入るのが常で、貼り付けは使われないため。
+            APIとしての /ingest は残してある（seed や外部スクリプトが使う）。 */}
+        <div className="dz-divider">ファイルを登録</div>
         <div
           className={`dropzone${dragging ? " dragover" : ""}${uploading ? " busy" : ""}`}
           onClick={() => !uploading && fileInputRef.current?.click()}
@@ -1020,8 +1041,10 @@ export default function Home() {
         )}
         {ingestStatus && <p className="hint ingest-status">{ingestStatus}</p>}
       </section>
+      )}
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}
+      {tab === "search" && (
       <section className="panel">
         <h2>
           <Tip label="② 検索の内訳を見る">
@@ -1040,7 +1063,11 @@ export default function Home() {
             <br />
             <strong>3.</strong> 融合後の<strong>上位ほど質問に合う文書</strong>と判断される。
             1位が質問の内容と一致していれば検索は成功。
-            この上位チャンクが、そのまま ③ の回答生成で根拠として使われる。
+            この上位チャンクが、そのまま <strong>③ 質問する</strong> の回答生成で根拠として使われる。
+            <br />
+            <br />
+            ここで検索した質問は、区分と一緒に自動で保管される。まとめて引き直すのは
+            <strong>⑤ 保管質問の検証</strong>。
           </Tip>
           （/search・Voyageキー必要 / Anthropicキー不要）
         </h2>
@@ -1245,8 +1272,10 @@ export default function Home() {
           </>
         )}
       </section>
+      )}
 
       {/* 質問フロー: question → hybrid_search → rerank → Claude */}
+      {tab === "chat" && (
       <section className="panel">
         <h2>③ 質問する（/chat/stream・Voyage + Anthropicキー必要）</h2>
         {/* 会話は続きものとして扱われる（直近のやり取りが回答生成に載る）。
@@ -1403,8 +1432,10 @@ export default function Home() {
           </button>
         </div>
       </section>
+      )}
 
       {/* 評価フロー: 質問集(eval_questions) → 各問を検索 → Hit@k / MRR を集計 */}
+      {tab === "eval" && (
       <section className="panel">
         <h2>
           <Tip label="④ 評価する">
@@ -1412,12 +1443,17 @@ export default function Home() {
             <strong>どれだけ正解文書を上位で拾えたか</strong>を集計する。
             <br />
             <br />
-            ② が「1問を深く見る」のに対し、④ は「質問集<strong>全体</strong>で当たるか」を見る。
+            <strong>② 検索の内訳</strong> が「1問を深く見る」のに対し、④ は
+            「質問集<strong>全体</strong>で当たるか」を見る。
             手法やリランクを変えて<strong>数字が上がるか下がるか</strong>で改良の効果を判定できる。
             <br />
             <br />
             質問はプロジェクト・トピックごとに分けて登録できる（<code>POST /eval-questions</code>）。
             まだ無ければ <code>python -m app.eval --seed</code> でサンプルを投入。
+            <br />
+            <br />
+            正解ラベルを用意する前に並びだけ見たいときは <strong>⑤ 保管質問の検証</strong>。
+            あちらは②で貯まった質問を採点せずに一覧する。
           </Tip>
           （/eval・Voyageキー必要 / リランク時のみAnthropic）
         </h2>
@@ -1484,81 +1520,6 @@ export default function Home() {
           <strong>検索対象の文書も同じ区分</strong>に絞ります（「すべて」なら全件）。
         </p>
 
-        {/* ②で検索した質問の検証。正解ラベルが要らないので、評価用の質問集を
-            用意する前でも「今の設定で何が上位に来るか」を一覧で確認できる */}
-        <div className="verify-controls">
-          <button onClick={runVerify} disabled={verifying || savedCount === 0}>
-            {verifying ? "検証中…" : "保管質問を検証する"}
-          </button>
-          <span className="hint">
-            <Tip label="②で検索した質問の保管">
-              ② で検索すると、そのときの<strong>プロジェクト・トピックと一緒に質問が
-              自動で保管</strong>されます（同じ区分の同じ質問は重ねません）。
-              <br />
-              <br />
-              ここでは保管済みの質問を<strong>まとめて引き直し</strong>、各質問の上位4件と
-              RRFスコアを一覧で確認できます。正解ラベルを持たないので○×は付きません
-              （数値で良し悪しを見るのは上の「評価する」）。
-            </Tip>
-            {savedCount === null
-              ? ""
-              : savedCount === 0
-                ? "この区分に保管された質問はまだありません（②で検索すると貯まります）"
-                : `この区分に ${savedCount} 件の質問が保管されています`}
-          </span>
-        </div>
-
-        {verifyError && <p className="error-note">{verifyError}</p>}
-
-        {verifyReport && verifyReport.n > 0 && (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>質問</th>
-                  <th>順位</th>
-                  <th>RRFスコア</th>
-                  <th>出典</th>
-                  <th>内容</th>
-                </tr>
-              </thead>
-              <tbody>
-                {verifyReport.results.map((r, ri) =>
-                  r.fused.length === 0 ? (
-                    <tr key={ri}>
-                      <td className="preview">{r.question}</td>
-                      <td colSpan={4} className="miss">
-                        （ヒットなし）
-                      </td>
-                    </tr>
-                  ) : (
-                    r.fused.map((f, fi) => (
-                      <tr key={`${ri}:${f.id}`}>
-                        {/* 質問は1問につき1回だけ出し、下の行は上位2位以下 */}
-                        {fi === 0 ? (
-                          <td className="preview" rowSpan={r.fused.length}>
-                            {r.question}
-                          </td>
-                        ) : null}
-                        <td>{f.rank + 1}位</td>
-                        <td>{f.score}</td>
-                        <td>
-                          <SourceLink source={f.source} />
-                        </td>
-                        <td className="preview">{f.preview}</td>
-                      </tr>
-                    ))
-                  ),
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {verifyReport && verifyReport.n === 0 && (
-          <p className="empty-note">
-            この区分に保管された質問がありません。② で検索すると貯まります。
-          </p>
-        )}
         <div className="retriever-picker">
           {available.map((r) => (
             <span key={r.name} className="retriever-option">
@@ -1743,6 +1704,110 @@ export default function Home() {
             </>
           ))}
       </section>
+      )}
+
+      {/* 保管質問の検証フロー: saved_questions → 各問を検索 → 上位k件を一覧
+          ★④の評価とは別物★ あちらは eval_questions（正解ラベル必須）を数値で
+          採点する。こちらは②の検索で自動的に貯まった質問を、正解ラベル無しで
+          「今の設定だと何が上位に来るか」目視で確かめるための道具。 */}
+      {tab === "verify" && (
+      <section className="panel">
+        <h2>
+          <Tip label="⑤ 保管質問を検証する">
+            ② で検索すると、そのときの<strong>プロジェクト・トピックと一緒に質問が
+            自動で保管</strong>されます（同じ区分の同じ質問は重ねません）。
+            <br />
+            <br />
+            ここでは保管済みの質問を<strong>まとめて引き直し</strong>、各質問の上位4件と
+            RRFスコアを一覧で確認できます。
+            <br />
+            <br />
+            ④ の評価とは<strong>別のデータ</strong>を見ています。④ は正解ラベル付きの
+            質問集（<code>eval_questions</code>）を Hit@k / MRR で採点するもの。
+            こちらは正解ラベルを持たない実際に聞かれた質問（<code>saved_questions</code>）
+            なので○×は付きません。正解を用意する前でも並びを確かめられるのが利点です。
+          </Tip>
+          （/verify・Voyageキー必要）
+        </h2>
+
+        <div className="eval-controls">
+          <ScopeSelect
+            project={verifyProject}
+            topic={verifyTopic}
+            projects={projects}
+            topics={verifyTopics}
+            onProject={setVerifyProject}
+            onTopic={setVerifyTopic}
+          />
+          <button onClick={runVerify} disabled={verifying || savedCount === 0}>
+            {verifying ? "検証中…" : "保管質問を検証する"}
+          </button>
+        </div>
+        <p className="hint">
+          区分を選ぶと<strong>その区分の質問だけ</strong>を、
+          <strong>同じ区分の文書</strong>に対して引き直します（「すべて」なら全件）。
+          {savedCount === null
+            ? ""
+            : savedCount === 0
+              ? "　この区分に保管された質問はまだありません（② 検索の内訳 で検索すると貯まります）"
+              : `　この区分に ${savedCount} 件の質問が保管されています`}
+        </p>
+
+        {verifyError && <p className="error-note">{verifyError}</p>}
+
+        {verifyReport && verifyReport.n > 0 && (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>質問</th>
+                  <th>順位</th>
+                  <th>RRFスコア</th>
+                  <th>出典</th>
+                  <th>内容</th>
+                </tr>
+              </thead>
+              <tbody>
+                {verifyReport.results.map((r, ri) =>
+                  r.fused.length === 0 ? (
+                    <tr key={ri}>
+                      <td className="preview">{r.question}</td>
+                      <td colSpan={4} className="miss">
+                        （ヒットなし）
+                      </td>
+                    </tr>
+                  ) : (
+                    r.fused.map((f, fi) => (
+                      <tr key={`${ri}:${f.id}`}>
+                        {/* 質問は1問につき1回だけ出し、下の行は上位2位以下 */}
+                        {fi === 0 ? (
+                          <td className="preview" rowSpan={r.fused.length}>
+                            {r.question}
+                          </td>
+                        ) : null}
+                        <td>{f.rank + 1}位</td>
+                        <td>{f.score}</td>
+                        <td>
+                          <SourceLink source={f.source} />
+                        </td>
+                        <td className="preview">{f.preview}</td>
+                      </tr>
+                    ))
+                  ),
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {verifyReport && verifyReport.n === 0 && (
+          <p className="empty-note">
+            この区分に保管された質問がありません。
+            <strong>② 検索の内訳</strong> で検索すると貯まります。
+          </p>
+        )}
+      </section>
+      )}
+      </main>
     </div>
   );
 }
