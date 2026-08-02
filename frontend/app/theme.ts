@@ -27,7 +27,12 @@ export function readThemeChoice(): ThemeChoice {
 }
 
 export function prefersDark(): boolean {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  } catch {
+    // matchMedia 自体が使えない環境。ここまで来たら判断材料がないのでライト扱い
+    return false;
+  }
 }
 
 export function resolveTheme(choice: ThemeChoice): ResolvedTheme {
@@ -48,9 +53,18 @@ export function applyTheme(choice: ThemeChoice): ResolvedTheme {
  * ライトテーマで描画され、ダーク選択時に一瞬白く光る。上の関数群と処理が
  * 重複するが、バンドルの読み込みを待たずに走らせる必要があるため、
  * インラインの素のJSとして別に持つ。
+ *
+ * ★try は保存値の読み取りと OS 設定の参照で分ける★
+ *   ひとまとめにして catch で light に倒すと、localStorage が使えない環境
+ *   （プライベートモード等）で OS がダークのときにライトで描画され、マウント後に
+ *   暗転する——防ぎたかった flicker がそのまま再発する。保存値が読めなくても
+ *   OS 設定は読めるので、そこまでは活かす。
  */
-export const THEME_INIT_SCRIPT = `(function(){try{
-var c=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});
-if(c!=="light"&&c!=="dark")c=window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";
+export const THEME_INIT_SCRIPT = `(function(){
+var c=null;
+try{c=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});}catch(e){}
+if(c!=="light"&&c!=="dark"){
+try{c=window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}catch(e){c="light";}
+}
 document.documentElement.setAttribute("data-theme",c);
-}catch(e){document.documentElement.setAttribute("data-theme","light");}})();`;
+})();`;

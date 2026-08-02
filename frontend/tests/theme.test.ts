@@ -26,6 +26,15 @@ function stubStorage(saved?: string) {
   return store;
 }
 
+/** プライベートモード等、localStorage に触ると例外が飛ぶ環境。 */
+function stubThrowingStorage() {
+  vi.stubGlobal("localStorage", {
+    getItem: () => {
+      throw new Error("SecurityError");
+    },
+  });
+}
+
 function stubOsDark(matches: boolean) {
   vi.stubGlobal("window", {
     matchMedia: (query: string) => ({ matches: query.includes("dark") && matches }),
@@ -73,11 +82,7 @@ describe("readThemeChoice", () => {
   });
 
   it("localStorage が触れない環境でも例外を投げない", () => {
-    vi.stubGlobal("localStorage", {
-      getItem: () => {
-        throw new Error("SecurityError");
-      },
-    });
+    stubThrowingStorage();
     expect(readThemeChoice()).toBe("auto");
   });
 });
@@ -126,13 +131,18 @@ describe("THEME_INIT_SCRIPT", () => {
     expect(runInitScript()).toBe("dark");
   });
 
-  it("localStorage が触れない環境ではライトに倒れる（例外で止まらない）", () => {
-    vi.stubGlobal("localStorage", {
-      getItem: () => {
-        throw new Error("SecurityError");
-      },
-    });
+  // ★保存値が読めないことと、OS設定が読めないことは別物★
+  //   まとめて light に倒すと、プライベートモード＋OSダークで初回だけライトに
+  //   なり、マウント後に暗転する。防ぎたかった flicker がそのまま再発する。
+  it("localStorage が触れなくても OS の設定には従う", () => {
+    stubThrowingStorage();
     stubOsDark(true);
+    expect(runInitScript()).toBe("dark");
+  });
+
+  it("matchMedia も使えない場合だけライトに倒れる", () => {
+    stubThrowingStorage();
+    vi.stubGlobal("window", {}); // matchMedia なし
     expect(runInitScript()).toBe("light");
   });
 
@@ -146,4 +156,12 @@ describe("THEME_INIT_SCRIPT", () => {
       }
     },
   );
+
+  it("localStorage が触れないときも本体と同じ答えを出す", () => {
+    for (const osDark of [true, false]) {
+      stubThrowingStorage();
+      stubOsDark(osDark);
+      expect(runInitScript()).toBe(resolveTheme(readThemeChoice()));
+    }
+  });
 });
