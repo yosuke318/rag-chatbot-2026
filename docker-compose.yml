@@ -74,6 +74,10 @@ services:
     volumes:
       - ./backend/seed_docs:/app/seed_docs # seed用の文書（ホストで足せる）
       - ./backend/seed_data:/app/seed_data # seed用の初期データ（評価質問の fixture）
+      # 評価専用コーパス（task seed-corpus が読む文書・区分・質問集）。
+      # イメージには COPY していない（評価用でアプリの実行には要らない）ので、
+      # これが無いと seed-corpus が FileNotFoundError で落ちる。
+      - ./backend/eval_corpus:/app/eval_corpus
 
   frontend:
     build: ./frontend
