@@ -200,6 +200,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Documents
+         * @description 登録済みの文書名の一覧。project/topic を付けるとその区分の文書だけに絞る。
+         *
+         *     ★何のために要るか★
+         *       評価用の質問（eval_questions.expected_source）は「正解の文書名」を持つが、
+         *       これは documents.source を指している前提の値。UIが手入力だと、実在しない
+         *       名前でも登録できてしまい、その設問は何をやっても永久に不正解になる
+         *       （検索で引けるはずの文書が無いので当然当たらない）。候補を返して
+         *       選ばせるための入口。
+         *
+         *       /projects や /topics と同じ「UIのセレクタを埋める」用途なので、返すのは
+         *       名前と区分だけ。チャンク数や取り込み日時が要る一覧画面は別途。
+         *
+         *     同じ source の行が複数あるDB（documents.source は UNIQUE ではない）でも
+         *     候補が重複しないよう、source ごとに1件（新しい行）へ寄せる。
+         */
+        get: operations["list_documents_documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -762,6 +795,38 @@ export interface components {
              * @description この手法が寄与したRRFスコア 1/(k + 順位 + 1)
              */
             rrf_term: number | null;
+        };
+        /**
+         * DocumentInfo
+         * @description 登録済みの文書1件。区分セレクタと同じく「選択肢を埋める」ための最小の情報。
+         */
+        DocumentInfo: {
+            /**
+             * Source
+             * @description 文書名。検索結果や eval_questions が指す名前
+             */
+            source: string;
+            /**
+             * Project
+             * @description 所属プロジェクト（null=区分なしの共通文書）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description 所属トピック（null=区分なしの共通文書）
+             */
+            topic?: string | null;
+        };
+        /**
+         * DocumentsResponse
+         * @description 登録済みの文書一覧（UIの「正解の文書名」セレクタ用）。
+         */
+        DocumentsResponse: {
+            /**
+             * Documents
+             * @description ?project= / ?topic= を付けるとその区分の文書だけになる
+             */
+            documents: components["schemas"]["DocumentInfo"][];
         };
         /**
          * ErrorResponse
@@ -1942,6 +2007,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_documents_documents_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                topic?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentsResponse"];
                 };
             };
             /** @description Validation Error */

@@ -107,6 +107,52 @@ body {
   margin: 0;
 }
 
+/* タイトルは押せる（準拠ベンチマークの表が出る）。既定の button 見た目を消して
+   見出しのまま見せるが、押せることが分かるように点線の下線を敷いてある
+   （Tip の「？」と同じ考え方で、常時ヒントを出しておく）。 */
+.sidebar-brand-button {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline dotted var(--muted);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.sidebar-brand-button:hover {
+  text-decoration-color: var(--accent);
+}
+
+/* 準拠ベンチマークの表（モーダル）。説明の列が長いので、既定の nowrap を解いて
+   折り返す＝横スクロールせずに3列すべて読める。 */
+.bench-table {
+  table-layout: fixed;
+}
+
+.bench-table th,
+.bench-table td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.bench-table th:nth-child(1),
+.bench-table td:nth-child(1) {
+  width: 24%;
+}
+
+.bench-table th:nth-child(2),
+.bench-table td:nth-child(2) {
+  width: 17%;
+}
+
+.bench-table th:nth-child(4),
+.bench-table td:nth-child(4) {
+  width: 26%;
+}
+
 .sidebar-brand span {
   color: var(--muted);
   font-size: 12px;
@@ -148,6 +194,60 @@ body {
   color: var(--on-accent);
 }
 
+/* 配下タブを持つ行（④）。タブ本体と開閉ボタンを1行に見せる。
+   開閉ボタンは button の入れ子を避けるためタブと兄弟になっている（Sidebar 参照）。 */
+.sidebar-tab-row {
+  display: flex;
+  align-items: stretch;
+  /* 隙間を空けない。角丸を左右で分け合って1つの錠剤に見せる（下2つの
+     border-radius）ので、間が空くと選択中に塗りが割れて見える。 */
+  gap: 0;
+}
+
+.sidebar-tab-row .sidebar-tab {
+  flex: 1;
+  min-width: 0; /* 開閉ボタンのぶんを残す（width:100% のままだと押し出される） */
+  border-radius: 8px 0 0 8px;
+}
+
+.sidebar-tab-toggle {
+  /* 既定の button 見た目（アクセント塗り）を消してタブの一部に見せる */
+  flex: none;
+  width: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sidebar-tab-toggle:hover {
+  background: var(--bot-bubble);
+  color: var(--text);
+}
+
+/* 親タブが選択中なら開閉ボタンも同じ塗りにして、行全体で1つのタブに見せる */
+.sidebar-tab-toggle.on-active,
+.sidebar-tab-toggle.on-active:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* 「›」を回して開閉を示す。閉=右向き（そのまま）、開=下向き。
+   別の文字に差し替えるのではなく回転させるのは、切り替わりが動きとして
+   見えるほうが「これは開閉するもの」だと伝わるため。 */
+.sidebar-tab-toggle span {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.sidebar-tab-toggle.open span {
+  transform: rotate(90deg);
+}
+
 .sidebar-tab-hint {
   font-size: 11px;
   opacity: 0.7;
@@ -155,6 +255,47 @@ body {
 
 .sidebar-tab.active .sidebar-tab-hint {
   opacity: 0.85;
+}
+
+/* ④ の配下タブ。開閉ボタン（.sidebar-tab-toggle）で出し入れする。
+   左の縦線と字下げで「④ の中の話」だと分かるようにする。 */
+.sidebar-subtabs {
+  list-style: none;
+  margin: 2px 0 2px 10px;
+  padding: 0 0 0 8px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-subtab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-subtab:hover {
+  background: var(--bot-bubble);
+}
+
+/* 親タブ（塗り）と同じ強さで塗ると、どちらが選択中の機能なのか読めなくなる。
+   配下は淡い面 + アクセント文字にして一段弱く見せる。 */
+.sidebar-subtab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .container {
@@ -230,6 +371,20 @@ select {
   color: var(--text);
 }
 
+/* ★antd の Select / AutoComplete の中にも input がいる★
+   上の一括指定が当たると、antd が描いた枠の内側にもう1枚枠と余白が乗り、
+   下マージン8pxのぶん文字が上にずれる。中の input は antd 側のスタイルで
+   完結しているので、ここでは一括指定を剥がすだけにする。
+   クラス2つ分の詳細度にしているのは、antd v6 の規則が :where() で
+   詳細度0に均されており、素の `input`（詳細度1）に負けるため。 */
+.ant-select .ant-select-selection-search-input {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  margin-bottom: 0;
+  background: transparent;
+}
+
 textarea {
   min-height: 72px;
   resize: vertical;
@@ -254,6 +409,16 @@ button:disabled {
   font-size: 12px;
   color: var(--muted);
   margin: 4px 0 0;
+}
+
+/* パネル冒頭に置く注記（④と⑤の違いなど、開かずに読ませたい1行）。
+   .hint と同じ字面のまま、下地を付けて「見出しの続き」として目に入るようにする。 */
+.panel-note {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: var(--subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 /* 取り込み結果は複数ファイルぶんを改行で並べるので改行を活かす */
@@ -582,25 +747,21 @@ button:disabled {
   border-radius: 12px;
 }
 
-/* プロジェクト／トピックの2列入力。①〜④の全パネルで使う
-   （登録側は datalist 付き input、絞り込み側は select） */
+/* プロジェクト／トピックの2列入力。①〜⑤の全パネルで使う
+   （登録側は AutoComplete＝自由入力あり、絞り込み側は Select＝選ぶだけ。
+   どちらも antd なので見た目は揃う） */
 .scope-row {
   display: flex;
   gap: 8px;
   align-items: flex-end;
+  margin-bottom: 8px; /* 素の input が持っている下マージンと同じだけ空ける */
 }
 
-.scope-row input,
-.scope-row select {
-  flex: 1;
-  min-width: 0; /* flex項目の既定(auto)だと長い選択肢で列が押し広げられる */
-}
-
-/* select 側は何の欄か分からなくなるのでラベルを上に出す */
+/* 何の欄か分からなくなるのでラベルを上に出す */
 .scope-field {
   display: flex;
   flex: 1;
-  min-width: 0;
+  min-width: 0; /* flex項目の既定(auto)だと長い選択肢で列が押し広げられる */
   flex-direction: column;
   gap: 4px;
 }
@@ -618,7 +779,7 @@ button:disabled {
 }
 
 .eval-controls input,
-.eval-controls select {
+.eval-controls .scope-row {
   margin-bottom: 0;
 }
 
