@@ -2706,7 +2706,9 @@ export default function Home() {
       {tab === "search" && searchSubTab === "verify" && (
       <section className="panel">
         <h2>
-          <Tip label="② 保管質問を検証する">
+          {/* 見出しはサイドバーの配下タブ名と一字一句そろえる。ずれていると
+              「今どの画面に居るのか」を名前で確かめられない。 */}
+          <Tip label="② 保管質問をまとめて再検索">
             ② の「質問で資料を検索」で検索すると、そのときの<strong>プロジェクト・トピックと
             一緒に質問が自動で保管</strong>されます（同じ区分の同じ質問は重ねません）。
             <br />
