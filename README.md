@@ -491,6 +491,12 @@ cd frontend
 # TODO
 ```
 
+> **キーの扱い**: Anthropic / Voyage / 管理APIのキーは `.env`（`.gitignore` 済み）と
+> Terraform の `*.tfvars` にだけ置き、コミットしない。本リポジトリは public なので
+> GitHub の **secret scanning + push protection** を有効にしてあり、キーが混ざった
+> コミットは **push の時点でブロックされる**。ブロックされたら履歴から取り除くより
+> **キーをローテーションする**ほうが速い（一度 push されたものは漏洩とみなす）。
+
 ## 開発コマンド（lint / テスト）
 
 [go-task](https://taskfile.dev) 経由で、FE・BE をまとめて実行する。`task --list` で全一覧。
