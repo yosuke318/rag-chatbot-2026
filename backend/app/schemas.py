@@ -325,6 +325,31 @@ class DocumentSummariesResponse(BaseModel):
     )
 
 
+class SchemaColumn(BaseModel):
+    """カラム1つの物理名と論理名。"""
+
+    name: str = Field(description="物理名（DBのカラム名）")
+    label: str = Field(description="論理名（日本語の表示名）")
+
+
+class SchemaTable(BaseModel):
+    """テーブル1つの物理名・論理名とカラム一覧。"""
+
+    name: str = Field(description="物理名（DBのテーブル名）")
+    label: str = Field(description="論理名（日本語の表示名）")
+    columns: List[SchemaColumn] = Field(description="カラム。DDLと同じ並び")
+
+
+class SchemaResponse(BaseModel):
+    """テーブル・カラムの論理名（データ辞書）。
+
+    出どころは app.schema_labels（DBには COMMENT ON として写している）。
+    UIの見出しやスキーマ定義書の生成に使う。
+    """
+
+    tables: List[SchemaTable] = Field(description="テーブル。DDLと同じ作成順")
+
+
 class SearchResponse(BaseModel):
     """検索の各段階（Claudeを呼ばない）。
 

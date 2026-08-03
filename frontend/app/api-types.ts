@@ -118,6 +118,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Schema Dictionary
+         * @description テーブル・カラムの物理名と論理名（日本語名）の対応表。
+         *
+         *     ★DBを見に行かない★
+         *       正は app.schema_labels（Pythonの定数）で、DB側の COMMENT ON はそこからの
+         *       写し。写しを読み返すとDB接続が要るうえ、init_db を通していないDBを指すと
+         *       空で返ってしまう。定数をそのまま返せば、キーもDBも不要で常に同じ答になる。
+         *
+         *     UIの表の見出しや、スキーマ定義書の生成に使う入口。
+         */
+        get: operations["schema_dictionary_schema_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/retrievers": {
         parameters: {
             query?: never;
@@ -1502,6 +1529,57 @@ export interface components {
             questions: components["schemas"]["SavedQuestion"][];
         };
         /**
+         * SchemaColumn
+         * @description カラム1つの物理名と論理名。
+         */
+        SchemaColumn: {
+            /**
+             * Name
+             * @description 物理名（DBのカラム名）
+             */
+            name: string;
+            /**
+             * Label
+             * @description 論理名（日本語の表示名）
+             */
+            label: string;
+        };
+        /**
+         * SchemaResponse
+         * @description テーブル・カラムの論理名（データ辞書）。
+         *
+         *     出どころは app.schema_labels（DBには COMMENT ON として写している）。
+         *     UIの見出しやスキーマ定義書の生成に使う。
+         */
+        SchemaResponse: {
+            /**
+             * Tables
+             * @description テーブル。DDLと同じ作成順
+             */
+            tables: components["schemas"]["SchemaTable"][];
+        };
+        /**
+         * SchemaTable
+         * @description テーブル1つの物理名・論理名とカラム一覧。
+         */
+        SchemaTable: {
+            /**
+             * Name
+             * @description 物理名（DBのテーブル名）
+             */
+            name: string;
+            /**
+             * Label
+             * @description 論理名（日本語の表示名）
+             */
+            label: string;
+            /**
+             * Columns
+             * @description カラム。DDLと同じ並び
+             */
+            columns: components["schemas"]["SchemaColumn"][];
+        };
+        /**
          * ScopeResponse
          * @description 区分(プロジェクト/トピック)の作成結果。
          */
@@ -1967,6 +2045,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    schema_dictionary_schema_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchemaResponse"];
                 };
             };
         };

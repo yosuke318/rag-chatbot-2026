@@ -49,6 +49,7 @@ from app.retrieval import (
     retriever_infos,
     search_stages,
 )
+from app.schema_labels import SCHEMA_LABELS
 from app.schemas import (
     ChartReadRequest,
     ChartReadResponse,
@@ -73,6 +74,7 @@ from app.schemas import (
     SavedQuestionRequest,
     SavedQuestionResponse,
     SavedQuestionsResponse,
+    SchemaResponse,
     ScopeResponse,
     SearchResponse,
     TopicRequest,
@@ -622,6 +624,32 @@ async def ingest_file(
     # content_type はアップロード時の MIME を優先（無ければ拡張子から推定）。
     storage.save_bytes(source, data, file.content_type)
     return {"source": source, **result}
+
+
+@app.get("/schema", response_model=SchemaResponse)
+def schema_dictionary():
+    """テーブル・カラムの物理名と論理名（日本語名）の対応表。
+
+    ★DBを見に行かない★
+      正は app.schema_labels（Pythonの定数）で、DB側の COMMENT ON はそこからの
+      写し。写しを読み返すとDB接続が要るうえ、init_db を通していないDBを指すと
+      空で返ってしまう。定数をそのまま返せば、キーもDBも不要で常に同じ答になる。
+
+    UIの表の見出しや、スキーマ定義書の生成に使う入口。
+    """
+    return {
+        "tables": [
+            {
+                "name": table,
+                "label": entry["label"],
+                "columns": [
+                    {"name": column, "label": label}
+                    for column, label in entry["columns"].items()
+                ],
+            }
+            for table, entry in SCHEMA_LABELS.items()
+        ]
+    }
 
 
 @app.get("/retrievers", response_model=RetrieversResponse)

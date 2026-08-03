@@ -4,8 +4,10 @@
 """
 import psycopg
 from pgvector.psycopg import register_vector
+from psycopg import sql
 
 from app.config import DATABASE_URL, EMBED_DIM, MULTIMODAL_EMBED_DIM
+from app.schema_labels import SCHEMA_LABELS
 
 
 def get_conn() -> psycopg.Connection:
@@ -535,3 +537,48 @@ def init_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS saved_questions_unique_idx "
             "ON saved_questions (project_id, topic_id, question) NULLS NOT DISTINCT;"
         )
+        # --- 論理名（日本語名）をDBにも写す --------------------------------
+        # 正は app.schema_labels。ここは「DBクライアントやER図ツールからも
+        # 日本語名が見える」ようにするための写しなので、毎回上書きでよい
+        # （COMMENT ON は同じ値を入れ直しても副作用が無く、冪等）。
+        # ★カラムのDROPより後で実行する★ 上の正規化マイグレーションで消える
+        # TEXT時代のカラム（documents.project 等）に対して COMMENT を打つと
+        # 存在しない列でエラーになるため。
+        _apply_labels(conn)
+
+
+def _apply_labels(conn: psycopg.Connection) -> None:
+    """論理名を COMMENT ON TABLE / COLUMN としてDBへ書き込む。
+
+    ★COMMENT ON はプレースホルダを受け付けない★ 対象名も本文もSQL文そのものに
+    埋める必要があるので、psycopg.sql で識別子・リテラルとしてクォートする
+    （論理名は自分たちで書く定数だが、'' の混入で構文が壊れるのを防ぐ）。
+
+    実在しないテーブル・カラムには打たない。辞書には載っているが、そのDBには
+    まだ無い（マイグレーション途中の古いDB）という状態があり得るため、
+    ここで落とすと起動できなくなる。
+    """
+    for table, entry in SCHEMA_LABELS.items():
+        existing = {
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = %s",
+                (table,),
+            ).fetchall()
+        }
+        if not existing:
+            continue  # そのテーブル自体がまだ無い
+        conn.execute(
+            sql.SQL("COMMENT ON TABLE {} IS {}").format(
+                sql.Identifier(table), sql.Literal(entry["label"])
+            )
+        )
+        for column, label in entry["columns"].items():
+            if column not in existing:
+                continue
+            conn.execute(
+                sql.SQL("COMMENT ON COLUMN {}.{} IS {}").format(
+                    sql.Identifier(table), sql.Identifier(column), sql.Literal(label)
+                )
+            )

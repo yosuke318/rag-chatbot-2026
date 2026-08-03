@@ -479,6 +479,26 @@ curl -X POST http://localhost:8000/eval-questions -H 'Content-Type: application/
 └── frontend/        # Next.js + Vercel AI SDK
 ```
 
+## DBの論理名（日本語名）
+
+物理名（`eval_questions` / `expected_kind` / `content_nouns` …）は英語なので、
+そのままUIやエラーメッセージに出しても伝わらない。物理名と対になる日本語名を
+**[backend/app/schema_labels.py](backend/app/schema_labels.py) の1か所**に持ち、
+2方向へ配っている。
+
+| 配り先 | どうやって | 何に使うか |
+|---|---|---|
+| DB | `init_db` が `COMMENT ON TABLE / COLUMN` で流し込む（冪等） | DBクライアント・ER図ツールでの閲覧 |
+| アプリ | `GET /schema` がそのまま返す | UIの見出し、スキーマ定義書の生成 |
+
+**Python側が正で、DBは写し。** `COMMENT ON` をDDLに直接書いてDBを正にすると、
+論理名を引くだけでDB接続が要る（テストもDB必須になる）ため。
+
+> **カラムを追加したら `schema_labels.py` にも論理名を足すこと。**
+> `backend/tests/test_schema_labels.py` が `db.py` のDDLを読んで突き合わせ、
+> 論理名の無いカラムがあると `task test` が落ちる（逆に、消したカラムの論理名が
+> 残っている場合も落ちる）。
+
 ## セットアップ（TODO: 実装しながら埋める）
 
 ```bash
