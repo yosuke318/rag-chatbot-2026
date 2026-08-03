@@ -426,6 +426,82 @@ button:disabled {
   white-space: pre-line;
 }
 
+/* 文中に混ぜる操作ボタン（「①『登録する』へ」など）。見た目はリンクだが、
+   ページ遷移ではなくタブの切り替えなので要素は button のまま。 */
+.linklike {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* --- ①「入っている文書」の表 --- */
+/* 文書名は長くなるので、この列だけ幅を許して他を詰める */
+.doc-table td:first-child {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 数の列は右寄せ（桁が揃って0を見つけやすい） */
+.doc-table .doc-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-table .doc-when {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 区分なし＝「共通」と、値の無い「—」。空欄との区別が付くよう字面は残しつつ、
+   実データより一段沈めて「入力された名前ではない」と分かるようにする。 */
+.doc-table .doc-null {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* チャンク0＝索引に載っていない（検索で絶対に引けない）。ここだけ警告色。 */
+.doc-table .doc-warn {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* 並び替えできる見出し。th の見た目のまま押せることを示す。 */
+.doc-sort {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.doc-sort:hover {
+  color: var(--accent);
+}
+
+.doc-sort.active {
+  color: var(--text);
+}
+
+/* 並び順の印。押していない列は「↕」で、押せること自体を見せる。 */
+.doc-sort-mark {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.doc-sort.active .doc-sort-mark {
+  color: var(--accent);
+}
+
 /* ドラッグ&ドロップ登録 */
 .dz-divider {
   display: flex;

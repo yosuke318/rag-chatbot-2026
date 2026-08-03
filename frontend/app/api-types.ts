@@ -233,6 +233,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/documents/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Document Summaries
+         * @description 文書一覧画面用。1行 = documents の1行で、チャンク数と登録日時を添える。
+         *
+         *     ★/documents とは別エンドポイントにしてある★
+         *       あちらは「④の正解文書セレクタを埋める」用途で、同じ source を
+         *       DISTINCT ON で1件に潰す。こちらは管理用で、★同名の行が2つ見えること
+         *       自体が価値★（documents.source は UNIQUE ではないので二重登録があり得る）。
+         *       潰す/潰さないが正反対なので、同居させるとどちらかの用途が壊れる。
+         *
+         *     ★ここで気づきたい壊れ方★
+         *       - chunk_count が 0 … 登録したつもりで索引に載っていない
+         *       - image_chunk_count が 0 … 図表が索引に載っていない（方式や抽出の失敗）
+         *       - project/topic が NULL … 区分で絞った検索から丸ごと外れる
+         *       - 同じ source が複数行 … 二重登録
+         *
+         *     ★/projects /topics はそのまま使う（絞り込みセレクタ）★
+         *       あの2つはマスタを引くので「文書が1件も無い区分」も候補に出る。それを
+         *       除く絞り込みは足さない: 区分だけ先に作って文書は後から入れる、という
+         *       使い方を ①「区分だけ登録する」で明示的に支えているので、候補から
+         *       消すと「作ったはずの区分が無い」と読めてしまう。0件は下の空表示で言う。
+         */
+        get: operations["list_document_summaries_documents_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -816,6 +854,74 @@ export interface components {
              * @description 所属トピック（null=区分なしの共通文書）
              */
             topic?: string | null;
+        };
+        /**
+         * DocumentSummariesResponse
+         * @description 文書一覧画面用。DocumentsResponse（セレクタ用）とは別物。
+         */
+        DocumentSummariesResponse: {
+            /**
+             * Documents
+             * @description ?project= / ?topic= で絞れる。新しい順
+             */
+            documents: components["schemas"]["DocumentSummary"][];
+            /**
+             * Truncated
+             * @description limit で打ち切ったか。true なら区分で絞ると続きが見える
+             */
+            truncated: boolean;
+        };
+        /**
+         * DocumentSummary
+         * @description 一覧画面に出す文書1行ぶん。DocumentInfo（セレクタ用）より重い。
+         *
+         *     ★DocumentInfo と分けてある★
+         *       あちらは「候補を埋める」ためのもので、同じ source は1件に潰す。こちらは
+         *       「今どうなっているか」を管理するためのもので、★同名の行が2つあること
+         *       自体が見せたい異常★（documents.source は UNIQUE ではない）。潰す/潰さない
+         *       が正反対なので、同じ型に乗せられない。
+         */
+        DocumentSummary: {
+            /**
+             * Id
+             * @description documents.id。同名の行を見分けるのに使う
+             */
+            id: number;
+            /**
+             * Source
+             * @description 文書名。検索結果や eval_questions が指す名前
+             */
+            source: string;
+            /**
+             * Project
+             * @description 所属プロジェクト（null=区分なしの共通文書）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description 所属トピック（null=区分なしの共通文書）
+             */
+            topic?: string | null;
+            /**
+             * Created At
+             * @description 登録日時（null=不明。古い行にはあり得る）
+             */
+            created_at?: string | null;
+            /**
+             * Chunk Count
+             * @description この文書に紐づくチャンク数。0 なら索引に載っていない
+             */
+            chunk_count: number;
+            /**
+             * Image Chunk Count
+             * @description うち画像チャンク（image_path あり）の数。図表が索引に載っているか
+             */
+            image_chunk_count: number;
+            /**
+             * Has Content Hash
+             * @description 差分検知(content_hash)が効く状態か。false の行は次回必ず取り込み直される
+             */
+            has_content_hash: boolean;
         };
         /**
          * DocumentsResponse
@@ -2039,6 +2145,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocumentsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_document_summaries_documents_summary_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                topic?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentSummariesResponse"];
                 };
             };
             /** @description Validation Error */

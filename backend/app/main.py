@@ -55,6 +55,7 @@ from app.schemas import (
     ChatRequest,
     ChatResponse,
     DocumentsResponse,
+    DocumentSummariesResponse,
     ErrorResponse,
     EvalQuestion,
     EvalQuestionRequest,
@@ -720,6 +721,102 @@ def list_documents(project: Optional[str] = None, topic: Optional[str] = None):
         ).fetchall()
     return {
         "documents": [{"source": r[0], "project": r[1], "topic": r[2]} for r in rows]
+    }
+
+
+# 一覧の既定件数と上限。文書は運用で増える一方なので「全部返す」は取らない。
+# 既定500は、この画面で扱う規模（評価コーパス29件＋デモ用）に対して十分な余裕。
+DOCUMENTS_LIMIT_DEFAULT = 500
+DOCUMENTS_LIMIT_MAX = 2000
+
+
+@app.get("/documents/summary", response_model=DocumentSummariesResponse)
+def list_document_summaries(
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
+    limit: int = DOCUMENTS_LIMIT_DEFAULT,
+):
+    """文書一覧画面用。1行 = documents の1行で、チャンク数と登録日時を添える。
+
+    ★/documents とは別エンドポイントにしてある★
+      あちらは「④の正解文書セレクタを埋める」用途で、同じ source を
+      DISTINCT ON で1件に潰す。こちらは管理用で、★同名の行が2つ見えること
+      自体が価値★（documents.source は UNIQUE ではないので二重登録があり得る）。
+      潰す/潰さないが正反対なので、同居させるとどちらかの用途が壊れる。
+
+    ★ここで気づきたい壊れ方★
+      - chunk_count が 0 … 登録したつもりで索引に載っていない
+      - image_chunk_count が 0 … 図表が索引に載っていない（方式や抽出の失敗）
+      - project/topic が NULL … 区分で絞った検索から丸ごと外れる
+      - 同じ source が複数行 … 二重登録
+
+    ★/projects /topics はそのまま使う（絞り込みセレクタ）★
+      あの2つはマスタを引くので「文書が1件も無い区分」も候補に出る。それを
+      除く絞り込みは足さない: 区分だけ先に作って文書は後から入れる、という
+      使い方を ①「区分だけ登録する」で明示的に支えているので、候補から
+      消すと「作ったはずの区分が無い」と読めてしまう。0件は下の空表示で言う。
+    """
+    project = _blank_to_none(project)
+    topic = _blank_to_none(topic)
+    # 上限は黙って効かせる（範囲外で 400 にはしない）。ここは表示用の件数で、
+    # 呼び出し側が直せる種類の間違いではないため。
+    limit = max(1, min(limit, DOCUMENTS_LIMIT_MAX))
+
+    # 区分は id 参照なので名前はマスタへの LEFT JOIN で引く（LEFT なのは
+    # 区分なし＝NULL の文書を落とさないため。list_documents と同じ形）。
+    clauses = []
+    params: list = []
+    if project is not None:
+        clauses.append("p.name = %s")
+        params.append(project)
+    if topic is not None:
+        clauses.append("t.name = %s")
+        params.append(topic)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    # 打ち切ったかを知るために1件多く取る（別途 COUNT(*) を撃たずに済む）。
+    params.append(limit + 1)
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT d.id, d.source, p.name, t.name, d.created_at, "
+            # チャンクは LEFT JOIN なので0件の文書も行として残る。
+            # COUNT(c.id) は NULL を数えないので、そのまま 0 になる。
+            f"COUNT(c.id) AS chunk_count, "
+            # COUNT(列) が数えるのは非NULLだけ＝image_path のある行＝画像チャンク。
+            f"COUNT(c.image_path) AS image_chunk_count, "
+            f"(d.content_hash IS NOT NULL) AS has_content_hash "
+            f"FROM documents d "
+            f"LEFT JOIN projects p ON p.id = d.project_id "
+            f"LEFT JOIN topics t ON t.id = d.topic_id "
+            f"LEFT JOIN chunks c ON c.document_id = d.id "
+            f"{where} "
+            # d.id は主キーなので、d.* は id にぶら下がるものとして GROUP BY に
+            # 並べなくてよい（Postgresの関数従属）。p.name/t.name は別テーブル
+            # なので明示が要る。
+            f"GROUP BY d.id, p.name, t.name "
+            # 新しい順。NULLS LAST は created_at が NULL の古い行を末尾に送るため
+            # （既定の DESC では NULL が先頭に来て、一番新しく見えてしまう）。
+            f"ORDER BY d.created_at DESC NULLS LAST, d.id DESC "
+            f"LIMIT %s",
+            params,
+        ).fetchall()
+
+    truncated = len(rows) > limit
+    return {
+        "documents": [
+            {
+                "id": r[0],
+                "source": r[1],
+                "project": r[2],
+                "topic": r[3],
+                "created_at": r[4],
+                "chunk_count": r[5],
+                "image_chunk_count": r[6],
+                "has_content_hash": r[7],
+            }
+            for r in rows[:limit]
+        ],
+        "truncated": truncated,
     }
 
 

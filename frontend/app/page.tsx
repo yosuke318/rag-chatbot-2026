@@ -25,6 +25,7 @@ type VerifyReport = components["schemas"]["VerifyReport"];
 type ApiError = components["schemas"]["ErrorResponse"];
 type RetrieverInfo = components["schemas"]["RetrieverInfo"];
 type ParamSpec = components["schemas"]["ParamSpec"];
+type DocumentSummary = components["schemas"]["DocumentSummary"];
 
 // 評価パネル用。api-types.ts は backend 起動下で `npm run gen:types` して再生成する
 // ため、それまでの間はここで最小の型を持つ（再生成後は components["schemas"]["EvalReport"]
@@ -240,6 +241,98 @@ function useDocuments(
   return sources;
 }
 
+/** 文書一覧（GET /documents/summary）。①「入っている文書」パネル用。
+ *
+ * ★useDocuments とは別のAPI★ あちらは ④ のセレクタを埋めるためのもので、
+ * 同じ source を1件に潰す。こちらは「今どうなっているか」を見る画面なので
+ * 潰さない（同名が2行あること自体が見せたい異常）。
+ *
+ * 取得中は null を返す（空配列＝「この区分に文書が無い」と区別する）。
+ * 呼び出し側はこの2つで出す文言が変わる。
+ */
+function useDocumentSummaries(
+  project: string,
+  topic: string,
+  reloadKey: number,
+): { rows: DocumentSummary[] | null; truncated: boolean } {
+  const [rows, setRows] = useState<DocumentSummary[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  useEffect(() => {
+    // 区分を変えたら前の区分の行をすぐ捨てる。残しておくと、取り直しの一瞬
+    // 「絞ったのに別区分の文書が入っている」ように見える（useDocuments と同じ）。
+    setRows(null);
+    setTruncated(false);
+    const params = new URLSearchParams();
+    if (project.trim()) params.set("project", project.trim());
+    if (topic.trim()) params.set("topic", topic.trim());
+    // 区分を続けて変えると応答が前後するので、古い結果は捨てる
+    let current = true;
+    const query = params.toString();
+    fetch(`/api/backend/documents/summary${query ? `?${query}` : ""}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (current) {
+          setRows(d.documents ?? []);
+          setTruncated(Boolean(d.truncated));
+        }
+      })
+      .catch(() => {
+        // 失敗したら「0件」に倒す。null のままだと読み込み中の表示で止まり、
+        // 待てば出てくるように見えてしまう。
+        if (current) setRows([]);
+      });
+    return () => {
+      current = false;
+    };
+  }, [project, topic, reloadKey]);
+  return { rows, truncated };
+}
+
+/** 一覧の並び替えのキー。既定は登録日時（新しい順＝APIが返す順）。 */
+type DocSortKey = "source" | "created_at" | "chunk_count";
+
+/** 一覧を指定のキーで並べ替える（表示用のコピーを返す）。
+ *
+ * 件数はAPI側の上限で頭打ちなので、サーバに撃ち直さず手元で並べ替える
+ * （押すたびに読み込み待ちが入るほうが、この画面では邪魔になる）。
+ */
+function sortDocuments(
+  rows: DocumentSummary[],
+  key: DocSortKey,
+  desc: boolean,
+): DocumentSummary[] {
+  const sorted = [...rows].sort((a, b) => {
+    if (key === "source") return a.source.localeCompare(b.source, "ja");
+    if (key === "chunk_count") return a.chunk_count - b.chunk_count;
+    // 日時不明(null)は常に末尾へ。昇順・降順のどちらでも「不明が一番古い/
+    // 新しい」と読めてしまうのを避ける。
+    if (!a.created_at || !b.created_at) {
+      if (a.created_at === b.created_at) return 0;
+      return a.created_at ? -1 : 1;
+    }
+    return a.created_at.localeCompare(b.created_at);
+  });
+  if (!desc) return sorted;
+  // null を末尾に固定したいので、逆順にするのは値を持つ行だけ。
+  const known = sorted.filter((r) => key !== "created_at" || r.created_at);
+  const unknown = sorted.filter((r) => key === "created_at" && !r.created_at);
+  return [...known.reverse(), ...unknown];
+}
+
+/** 登録日時の表示。秒までは要らないので分まで。 */
+function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "不明";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "不明";
+  return d.toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /** 選択肢に無い値（他パネルで打った新規の区分など）も候補に残す。 */
 function withCurrent(options: string[], value: string): string[] {
   const v = value.trim();
@@ -386,6 +479,273 @@ function ScopeInput({
   );
 }
 
+/** 並び替えボタン付きの表の見出しセル（①「入っている文書」用）。
+ *
+ * ★DocumentListPanel の中で定義しない★ 描画のたびに別のコンポーネントとして
+ * 扱われ、Reactが中身を作り直す（＝押した直後にフォーカスが外れる）ため。
+ */
+function DocSortHeader({
+  label,
+  state,
+  tip,
+  onClick,
+}: {
+  label: string;
+  /** "off" = この列では並べていない。 */
+  state: "asc" | "desc" | "off";
+  tip: string;
+  onClick: () => void;
+}) {
+  const on = state !== "off";
+  return (
+    <th
+      // 読み上げに「今どちらの向きで並んでいるか」を伝える
+      aria-sort={
+        state === "desc"
+          ? "descending"
+          : state === "asc"
+            ? "ascending"
+            : "none"
+      }
+    >
+      <button
+        type="button"
+        className={on ? "doc-sort active" : "doc-sort"}
+        onClick={onClick}
+        title={tip}
+      >
+        {label}
+        {/* 押していない列は「↕」。押せること自体を見せる。 */}
+        <span className="doc-sort-mark" aria-hidden="true">
+          {state === "desc" ? "▼" : state === "asc" ? "▲" : "↕"}
+        </span>
+      </button>
+    </th>
+  );
+}
+
+/** ①「入っている文書」パネル。登録済みの文書を区分で絞って表で見る。
+ *
+ * ★何のために要るか★
+ *   これまで文書名が画面に出るのは検索結果（②）と評価結果（④）の中だけで、
+ *   「そのプロジェクトに何が入っているか」を見る手段が無かった。結果として
+ *   次の状態に気づけない:
+ *     - 取り込んだつもりで入っていない（チャンク0）
+ *     - 区分が付いていない（区分で絞った検索から丸ごと外れる）
+ *     - 同じ内容を別名／同名で二重登録している
+ *     - 評価コーパスとデモ用文書が混ざって見分けが付かない
+ *   表の各列がそのままこの4つに対応している。
+ *
+ * ここは見るだけ。削除や区分の付け替えは扱わない（APIと権限の設計が別の話）。
+ */
+function DocumentListPanel({
+  projects,
+  scopeVersion,
+  project,
+  topic,
+  onProject,
+  onTopic,
+  sortKey,
+  sortDesc,
+  onSort,
+  onAddDocuments,
+}: {
+  projects: string[];
+  scopeVersion: number;
+  // ★絞り込みと並び順は Home が持つ★
+  //   このパネルはタブを離れると描画ごと消えるので、ここで useState すると
+  //   戻ったときに「すべて」に戻ってしまう。他パネル（検索結果・チャット履歴）
+  //   と同じく、消えるのは描画だけ・選択は残る、に揃える。
+  project: string;
+  topic: string;
+  onProject: (v: string) => void;
+  onTopic: (v: string) => void;
+  sortKey: DocSortKey;
+  sortDesc: boolean;
+  onSort: (key: DocSortKey, desc: boolean) => void;
+  /** 0件のときに ①「登録する」へ送るための遷移。 */
+  onAddDocuments: () => void;
+}) {
+  const topics = useTopics(project, scopeVersion);
+  // 手動の再読み込み。scopeVersion は登録が済むと増える（uploadPending）ので、
+  // 「登録 → 一覧を見る」の順なら押さなくても最新になる。押す必要があるのは
+  // 別の端末やCLIから入れたときなので、ボタン自体は残す。
+  // ここは「押した回数」でしかなく残す価値が無いので、パネル内で持つ。
+  const [reload, setReload] = useState(0);
+  const { rows, truncated } = useDocumentSummaries(
+    project,
+    topic,
+    scopeVersion + reload,
+  );
+
+  function toggleSort(key: DocSortKey) {
+    if (key === sortKey) {
+      onSort(key, !sortDesc);
+      return;
+    }
+    // 文書名は昇順（あ→ん）、数と日時は降順（多い順・新しい順）から始めるのが
+    // それぞれ「まず見たい向き」。
+    onSort(key, key !== "source");
+  }
+
+  const sorted = rows ? sortDocuments(rows, sortKey, sortDesc) : null;
+
+  /** その列が並び替えの基準か、基準ならどちら向きか。 */
+  const sortState = (key: DocSortKey) =>
+    sortKey === key ? (sortDesc ? "desc" : "asc") : "off";
+
+  return (
+    <section className="panel">
+      <h2>① 入っている文書（/documents/summary・APIキー不要）</h2>
+      <p className="hint panel-note">
+        登録済みの文書を区分で絞って一覧します。
+        <strong>チャンク数が0の行は索引に載っていません</strong>
+        （＝検索で絶対に引けない）。区分が「共通」の文書は、
+        区分で絞った検索・評価の対象から外れます。
+      </p>
+
+      <ScopeSelect
+        idPrefix="doclist"
+        project={project}
+        topic={topic}
+        projects={projects}
+        topics={topics}
+        onProject={onProject}
+        onTopic={onTopic}
+      />
+
+      <div className="verify-controls">
+        <button onClick={() => setReload((v) => v + 1)}>再読み込み</button>
+        <span className="hint">
+          {sorted === null
+            ? "読み込み中…"
+            : `${sorted.length}件${truncated ? "（上限まで）" : ""}`}
+        </span>
+      </div>
+
+      {/* 上限で切れたことは黙らせない。続きがあるのに全部だと読まれると、
+          「入っていない文書に気づく」というこの画面の役目が壊れる。 */}
+      {truncated && (
+        <p className="hint ingest-status">
+          件数が多いため上限で打ち切りました。区分で絞ると続きが見えます。
+        </p>
+      )}
+
+      {sorted !== null && sorted.length === 0 && (
+        <p className="hint">
+          この区分には文書がありません。
+          {project.trim() || topic.trim() ? (
+            <>
+              {" "}
+              区分の指定を外すと全文書が見えます。この区分に入れたい場合は{" "}
+              <button className="linklike" onClick={onAddDocuments}>
+                ①「登録する」
+              </button>{" "}
+              で同じ区分を付けて登録してください。
+            </>
+          ) : (
+            <>
+              {" "}
+              <button className="linklike" onClick={onAddDocuments}>
+                ①「登録する」
+              </button>{" "}
+              からファイルを登録してください。
+            </>
+          )}
+        </p>
+      )}
+
+      {sorted !== null && sorted.length > 0 && (
+        <div className="table-wrap">
+          <table className="doc-table">
+            <thead>
+              <tr>
+                <DocSortHeader
+                  label="文書名"
+                  state={sortState("source")}
+                  tip="文書名で並べ替え（クリックで昇順/降順）"
+                  onClick={() => toggleSort("source")}
+                />
+                <th>プロジェクト</th>
+                <th>トピック</th>
+                <DocSortHeader
+                  label="チャンク"
+                  state={sortState("chunk_count")}
+                  tip="チャンク数で並べ替え。0 は索引に載っていない"
+                  onClick={() => toggleSort("chunk_count")}
+                />
+                <th>
+                  <Tip label="画像">
+                    左のチャンクのうち<strong>画像チャンク</strong>
+                    （<code>image_path</code> のあるもの）の数。 PDF/xlsx/pptx
+                    に図表があるのに「—」なら、図表が索引に載っていない
+                    ＝図の内容は検索で引けない。
+                  </Tip>
+                </th>
+                <th>
+                  <Tip label="差分検知">
+                    取り込んだ内容のハッシュ（<code>content_hash</code>
+                    ）を持っているか。 「—」の行は次に同じファイルを登録したとき、
+                    中身が変わっていなくても
+                    <strong>必ず入れ直される</strong>（＝埋め込みAPIを呼ぶ）。
+                  </Tip>
+                </th>
+                <DocSortHeader
+                  label="登録日時"
+                  state={sortState("created_at")}
+                  tip="登録日時で並べ替え（既定は新しい順）"
+                  onClick={() => toggleSort("created_at")}
+                />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((d) => (
+                // key は id。source は一意ではない（同名の二重登録があり得る）
+                <tr key={d.id}>
+                  <td>
+                    <SourceLink source={d.source} />
+                  </td>
+                  {/* ★区分なしは空欄にしない★
+                      空欄だと「表示漏れ」と読めてしまう。NULL は
+                      「どこにも属さない共通文書」という意味のある状態なので、
+                      そう書く。 */}
+                  <td>
+                    {d.project ?? <span className="doc-null">共通</span>}
+                  </td>
+                  <td>{d.topic ?? <span className="doc-null">共通</span>}</td>
+                  {/* 0件は索引に載っていない＝検索で引けないので、他と違う色で出す */}
+                  <td
+                    className={
+                      d.chunk_count === 0 ? "doc-num doc-warn" : "doc-num"
+                    }
+                  >
+                    {d.chunk_count}
+                  </td>
+                  <td className="doc-num">
+                    {d.image_chunk_count > 0 ? (
+                      d.image_chunk_count
+                    ) : (
+                      <span className="doc-null">—</span>
+                    )}
+                  </td>
+                  <td className="doc-num">
+                    {d.has_content_hash ? (
+                      "✓"
+                    ) : (
+                      <span className="doc-null">—</span>
+                    )}
+                  </td>
+                  <td className="doc-when">{formatDateTime(d.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** 左サイドバーのタブ。順番がそのまま画面の並びになる。
  *
  * ①〜⑤ の番号は「文書を入れる → 検索を見る → 質問する → 数字で測る」という
@@ -414,6 +774,28 @@ const EVAL_SUBTABS = [
 ] as const;
 
 type EvalSubTab = (typeof EVAL_SUBTABS)[number]["id"];
+
+/** ① の配下タブ。
+ *
+ * 「入れる」と「何が入っているか見る」は、④ の「質問を追加/評価」と同じ関係
+ * （同じ対象を扱う一続きの作業だが、見たいものが違う）。登録フォームの下に
+ * 表を縦積みすると、一覧を見るたびにドロップゾーンを読み飛ばすことになるので、
+ * ④ と同じ形で配下に割る。
+ */
+const INGEST_SUBTABS = [
+  { id: "add", label: "登録する", hint: "/ingest-file" },
+  { id: "list", label: "入っている文書", hint: "/documents/summary" },
+] as const;
+
+type IngestSubTab = (typeof INGEST_SUBTABS)[number]["id"];
+
+/** 配下タブを持つタブと、その中身。ここに足せばサイドバーに出る。 */
+const SUBTABS: Partial<
+  Record<TabId, readonly { id: string; label: string; hint: string }[]>
+> = {
+  ingest: INGEST_SUBTABS,
+  eval: EVAL_SUBTABS,
+};
 
 /** 準拠している公開ベンチマーク（README「参考にした公開ベンチマーク」と同じ内容）。
  *
@@ -643,21 +1025,44 @@ function ThemeToggle() {
 function Sidebar({
   tab,
   onTab,
+  ingestSubTab,
+  onIngestSubTab,
   evalSubTab,
   onEvalSubTab,
 }: {
   tab: TabId;
   onTab: (id: TabId) => void;
+  ingestSubTab: IngestSubTab;
+  onIngestSubTab: (id: IngestSubTab) => void;
   evalSubTab: EvalSubTab;
   onEvalSubTab: (id: EvalSubTab) => void;
 }) {
-  // ④ の配下タブを開いているか。開閉は見せ方だけの話なので state はここに置く
-  // （Sidebar は常に描画されているので、タブを移動しても開閉は保たれる）。
-  // 初期値 true: 配下タブがあること自体に気づけないと、④ の「質問を追加」に
-  // たどり着けない。
-  const [evalOpen, setEvalOpen] = useState(true);
+  // 配下タブを開いているか（タブidごと）。開閉は見せ方だけの話なので state は
+  // ここに置く（Sidebar は常に描画されているので、タブを移動しても開閉は保たれる）。
+  // 初期値 true: 配下タブがあること自体に気づけないと、そこにたどり着けない。
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
+    ingest: true,
+    eval: true,
+  });
   // 準拠ベンチマークの表（タイトルから開く）
   const [benchOpen, setBenchOpen] = useState(false);
+
+  // 配下タブの「今どれか」と「選んだとき」を tab id で引けるようにする。
+  // SUBTABS 側の id は string に均されているので、渡すときに元の型へ戻す
+  // （キャストはこの2行だけに閉じ込める）。
+  const groups: Record<
+    string,
+    { current: string; onPick: (id: string) => void }
+  > = {
+    ingest: {
+      current: ingestSubTab,
+      onPick: (id) => onIngestSubTab(id as IngestSubTab),
+    },
+    eval: {
+      current: evalSubTab,
+      onPick: (id) => onEvalSubTab(id as EvalSubTab),
+    },
+  };
 
   return (
     <nav className="sidebar" aria-label="機能">
@@ -682,8 +1087,11 @@ function Sidebar({
       <BenchmarkModal open={benchOpen} onClose={() => setBenchOpen(false)} />
       <ul className="sidebar-tabs">
         {TABS.map((t) => {
-          // ④ だけ配下タブを持つ。開閉ボタンもこのタブにだけ付く。
-          const hasSubtabs = t.id === "eval";
+          // 配下タブを持つのは ① と ④。開閉ボタンもそのタブにだけ付く。
+          const subtabs = SUBTABS[t.id];
+          const hasSubtabs = subtabs !== undefined;
+          const open = openGroups[t.id] ?? true;
+          const group = groups[t.id];
           return (
             <li key={t.id}>
               {/* 開閉ボタンはタブ本体と★兄弟★にする（button は入れ子にできない）。
@@ -698,9 +1106,10 @@ function Sidebar({
                   aria-current={t.id === tab ? "true" : undefined}
                   onClick={() => {
                     onTab(t.id);
-                    // ④ を選んだら配下も開く。畳んだまま選んで「切り替え先が
-                    // 見えない」状態になるのを防ぐ。
-                    if (hasSubtabs) setEvalOpen(true);
+                    // 配下を持つタブを選んだら配下も開く。畳んだまま選んで
+                    // 「切り替え先が見えない」状態になるのを防ぐ。
+                    if (hasSubtabs)
+                      setOpenGroups((g) => ({ ...g, [t.id]: true }));
                   }}
                 >
                   <span className="sidebar-tab-label">{t.label}</span>
@@ -711,7 +1120,7 @@ function Sidebar({
                     type="button"
                     className={[
                       "sidebar-tab-toggle",
-                      evalOpen ? "open" : "",
+                      open ? "open" : "",
                       // 親タブが選択中のときは同じ塗りにして1つのタブに見せる
                       t.id === tab ? "on-active" : "",
                     ]
@@ -719,45 +1128,44 @@ function Sidebar({
                       .join(" ")}
                     // 表示は「>」だけなので、何を開くボタンなのかを読み上げに補う
                     aria-label={
-                      evalOpen ? `${t.label}の配下を閉じる` : `${t.label}の配下を開く`
+                      open ? `${t.label}の配下を閉じる` : `${t.label}の配下を開く`
                     }
-                    aria-expanded={evalOpen}
-                    aria-controls="sidebar-eval-subtabs"
-                    onClick={() => setEvalOpen((v) => !v)}
+                    aria-expanded={open}
+                    aria-controls={`sidebar-${t.id}-subtabs`}
+                    onClick={() =>
+                      setOpenGroups((g) => ({ ...g, [t.id]: !open }))
+                    }
                   >
                     {/* 三角の向きは CSS の回転で変える（開=下・閉=右） */}
                     <span aria-hidden="true">›</span>
                   </button>
                 )}
               </div>
-              {/* 配下タブは開いている間だけ出す。④ 以外を見ているときでも
-                  出しておき、そこから直接飛べるようにする（押したら ④ に移る）。 */}
-              {hasSubtabs && evalOpen && (
-                <ul className="sidebar-subtabs" id="sidebar-eval-subtabs">
-                  {EVAL_SUBTABS.map((s) => (
-                    <li key={s.id}>
-                      <button
-                        type="button"
-                        className={
-                          tab === "eval" && s.id === evalSubTab
-                            ? "sidebar-subtab active"
-                            : "sidebar-subtab"
-                        }
-                        aria-current={
-                          tab === "eval" && s.id === evalSubTab
-                            ? "true"
-                            : undefined
-                        }
-                        onClick={() => {
-                          onTab("eval");
-                          onEvalSubTab(s.id);
-                        }}
-                      >
-                        <span className="sidebar-tab-label">{s.label}</span>
-                        <code className="sidebar-tab-hint">{s.hint}</code>
-                      </button>
-                    </li>
-                  ))}
+              {/* 配下タブは開いている間だけ出す。親タブ以外を見ているときでも
+                  出しておき、そこから直接飛べるようにする（押したら親に移る）。 */}
+              {subtabs && open && group && (
+                <ul className="sidebar-subtabs" id={`sidebar-${t.id}-subtabs`}>
+                  {subtabs.map((s) => {
+                    const here = tab === t.id && s.id === group.current;
+                    return (
+                      <li key={s.id}>
+                        <button
+                          type="button"
+                          className={
+                            here ? "sidebar-subtab active" : "sidebar-subtab"
+                          }
+                          aria-current={here ? "true" : undefined}
+                          onClick={() => {
+                            onTab(t.id);
+                            group.onPick(s.id);
+                          }}
+                        >
+                          <span className="sidebar-tab-label">{s.label}</span>
+                          <code className="sidebar-tab-hint">{s.hint}</code>
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </li>
@@ -786,6 +1194,8 @@ export default function Home() {
   // タブ切り替えで消えるのは描画だけなので、検索結果・チャット履歴・評価
   // レポートは戻ってきたときにそのまま残る。
   const [tab, setTab] = useState<TabId>("ingest");
+  // ① の中で見ている面。既定は「登録する」＝ ① の本題（最初にやること）。
+  const [ingestSubTab, setIngestSubTab] = useState<IngestSubTab>("add");
   // ④ の中で見ている面。既定は「質問集を評価」＝ ④ の本題（スコアを見る）。
   // 質問を足すのは準備なので、必要なときに配下タブで開く。
   const [evalSubTab, setEvalSubTab] = useState<EvalSubTab>("run");
@@ -813,6 +1223,15 @@ export default function Home() {
   const [ingestStatus, setIngestStatus] = useState("");
   // 「区分だけ登録」の結果表示（文書の取り込み結果とは別に出す）
   const [scopeStatus, setScopeStatus] = useState("");
+  // --- 文書一覧パネル（①「入っている文書」= /documents/summary）---
+  // 見るだけの画面だが、絞り込みと並び順は他パネルと同じくここに置く
+  // （タブを移動して戻ったときに「すべて・新しい順」へ戻らないように）。
+  // トピックの候補はパネル側で引く（選択中のプロジェクト配下だけ・他パネルと同じ）
+  const [listProject, setListProject] = useState("");
+  const [listTopic, setListTopic] = useState("");
+  const [listSortKey, setListSortKey] = useState<DocSortKey>("created_at");
+  const [listSortDesc, setListSortDesc] = useState(true);
+
   // ファイルのドラッグ&ドロップ登録（/ingest-file）
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -1315,6 +1734,8 @@ export default function Home() {
       <Sidebar
         tab={tab}
         onTab={setTab}
+        ingestSubTab={ingestSubTab}
+        onIngestSubTab={setIngestSubTab}
         evalSubTab={evalSubTab}
         onEvalSubTab={setEvalSubTab}
       />
@@ -1344,7 +1765,7 @@ export default function Home() {
         </div>
 
       {/* 書き込みフロー: text → chunk → embed → pgvector */}
-      {tab === "ingest" && (
+      {tab === "ingest" && ingestSubTab === "add" && (
       <section className="panel">
         <h2>① 文書を登録（/ingest-file・Voyageキー必要）</h2>
 
@@ -1476,6 +1897,25 @@ export default function Home() {
         )}
         {ingestStatus && <p className="hint ingest-status">{ingestStatus}</p>}
       </section>
+      )}
+
+      {/* 読み出し側の確認: 今そのプロジェクトに何がどう入っているか */}
+      {tab === "ingest" && ingestSubTab === "list" && (
+        <DocumentListPanel
+          projects={projects}
+          scopeVersion={scopeVersion}
+          project={listProject}
+          topic={listTopic}
+          onProject={setListProject}
+          onTopic={setListTopic}
+          sortKey={listSortKey}
+          sortDesc={listSortDesc}
+          onSort={(key, desc) => {
+            setListSortKey(key);
+            setListSortDesc(desc);
+          }}
+          onAddDocuments={() => setIngestSubTab("add")}
+        />
       )}
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}

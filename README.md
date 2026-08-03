@@ -88,12 +88,17 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 | パネル | 対応するAPI | 必要なAPIキー |
 |---|---|---|
 | ① 文書を登録 | `POST /ingest` | Voyage（埋め込み） |
+| ① 入っている文書 | `GET /documents/summary` | 不要 |
 | ② 検索の内訳を見る | `GET /search` | Voyage のみ |
 | ③ 質問する | `POST /chat` | Voyage + Anthropic |
 | ④ 評価する | `GET /eval` | Voyage（リランク時 Anthropic） |
 
 **検索だけならAnthropicキーは要らない**。回答生成を挟まずに検索の挙動だけを追えるので、
 チューニングの試行錯誤は ② と ④ で完結する。
+
+① の配下「入っている文書」は、登録済みの文書を project / topic で絞って一覧する管理用の表。
+**チャンク数0（索引に載っていない）・区分なし（区分で絞った検索から外れる）・同名の二重登録**
+という「黙って検索対象から消えている」状態を、ここで見つけるためのもの。
 
 > ※ 上のスクリーンショットは ①〜③ の頃のもの。④ 評価パネルと出典のダウンロードリンクは
 > 追加後に再取得予定（`cd frontend && npm run screenshot`）。

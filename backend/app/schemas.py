@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -272,6 +273,55 @@ class DocumentsResponse(BaseModel):
 
     documents: List[DocumentInfo] = Field(
         description="?project= / ?topic= を付けるとその区分の文書だけになる"
+    )
+
+
+class DocumentSummary(BaseModel):
+    """一覧画面に出す文書1行ぶん。DocumentInfo（セレクタ用）より重い。
+
+    ★DocumentInfo と分けてある★
+      あちらは「候補を埋める」ためのもので、同じ source は1件に潰す。こちらは
+      「今どうなっているか」を管理するためのもので、★同名の行が2つあること
+      自体が見せたい異常★（documents.source は UNIQUE ではない）。潰す/潰さない
+      が正反対なので、同じ型に乗せられない。
+    """
+
+    # 同名の行を見分けるための行ID。表の key にも使う（source は一意ではない）。
+    id: int = Field(description="documents.id。同名の行を見分けるのに使う")
+    source: str = Field(description="文書名。検索結果や eval_questions が指す名前")
+    project: Optional[str] = Field(
+        default=None, description="所属プロジェクト（null=区分なしの共通文書）"
+    )
+    topic: Optional[str] = Field(
+        default=None, description="所属トピック（null=区分なしの共通文書）"
+    )
+    # documents.created_at は NOT NULL ではない（DEFAULT now() だけ）ので、
+    # 明示的に NULL を入れた古い行があり得る。任意扱いにしておく。
+    created_at: Optional[datetime] = Field(
+        default=None, description="登録日時（null=不明。古い行にはあり得る）"
+    )
+    chunk_count: int = Field(
+        description="この文書に紐づくチャンク数。0 なら索引に載っていない"
+    )
+    image_chunk_count: int = Field(
+        description="うち画像チャンク（image_path あり）の数。図表が索引に載っているか"
+    )
+    has_content_hash: bool = Field(
+        description="差分検知(content_hash)が効く状態か。false の行は次回必ず取り込み直される"
+    )
+
+
+class DocumentSummariesResponse(BaseModel):
+    """文書一覧画面用。DocumentsResponse（セレクタ用）とは別物。"""
+
+    documents: List[DocumentSummary] = Field(
+        description="?project= / ?topic= で絞れる。新しい順"
+    )
+    # ★上限で切れたことを黙らせない★
+    #   「入っているつもりで入っていない文書に気づく」ための画面なので、
+    #   続きがあるのに全部だと読まれると、この画面の役目自体が壊れる。
+    truncated: bool = Field(
+        description="limit で打ち切ったか。true なら区分で絞ると続きが見える"
     )
 
 
