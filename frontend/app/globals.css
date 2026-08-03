@@ -148,6 +148,60 @@ body {
   color: var(--on-accent);
 }
 
+/* 配下タブを持つ行（④）。タブ本体と開閉ボタンを1行に見せる。
+   開閉ボタンは button の入れ子を避けるためタブと兄弟になっている（Sidebar 参照）。 */
+.sidebar-tab-row {
+  display: flex;
+  align-items: stretch;
+  /* 隙間を空けない。角丸を左右で分け合って1つの錠剤に見せる（下2つの
+     border-radius）ので、間が空くと選択中に塗りが割れて見える。 */
+  gap: 0;
+}
+
+.sidebar-tab-row .sidebar-tab {
+  flex: 1;
+  min-width: 0; /* 開閉ボタンのぶんを残す（width:100% のままだと押し出される） */
+  border-radius: 8px 0 0 8px;
+}
+
+.sidebar-tab-toggle {
+  /* 既定の button 見た目（アクセント塗り）を消してタブの一部に見せる */
+  flex: none;
+  width: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sidebar-tab-toggle:hover {
+  background: var(--bot-bubble);
+  color: var(--text);
+}
+
+/* 親タブが選択中なら開閉ボタンも同じ塗りにして、行全体で1つのタブに見せる */
+.sidebar-tab-toggle.on-active,
+.sidebar-tab-toggle.on-active:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* 「›」を回して開閉を示す。閉=右向き（そのまま）、開=下向き。
+   別の文字に差し替えるのではなく回転させるのは、切り替わりが動きとして
+   見えるほうが「これは開閉するもの」だと伝わるため。 */
+.sidebar-tab-toggle span {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.sidebar-tab-toggle.open span {
+  transform: rotate(90deg);
+}
+
 .sidebar-tab-hint {
   font-size: 11px;
   opacity: 0.7;
@@ -157,7 +211,7 @@ body {
   opacity: 0.85;
 }
 
-/* ④ の配下タブ。選択中の親タブの下にだけ開く（Sidebar 参照）。
+/* ④ の配下タブ。開閉ボタン（.sidebar-tab-toggle）で出し入れする。
    左の縦線と字下げで「④ の中の話」だと分かるようにする。 */
 .sidebar-subtabs {
   list-style: none;

@@ -488,6 +488,12 @@ function Sidebar({
   evalSubTab: EvalSubTab;
   onEvalSubTab: (id: EvalSubTab) => void;
 }) {
+  // ④ の配下タブを開いているか。開閉は見せ方だけの話なので state はここに置く
+  // （Sidebar は常に描画されているので、タブを移動しても開閉は保たれる）。
+  // 初期値 true: 配下タブがあること自体に気づけないと、④ の「質問を追加」に
+  // たどり着けない。
+  const [evalOpen, setEvalOpen] = useState(true);
+
   return (
     <nav className="sidebar" aria-label="機能">
       {/* ページの見出しはここ1つ。本文側は各機能の h2 から始まる */}
@@ -496,46 +502,88 @@ function Sidebar({
         <span>RAG検証ラボ</span>
       </div>
       <ul className="sidebar-tabs">
-        {TABS.map((t) => (
-          <li key={t.id}>
-            <button
-              type="button"
-              className={t.id === tab ? "sidebar-tab active" : "sidebar-tab"}
-              // "page" ではなく "true"。ページ遷移はしておらず同一ページ内の
-              // 表示切替なので、aria-current の汎用値（=その集合の現在の項目）が
-              // 実態に合う。
-              aria-current={t.id === tab ? "true" : undefined}
-              onClick={() => onTab(t.id)}
-            >
-              <span className="sidebar-tab-label">{t.label}</span>
-              <code className="sidebar-tab-hint">{t.hint}</code>
-            </button>
-            {/* ④ の配下タブは、④ を選んでいるときだけ開く。常に出しておくと
-                他の機能を見ている間もサイドバーが1段深く見えて、どれが今の
-                画面なのか読み取りづらくなる。 */}
-            {t.id === "eval" && tab === "eval" && (
-              <ul className="sidebar-subtabs">
-                {EVAL_SUBTABS.map((s) => (
-                  <li key={s.id}>
-                    <button
-                      type="button"
-                      className={
-                        s.id === evalSubTab
-                          ? "sidebar-subtab active"
-                          : "sidebar-subtab"
-                      }
-                      aria-current={s.id === evalSubTab ? "true" : undefined}
-                      onClick={() => onEvalSubTab(s.id)}
-                    >
-                      <span className="sidebar-tab-label">{s.label}</span>
-                      <code className="sidebar-tab-hint">{s.hint}</code>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-        ))}
+        {TABS.map((t) => {
+          // ④ だけ配下タブを持つ。開閉ボタンもこのタブにだけ付く。
+          const hasSubtabs = t.id === "eval";
+          return (
+            <li key={t.id}>
+              {/* 開閉ボタンはタブ本体と★兄弟★にする（button は入れ子にできない）。
+                  行としては1つに見えるよう .sidebar-tab-row で横に並べる。 */}
+              <div className={hasSubtabs ? "sidebar-tab-row" : undefined}>
+                <button
+                  type="button"
+                  className={t.id === tab ? "sidebar-tab active" : "sidebar-tab"}
+                  // "page" ではなく "true"。ページ遷移はしておらず同一ページ内の
+                  // 表示切替なので、aria-current の汎用値（=その集合の現在の項目）が
+                  // 実態に合う。
+                  aria-current={t.id === tab ? "true" : undefined}
+                  onClick={() => {
+                    onTab(t.id);
+                    // ④ を選んだら配下も開く。畳んだまま選んで「切り替え先が
+                    // 見えない」状態になるのを防ぐ。
+                    if (hasSubtabs) setEvalOpen(true);
+                  }}
+                >
+                  <span className="sidebar-tab-label">{t.label}</span>
+                  <code className="sidebar-tab-hint">{t.hint}</code>
+                </button>
+                {hasSubtabs && (
+                  <button
+                    type="button"
+                    className={[
+                      "sidebar-tab-toggle",
+                      evalOpen ? "open" : "",
+                      // 親タブが選択中のときは同じ塗りにして1つのタブに見せる
+                      t.id === tab ? "on-active" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    // 表示は「>」だけなので、何を開くボタンなのかを読み上げに補う
+                    aria-label={
+                      evalOpen ? `${t.label}の配下を閉じる` : `${t.label}の配下を開く`
+                    }
+                    aria-expanded={evalOpen}
+                    aria-controls="sidebar-eval-subtabs"
+                    onClick={() => setEvalOpen((v) => !v)}
+                  >
+                    {/* 三角の向きは CSS の回転で変える（開=下・閉=右） */}
+                    <span aria-hidden="true">›</span>
+                  </button>
+                )}
+              </div>
+              {/* 配下タブは開いている間だけ出す。④ 以外を見ているときでも
+                  出しておき、そこから直接飛べるようにする（押したら ④ に移る）。 */}
+              {hasSubtabs && evalOpen && (
+                <ul className="sidebar-subtabs" id="sidebar-eval-subtabs">
+                  {EVAL_SUBTABS.map((s) => (
+                    <li key={s.id}>
+                      <button
+                        type="button"
+                        className={
+                          tab === "eval" && s.id === evalSubTab
+                            ? "sidebar-subtab active"
+                            : "sidebar-subtab"
+                        }
+                        aria-current={
+                          tab === "eval" && s.id === evalSubTab
+                            ? "true"
+                            : undefined
+                        }
+                        onClick={() => {
+                          onTab("eval");
+                          onEvalSubTab(s.id);
+                        }}
+                      >
+                        <span className="sidebar-tab-label">{s.label}</span>
+                        <code className="sidebar-tab-hint">{s.hint}</code>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
       </ul>
       <ThemeToggle />
     </nav>
