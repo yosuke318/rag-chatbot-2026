@@ -823,6 +823,53 @@ button:disabled {
   border-radius: 12px;
 }
 
+/* 既定では使わない任意入力を畳んでおく枠（③「質問を追加」のチャンク単位採点）。
+   中に説明文ごと入れて、「どの欄の説明か」を枠と位置で示すのが狙い。 */
+.q-optional {
+  margin-bottom: 8px; /* 素の input の下マージンと揃える */
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--subtle);
+}
+
+.q-optional > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  /* 三角は各ブラウザ既定のマーカーに任せる（開閉の向きも面倒を見てくれる） */
+  list-style-position: outside;
+}
+
+.q-optional > summary:hover {
+  color: var(--accent);
+}
+
+/* 開いている間だけ中身に余白を付ける（畳んだときは1行の高さに収める） */
+.q-optional[open] > summary {
+  margin-bottom: 6px;
+}
+
+/* 畳んだ状態で入力済みの語句を見せる印。値そのものなので本文色で出す。 */
+.q-optional-value {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--text);
+  font-size: 11px;
+}
+
+/* 説明は段落を分けて書く。.hint の既定マージンだと段落同士がくっついて
+   1つの塊に見えるので、ここだけ段落間を空ける。 */
+.q-optional-body p {
+  margin: 0 0 6px;
+}
+
+.q-optional-body p:last-child {
+  margin-bottom: 8px;
+}
+
 /* プロジェクト／トピックの2列入力。①〜⑤の全パネルで使う
    （登録側は AutoComplete＝自由入力あり、絞り込み側は Select＝選ぶだけ。
    どちらも antd なので見た目は揃う） */

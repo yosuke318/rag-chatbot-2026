@@ -757,12 +757,49 @@ function DocumentListPanel({
  * ★④は「会話する」★ 叩いているのが /chat（履歴を持つ会話API）なので、
  * 画面の名前もAPIに合わせる。「質問する」だと1問1答に見えるが、実際は
  * conversation_id で履歴が繋がる。
+ *
+ * ★desc はタブに当てたときのツールチップ★
+ *   ②と③はどちらも「検索が当たっているかを見る」画面なので、名前だけだと
+ *   毎回どっちがどっちか分からなくなる。パネルを開かないと違いが読めないのは
+ *   遅いので、★選ぶ前の段階（サイドバー）★で読めるようにする。
+ *   title 属性なので改行は \n で入れる。
  */
 const TABS = [
-  { id: "ingest", label: "① 文書を登録", hint: "/ingest-file" },
-  { id: "search", label: "② 検索の内訳", hint: "/search" },
-  { id: "eval", label: "③ 評価する", hint: "/eval" },
-  { id: "chat", label: "④ 会話する", hint: "/chat" },
+  {
+    id: "ingest",
+    label: "① 文書を登録",
+    hint: "/ingest-file",
+    desc:
+      "検索・回答の対象になる文書を入れる。\n" +
+      "ここに入っていない文書は、②③④で何をしても出てこない。\n" +
+      "配下の「入っている文書」で、今なにが入っているかを一覧できる。",
+  },
+  {
+    id: "search",
+    label: "② 検索の内訳",
+    hint: "/search",
+    desc:
+      "質問を1件だけ投げて、ベクトル・字面・BM25 がそれぞれ何位を付けたかを並べて見る。\n" +
+      "「1問をなぜその順位にしたのか」を開いて見る場所。点数は付かない。\n" +
+      "RRFのkや閾値をその場で変えて、順位の動き方を体感するのに使う。",
+  },
+  {
+    id: "eval",
+    label: "③ 評価する",
+    hint: "/eval",
+    desc:
+      "正解ラベル付きの質問集をまとめて検索して、Hit@k / MRR という数字にする。\n" +
+      "「質問集全体で当たるようになったか」を測る場所。\n" +
+      "②が1問の中身を見るのに対し、③は改良の前後で数字が上がったかを判定する。",
+  },
+  {
+    id: "chat",
+    label: "④ 会話する",
+    hint: "/chat",
+    desc:
+      "検索で見つけたチャンクを根拠に Claude が回答する。\n" +
+      "②と③で詰めた検索の設定を、実際の受け答えとして使う場所。",
+  },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -1131,6 +1168,9 @@ function Sidebar({
                 <button
                   type="button"
                   className={t.id === tab ? "sidebar-tab active" : "sidebar-tab"}
+                  // 何をする画面かの説明（TABS.desc）。★開く前に読める★のが要点で、
+                  // ②と③のどちらを開けばいいかをここで決められるようにする。
+                  title={t.desc}
                   // "page" ではなく "true"。ページ遷移はしておらず同一ページ内の
                   // 表示切替なので、aria-current の汎用値（=その集合の現在の項目）が
                   // 実態に合う。
@@ -2443,16 +2483,54 @@ export default function Home() {
               listHeight={LIST_HEIGHT}
             />
           </div>
-          <input
-            placeholder="正解チャンクに含まれる語句（任意・例: 1日2時間を超える場合）"
-            value={newExpectedText}
-            onChange={(e) => setNewExpectedText(e.target.value)}
-          />
-          <p className="hint">
-            語句を入れると<strong>チャンク単位</strong>で採点する（その語句を含むチャンクを
-            引けたときだけ正解）。空欄なら<strong>文書単位</strong>＝その文書のどのチャンクでも
-            正解になり、分割やcontextualの改良は<strong>数字に出ない</strong>。
-          </p>
+          {/* ★畳んでおく★ 使うのは「分割やcontextualの改良を測りたい」ときだけの
+              レアケースで、ふつうの設問は空欄（＝文書単位）で足りる。開いたままだと
+              説明文が下の「メモ」への説明に見えてしまうので、入力欄ごとこの中へ
+              入れて「どの欄の説明か」を枠と位置で示す。 */}
+          <details className="q-optional">
+            <summary>
+              チャンク単位で採点する（任意・ふつうは空欄のままでよい）
+              {/* 畳んだ状態でも入力済みなら値を出す。隠れたまま登録されると
+                  「文書単位のつもりが違った」に後から気づけない。 */}
+              {newExpectedText.trim() && (
+                <span className="q-optional-value">
+                  {newExpectedText.trim()}
+                </span>
+              )}
+            </summary>
+            <div className="hint q-optional-body">
+              <p>
+                <strong>チャンクとは</strong>
+                ：文書は登録時に一定の長さで分割されて保存されます。その1つ1つがチャンクで、
+                <strong>検索が返すのも、回答の根拠になるのもこの単位</strong>です
+                （「就業規則.txt」1件が5チャンクに割れている、といった状態）。
+              </p>
+              <p>
+                <strong>空欄＝文書単位で採点（既定）</strong>
+                ：正解の文書のチャンクが1つでも上位に来れば正解にします。手軽ですが、
+                長い文書だと<strong>同じ文書の関係ない段落</strong>を引いても正解になるので、
+                分割の仕方や contextual retrieval を改良しても
+                <strong>数字が動きません</strong>。
+              </p>
+              <p>
+                <strong>語句を入れる＝チャンク単位で採点</strong>
+                ：その語句を含むチャンクを引けたときだけ正解にします。
+                「この一節を引けるか」をピンポイントで測るので、上の改良の効果が数字に出ます。
+              </p>
+              <p>
+                <strong>語句の選び方</strong>
+                ：正解にしたい一節にしか出てこない言い回しを、本文からそのまま写します。
+                判定は<strong>部分一致</strong>で、空白と改行は無視して比べるので、
+                本文が途中で改行されていても当たります。文書名の一致も同時に見るため、
+                同じ言い回しが別の文書にあっても誤って正解にはなりません。
+              </p>
+            </div>
+            <input
+              placeholder="正解チャンクに含まれる語句（例: 1日2時間を超える場合）"
+              value={newExpectedText}
+              onChange={(e) => setNewExpectedText(e.target.value)}
+            />
+          </details>
           <input
             placeholder="メモ（任意・何を確かめる質問か）"
             value={newQNote}
