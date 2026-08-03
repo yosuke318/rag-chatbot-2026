@@ -197,20 +197,29 @@ function useTopics(project: string, reloadKey: number): string[] {
  * 同じ規則★（未指定＝絞らない、指定＝その区分だけで NULL の共通文書は含まない）
  * なので、ここに出る文書は「その区分で評価したときに実際に引ける文書」と一致する。
  * 出ない文書を正解に指定できてしまうと、その設問は永久に不正解になる。
+ *
+ * 取得中は null を返す（空配列＝「この区分に文書が無い」と区別する）。
+ * 呼び出し側はこの2つで出す文言が変わる。
  */
 function useDocuments(
   project: string,
   topic: string,
   reloadKey: number,
-): string[] {
-  const [sources, setSources] = useState<string[]>([]);
+): string[] | null {
+  const [sources, setSources] = useState<string[] | null>(null);
   useEffect(() => {
+    // ★区分が変わった時点で候補を捨てる★
+    //   取り直しを待つあいだ前の区分の候補が残っていると、その一瞬に
+    //   「新しい区分では引けない文書」を正解として登録できてしまう
+    //   （＝存在しない正解と同じで、その設問は永久に不正解になる）。
+    setSources(null);
     const params = new URLSearchParams();
     if (project.trim()) params.set("project", project.trim());
     if (topic.trim()) params.set("topic", topic.trim());
     // 区分を続けて変えると応答が前後するので、古い結果は捨てる（useTopics と同じ）
     let current = true;
-    fetch(`/api/backend/documents?${params}`)
+    const query = params.toString();
+    fetch(`/api/backend/documents${query ? `?${query}` : ""}`)
       .then((r) => r.json())
       .then((d) => {
         if (current) {
@@ -219,7 +228,11 @@ function useDocuments(
           );
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        // 取得に失敗したら「候補なし」に倒す。null のままだと読み込み中の
+        // 表示で止まり、待てば出てくるように見えてしまう。
+        if (current) setSources([]);
+      });
     return () => {
       current = false;
     };
@@ -1937,14 +1950,18 @@ export default function Home() {
             <Select
               id="newq-expected"
               value={newExpected || undefined}
+              // 取得中（null）は「文書が無い」と言い切らない。区分を変えた直後は
+              // ここで一旦候補が空になり、取り直しが終わるまで選べない。
               placeholder={
-                newQDocs.length === 0
-                  ? "この区分に文書がありません（① 文書を登録 から）"
-                  : "文書を選ぶ（例: 有給休暇.txt）"
+                newQDocs === null
+                  ? "文書を読み込み中…"
+                  : newQDocs.length === 0
+                    ? "この区分に文書がありません（① 文書を登録 から）"
+                    : "文書を選ぶ（例: 有給休暇.txt）"
               }
-              options={toOptions(newQDocs)}
+              options={toOptions(newQDocs ?? [])}
               onChange={(v?: string) => setNewExpected(v ?? "")}
-              disabled={newQDocs.length === 0}
+              disabled={newQDocs === null || newQDocs.length === 0}
               allowClear
               showSearch
               listHeight={LIST_HEIGHT}
