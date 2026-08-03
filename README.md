@@ -246,14 +246,15 @@ python -m app.backtest --file cases.json
 （データセット自体は日本語の社内文書に合わないため使わず、指標と評価の組み立て方を借りる）。
 「何を測れば良い/悪いと言えるのか」を自前で決めずに済ませるための土台。
 
-| やること | 準拠ベンチマーク | 借りている評価設計 |
-|---|---|---|
-| **5-2**（実装済み）図表の検索対象化（caption 対 multimodal） | **[ViDoRe](https://huggingface.co/vidore) / ViDoRe v2** | テキスト化検索 対 画像直接検索を nDCG 系で比較。視覚的ページと非視覚的ページを分けて集計 |
-| 埋め込み選定（`voyage-multimodal-3` を選ぶ根拠） | **MIEB / M-BEIR** | 画像埋め込みモデルの検索性能の総合評価 |
-| **5-3**（実装済み）原本画像を根拠にした回答生成 | **DocVQA / VisualMRC / JDocQA** | 文書画像に対する QA の正答率（日本語は JDocQA） |
-| **5-4**（実装済み）チャート読解支援 | **ChartQA / CharXiv** | チャート画像からの読み取り精度。5-4 の「予測の前に、そもそも読めているか」を測る土台 |
+| やること | 準拠ベンチマーク | 借りている評価設計 | 確認できる画面 |
+|---|---|---|---|
+| 図表の検索対象化（caption 対 multimodal） | [ViDoRe](https://huggingface.co/vidore) / [ViDoRe v2](https://huggingface.co/collections/vidore/vidore-benchmark-v2) | テキスト化検索 対 画像直接検索を nDCG 系で比較。視覚的ページと非視覚的ページを分けて集計 | **② 検索の内訳**（画像ベクトル検索のチェックを入れて比べる）／方式の比較は `python -m app.eval --compare-image-index` |
+| 埋め込みモデルの選定（`voyage-multimodal-3` を選ぶ根拠） | [MIEB](https://arxiv.org/abs/2504.10471) / [M-BEIR](https://huggingface.co/datasets/TIGER-Lab/M-BEIR) | 画像埋め込みモデルの検索性能の総合評価 | 画面なし（`.env` の `IMAGE_INDEX_METHOD` / `MULTIMODAL_EMBED_MODEL`） |
+| 原本画像を根拠にした回答生成 | [DocVQA](https://www.docvqa.org/) / [VisualMRC](https://github.com/nttmdlab-nlp/VisualMRC) / [JDocQA](https://github.com/mizuumi/JDocQA) | 文書画像に対する QA の正答率（日本語は JDocQA） | **③ 質問する**（回答の根拠に原本画像が出る） |
+| チャート読解支援 | [ChartQA](https://github.com/vis-nlp/ChartQA) / [CharXiv](https://charxiv.github.io/) | チャート画像からの読み取り精度。「予測の前に、そもそも読めているか」を測る土台 | 画面なし（`POST /chart-read` のみ） |
 
-この表に沿って、5-2 は ViDoRe 型の検索評価を `python -m app.eval --compare-image-index`
+この表は画面からも開ける（サイドバーの「RAG Inspector」をクリック）。表に沿って、
+図表の検索対象化は ViDoRe 型の検索評価を `python -m app.eval --compare-image-index`
 で実装している（下記）。
 
 ## 検索精度を測る（eval）

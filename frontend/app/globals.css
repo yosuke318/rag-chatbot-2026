@@ -140,12 +140,17 @@ body {
 
 .bench-table th:nth-child(1),
 .bench-table td:nth-child(1) {
-  width: 34%;
+  width: 24%;
 }
 
 .bench-table th:nth-child(2),
 .bench-table td:nth-child(2) {
-  width: 22%;
+  width: 17%;
+}
+
+.bench-table th:nth-child(4),
+.bench-table td:nth-child(4) {
+  width: 26%;
 }
 
 .sidebar-brand span {

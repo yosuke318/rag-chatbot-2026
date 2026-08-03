@@ -415,32 +415,78 @@ type EvalSubTab = (typeof EVAL_SUBTABS)[number]["id"];
  */
 const BENCHMARKS: {
   work: string;
-  bench: string;
-  href?: string;
+  /** ベンチマーク名と出典。名前を出すだけだと確かめに行けないのでリンクを必ず持つ。 */
+  benches: { name: string; href: string }[];
   design: string;
+  /** どこで確認できるか。画面が無いものは「画面なし」と正直に書く。 */
+  where: React.ReactNode;
 }[] = [
   {
-    work: "5-2（実装済み）図表の検索対象化（caption 対 multimodal）",
-    bench: "ViDoRe / ViDoRe v2",
-    href: "https://huggingface.co/vidore",
+    work: "図表の検索対象化（caption 対 multimodal）",
+    benches: [
+      { name: "ViDoRe", href: "https://huggingface.co/vidore" },
+      {
+        name: "ViDoRe v2",
+        href: "https://huggingface.co/collections/vidore/vidore-benchmark-v2",
+      },
+    ],
     design:
       "テキスト化検索 対 画像直接検索を nDCG 系で比較。視覚的ページと非視覚的ページを分けて集計",
+    where: (
+      <>
+        <strong>② 検索の内訳</strong>（画像ベクトル検索のチェックを入れて比べる）
+        <br />
+        方式そのものの比較は <code>python -m app.eval --compare-image-index</code>
+      </>
+    ),
   },
   {
-    work: "埋め込み選定（voyage-multimodal-3 を選ぶ根拠）",
-    bench: "MIEB / M-BEIR",
+    work: "埋め込みモデルの選定（voyage-multimodal-3 を選ぶ根拠）",
+    benches: [
+      { name: "MIEB", href: "https://arxiv.org/abs/2504.10471" },
+      {
+        name: "M-BEIR",
+        href: "https://huggingface.co/datasets/TIGER-Lab/M-BEIR",
+      },
+    ],
     design: "画像埋め込みモデルの検索性能の総合評価",
+    where: (
+      <>
+        画面なし（モデルの選択は <code>.env</code> の{" "}
+        <code>IMAGE_INDEX_METHOD</code> / <code>MULTIMODAL_EMBED_MODEL</code>）
+      </>
+    ),
   },
   {
-    work: "5-3（実装済み）原本画像を根拠にした回答生成",
-    bench: "DocVQA / VisualMRC / JDocQA",
+    work: "原本画像を根拠にした回答生成",
+    benches: [
+      { name: "DocVQA", href: "https://www.docvqa.org/" },
+      {
+        name: "VisualMRC",
+        href: "https://github.com/nttmdlab-nlp/VisualMRC",
+      },
+      { name: "JDocQA", href: "https://github.com/mizuumi/JDocQA" },
+    ],
     design: "文書画像に対する QA の正答率（日本語は JDocQA）",
+    where: (
+      <>
+        <strong>③ 質問する</strong>（回答の根拠に原本画像が出る）
+      </>
+    ),
   },
   {
-    work: "5-4（実装済み）チャート読解支援",
-    bench: "ChartQA / CharXiv",
+    work: "チャート読解支援",
+    benches: [
+      { name: "ChartQA", href: "https://github.com/vis-nlp/ChartQA" },
+      { name: "CharXiv", href: "https://charxiv.github.io/" },
+    ],
     design:
-      "チャート画像からの読み取り精度。5-4 の「予測の前に、そもそも読めているか」を測る土台",
+      "チャート画像からの読み取り精度。「予測の前に、そもそも読めているか」を測る土台",
+    where: (
+      <>
+        画面なし（<code>POST /chart-read</code> のみ）
+      </>
+    ),
   },
 ];
 
@@ -468,7 +514,7 @@ function BenchmarkModal({
         （日本語の社内文書に合わないため）。借りているのは指標と評価の組み立て方
         ＝「何を測れば良い/悪いと言えるのか」の部分。
       </p>
-      {/* .table-wrap（横スクロール）は使わない。3列を折り返して収めるほうが
+      {/* .table-wrap（横スクロール）は使わない。列を折り返して収めるほうが
           「さっと見る」目的に合う（bench-table 側で既定の nowrap を解いている）。 */}
       <table className="bench-table">
         <thead>
@@ -476,29 +522,30 @@ function BenchmarkModal({
             <th>やること</th>
             <th>準拠ベンチマーク</th>
             <th>借りている評価設計</th>
+            <th>確認できる画面</th>
           </tr>
         </thead>
         <tbody>
           {BENCHMARKS.map((b) => (
-            <tr key={b.bench}>
+            <tr key={b.work}>
               <td>{b.work}</td>
               <td>
-                {b.href ? (
-                  <a href={b.href} target="_blank" rel="noreferrer">
-                    {b.bench}
-                  </a>
-                ) : (
-                  b.bench
-                )}
+                {b.benches.map((bench, i) => (
+                  <Fragment key={bench.name}>
+                    {i > 0 && " / "}
+                    <a href={bench.href} target="_blank" rel="noreferrer">
+                      {bench.name}
+                    </a>
+                  </Fragment>
+                ))}
               </td>
               <td>{b.design}</td>
+              <td>{b.where}</td>
             </tr>
           ))}
         </tbody>
       </table>
       <p className="hint">
-        5-2 は ViDoRe 型の検索評価を{" "}
-        <code>python -m app.eval --compare-image-index</code> で実装済み。
         詳細は README の「参考にした公開ベンチマーク」。
       </p>
     </Modal>
