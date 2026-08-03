@@ -243,7 +243,7 @@ function useDocuments(
 
 /** 文書一覧（GET /documents/summary）。①「入っている文書」パネル用。
  *
- * ★useDocuments とは別のAPI★ あちらは ④ のセレクタを埋めるためのもので、
+ * ★useDocuments とは別のAPI★ あちらは ③ のセレクタを埋めるためのもので、
  * 同じ source を1件に潰す。こちらは「今どうなっているか」を見る画面なので
  * 潰さない（同名が2行あること自体が見せたい異常）。
  *
@@ -527,7 +527,7 @@ function DocSortHeader({
 /** ①「入っている文書」パネル。登録済みの文書を区分で絞って表で見る。
  *
  * ★何のために要るか★
- *   これまで文書名が画面に出るのは検索結果（②）と評価結果（④）の中だけで、
+ *   これまで文書名が画面に出るのは検索結果（②）と評価結果（③）の中だけで、
  *   「そのプロジェクトに何が入っているか」を見る手段が無かった。結果として
  *   次の状態に気づけない:
  *     - 取り込んだつもりで入っていない（チャンク0）
@@ -748,25 +748,31 @@ function DocumentListPanel({
 
 /** 左サイドバーのタブ。順番がそのまま画面の並びになる。
  *
- * ①〜⑤ の番号は「文書を入れる → 検索を見る → 質問する → 数字で測る」という
+ * ①〜④ の番号は「文書を入れる → 検索を見る → 数字で測る → 会話する」という
  * 想定の順路。番号を振っておくと、説明文から他タブを指すときに短く書ける。
+ *
+ * ★会話は末尾★ 検索と評価で挙動を詰めてから使うものなので、順路の最後に置く
+ * （このツールの主役は②の内訳と③の数字で、会話はその結果を使う側）。
+ *
+ * ★④は「会話する」★ 叩いているのが /chat（履歴を持つ会話API）なので、
+ * 画面の名前もAPIに合わせる。「質問する」だと1問1答に見えるが、実際は
+ * conversation_id で履歴が繋がる。
  */
 const TABS = [
   { id: "ingest", label: "① 文書を登録", hint: "/ingest-file" },
   { id: "search", label: "② 検索の内訳", hint: "/search" },
-  { id: "chat", label: "③ 質問する", hint: "/chat" },
-  { id: "eval", label: "④ 評価する", hint: "/eval" },
-  { id: "verify", label: "⑤ 保管質問の検証", hint: "/verify" },
+  { id: "eval", label: "③ 評価する", hint: "/eval" },
+  { id: "chat", label: "④ 会話する", hint: "/chat" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
 
-/** ④ の配下タブ。
+/** ③ の配下タブ。
  *
- * ④ は「正解ラベル付きの質問を貯める」と「貯めた質問集で数字を出す」という、
+ * ③ は「正解ラベル付きの質問を貯める」と「貯めた質問集で数字を出す」という、
  * 使う頻度も見たいものも違う2つが1画面に縦積みになっていた（登録フォームを
  * 毎回読み飛ばして下のスコアまでスクロールすることになる）。同じ
- * eval_questions を扱う一続きの作業なので別タブには割らず、④ の配下で切り替える。
+ * eval_questions を扱う一続きの作業なので別タブには割らず、③ の配下で切り替える。
  */
 const EVAL_SUBTABS = [
   { id: "add", label: "質問を追加", hint: "/eval-questions" },
@@ -777,10 +783,10 @@ type EvalSubTab = (typeof EVAL_SUBTABS)[number]["id"];
 
 /** ① の配下タブ。
  *
- * 「入れる」と「何が入っているか見る」は、④ の「質問を追加/評価」と同じ関係
+ * 「入れる」と「何が入っているか見る」は、③ の「質問を追加/評価」と同じ関係
  * （同じ対象を扱う一続きの作業だが、見たいものが違う）。登録フォームの下に
  * 表を縦積みすると、一覧を見るたびにドロップゾーンを読み飛ばすことになるので、
- * ④ と同じ形で配下に割る。
+ * ③ と同じ形で配下に割る。
  */
 const INGEST_SUBTABS = [
   { id: "add", label: "登録する", hint: "/ingest-file" },
@@ -789,11 +795,27 @@ const INGEST_SUBTABS = [
 
 type IngestSubTab = (typeof INGEST_SUBTABS)[number]["id"];
 
+/** ② の配下タブ。
+ *
+ * ★保管質問の検証(/verify)をここに入れてある★
+ *   検証が対象にする saved_questions は、②で検索するたびに貯まっていくもの
+ *   （②の副産物）。独立したタブに置くと「どこから来た質問集なのか」が
+ *   画面の構造から読めず、③の評価（正解ラベル付き・採点する）と混同される。
+ *   ②の配下にすれば「②で投げた質問を、まとめて引き直す」と位置で分かる。
+ */
+const SEARCH_SUBTABS = [
+  { id: "stages", label: "質問で資料を検索", hint: "/search" },
+  { id: "verify", label: "保管質問をまとめて再検索", hint: "/verify" },
+] as const;
+
+type SearchSubTab = (typeof SEARCH_SUBTABS)[number]["id"];
+
 /** 配下タブを持つタブと、その中身。ここに足せばサイドバーに出る。 */
 const SUBTABS: Partial<
   Record<TabId, readonly { id: string; label: string; hint: string }[]>
 > = {
   ingest: INGEST_SUBTABS,
+  search: SEARCH_SUBTABS,
   eval: EVAL_SUBTABS,
 };
 
@@ -865,7 +887,7 @@ const BENCHMARKS: {
     design: "文書画像に対する QA の正答率（日本語は JDocQA）",
     where: (
       <>
-        <strong>③ 質問する</strong>（回答の根拠に原本画像が出る）
+        <strong>④ 会話する</strong>（回答の根拠に原本画像が出る）
       </>
     ),
   },
@@ -1027,6 +1049,8 @@ function Sidebar({
   onTab,
   ingestSubTab,
   onIngestSubTab,
+  searchSubTab,
+  onSearchSubTab,
   evalSubTab,
   onEvalSubTab,
 }: {
@@ -1034,6 +1058,8 @@ function Sidebar({
   onTab: (id: TabId) => void;
   ingestSubTab: IngestSubTab;
   onIngestSubTab: (id: IngestSubTab) => void;
+  searchSubTab: SearchSubTab;
+  onSearchSubTab: (id: SearchSubTab) => void;
   evalSubTab: EvalSubTab;
   onEvalSubTab: (id: EvalSubTab) => void;
 }) {
@@ -1042,6 +1068,7 @@ function Sidebar({
   // 初期値 true: 配下タブがあること自体に気づけないと、そこにたどり着けない。
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
     ingest: true,
+    search: true,
     eval: true,
   });
   // 準拠ベンチマークの表（タイトルから開く）
@@ -1057,6 +1084,10 @@ function Sidebar({
     ingest: {
       current: ingestSubTab,
       onPick: (id) => onIngestSubTab(id as IngestSubTab),
+    },
+    search: {
+      current: searchSubTab,
+      onPick: (id) => onSearchSubTab(id as SearchSubTab),
     },
     eval: {
       current: evalSubTab,
@@ -1087,7 +1118,7 @@ function Sidebar({
       <BenchmarkModal open={benchOpen} onClose={() => setBenchOpen(false)} />
       <ul className="sidebar-tabs">
         {TABS.map((t) => {
-          // 配下タブを持つのは ① と ④。開閉ボタンもそのタブにだけ付く。
+          // 配下タブを持つのは ①②③。開閉ボタンもそのタブにだけ付く。
           const subtabs = SUBTABS[t.id];
           const hasSubtabs = subtabs !== undefined;
           const open = openGroups[t.id] ?? true;
@@ -1196,7 +1227,10 @@ export default function Home() {
   const [tab, setTab] = useState<TabId>("ingest");
   // ① の中で見ている面。既定は「登録する」＝ ① の本題（最初にやること）。
   const [ingestSubTab, setIngestSubTab] = useState<IngestSubTab>("add");
-  // ④ の中で見ている面。既定は「質問集を評価」＝ ④ の本題（スコアを見る）。
+  // ② の中で見ている面。既定は「質問で資料を検索」＝ ② の本題。
+  // 保管質問の検証は、②で質問を投げて貯まってから使うもの。
+  const [searchSubTab, setSearchSubTab] = useState<SearchSubTab>("stages");
+  // ③ の中で見ている面。既定は「質問集を評価」＝ ③ の本題（スコアを見る）。
   // 質問を足すのは準備なので、必要なときに配下タブで開く。
   const [evalSubTab, setEvalSubTab] = useState<EvalSubTab>("run");
 
@@ -1310,10 +1344,10 @@ export default function Home() {
   const [evalTopic, setEvalTopic] = useState("");
   const evalTopics = useTopics(evalProject, scopeVersion);
 
-  // --- 保管質問の検証（⑤ /verify = ②で検索した質問をまとめて引き直す）---
-  // ★評価(④)とは別タブ・別state★
+  // --- 保管質問の検証（②の配下 /verify = ②で検索した質問をまとめて引き直す）---
+  // ★評価(③)とは別タブ・別state★
   //   扱うテーブルが違う（saved_questions / eval_questions）うえ、正解ラベルの
-  //   要否も出力も別物なので機能として分けてある。区分セレクタを④と共用すると、
+  //   要否も出力も別物なので機能として分けてある。区分セレクタを③と共用すると、
   //   タブを跨いだ相手の選択が見えないまま結果が変わることになるため独立させる。
   const [verifyProject, setVerifyProject] = useState("");
   const [verifyTopic, setVerifyTopic] = useState("");
@@ -1620,7 +1654,7 @@ export default function Home() {
         return;
       }
       setStages(await res.json());
-      // 検索が通ると質問が保管されるので、⑤の件数を取り直す
+      // 検索が通ると質問が保管されるので、②「保管質問をまとめて再検索」の件数を取り直す
       setSavedVersion((v) => v + 1);
     } catch (e) {
       setStages(null);
@@ -1736,6 +1770,8 @@ export default function Home() {
         onTab={setTab}
         ingestSubTab={ingestSubTab}
         onIngestSubTab={setIngestSubTab}
+        searchSubTab={searchSubTab}
+        onSearchSubTab={setSearchSubTab}
         evalSubTab={evalSubTab}
         onEvalSubTab={setEvalSubTab}
       />
@@ -1919,7 +1955,7 @@ export default function Home() {
       )}
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}
-      {tab === "search" && (
+      {tab === "search" && searchSubTab === "stages" && (
       <section className="panel">
         <h2>
           <Tip label="② 検索の内訳を見る">
@@ -1938,11 +1974,11 @@ export default function Home() {
             <br />
             <strong>3.</strong> 融合後の<strong>上位ほど質問に合う文書</strong>と判断される。
             1位が質問の内容と一致していれば検索は成功。
-            この上位チャンクが、そのまま <strong>③ 質問する</strong> の回答生成で根拠として使われる。
+            この上位チャンクが、そのまま <strong>④ 会話する</strong> の回答生成で根拠として使われる。
             <br />
             <br />
             ここで検索した質問は、区分と一緒に自動で保管される。まとめて引き直すのは
-            <strong>⑤ 保管質問の検証</strong>。
+            隣の<strong>保管質問をまとめて再検索</strong>（②の配下）。
           </Tip>
           （/search・Voyageキー必要 / Anthropicキー不要）
         </h2>
@@ -2153,7 +2189,7 @@ export default function Home() {
       {/* 質問フロー: question → hybrid_search → rerank → Claude */}
       {tab === "chat" && (
       <section className="panel">
-        <h2>③ 質問する（/chat/stream・Voyage + Anthropicキー必要）</h2>
+        <h2>④ 会話する（/chat/stream・Voyage + Anthropicキー必要）</h2>
         {/* 会話は続きものとして扱われる（直近のやり取りが回答生成に載る）。
             話題を変えるときは新しい会話にすると、前の話に引きずられない。 */}
         <div className="conversation-bar">
@@ -2315,12 +2351,12 @@ export default function Home() {
       {tab === "eval" && (
       <section className="panel">
         <h2>
-          <Tip label="④ 評価する">
+          <Tip label="③ 評価する">
             登録済みの<strong>質問集（正解ラベル付き）</strong>を一気に検索して、
             <strong>どれだけ正解文書を上位で拾えたか</strong>を集計する。
             <br />
             <br />
-            <strong>② 検索の内訳</strong> が「1問を深く見る」のに対し、④ は
+            <strong>② 検索の内訳</strong> が「1問を深く見る」のに対し、③ は
             「質問集<strong>全体</strong>で当たるか」を見る。
             手法やリランクを変えて<strong>数字が上がるか下がるか</strong>で改良の効果を判定できる。
             <br />
@@ -2329,13 +2365,13 @@ export default function Home() {
             まだ無ければ <code>python -m app.eval --seed</code> でサンプルを投入。
             <br />
             <br />
-            正解ラベルを用意する前に並びだけ見たいときは <strong>⑤ 保管質問の検証</strong>。
-            あちらは②で貯まった質問を採点せずに一覧する。
+            正解ラベルを用意する前に並びだけ見たいときは ②の配下の
+            <strong>保管質問をまとめて再検索</strong>。あちらは②で貯まった質問を採点せずに一覧する。
           </Tip>
           （/eval・Voyageキー必要 / リランク時のみAnthropic）
         </h2>
 
-        {/* ★④と⑤の違いは常に見えるところに出す★
+        {/* ★③と②「保管質問をまとめて再検索」の違いは常に見えるところに出す★
             説明は上の Tip にも書いてあるが、Tipは開かないと読めないので
             「どっちがどっちだったか」を毎回思い出せない。2つのタブを行き来する
             たびに読み返す種類の情報なので、開かずに読める位置に1行で置く。 */}
@@ -2343,7 +2379,7 @@ export default function Home() {
           ここは<strong>正解ラベル付きの質問集</strong>（<code>eval_questions</code>）を
           Hit@k / MRR で<strong>採点</strong>する場所。
           ②の検索で自動的に貯まった質問（<code>saved_questions</code>）を、
-          採点せずに並びだけ確かめたいときは <strong>⑤ 保管質問の検証</strong>。
+          採点せずに並びだけ確かめたいときは ②の配下の<strong>保管質問をまとめて再検索</strong>。
         </p>
 
         {/* 評価用の質問を登録する（正解ラベル付き）。
@@ -2664,22 +2700,22 @@ export default function Home() {
       )}
 
       {/* 保管質問の検証フロー: saved_questions → 各問を検索 → 上位k件を一覧
-          ★④の評価とは別物★ あちらは eval_questions（正解ラベル必須）を数値で
+          ★③の評価とは別物★ あちらは eval_questions（正解ラベル必須）を数値で
           採点する。こちらは②の検索で自動的に貯まった質問を、正解ラベル無しで
           「今の設定だと何が上位に来るか」目視で確かめるための道具。 */}
-      {tab === "verify" && (
+      {tab === "search" && searchSubTab === "verify" && (
       <section className="panel">
         <h2>
-          <Tip label="⑤ 保管質問を検証する">
-            ② で検索すると、そのときの<strong>プロジェクト・トピックと一緒に質問が
-            自動で保管</strong>されます（同じ区分の同じ質問は重ねません）。
+          <Tip label="② 保管質問を検証する">
+            ② の「質問で資料を検索」で検索すると、そのときの<strong>プロジェクト・トピックと
+            一緒に質問が自動で保管</strong>されます（同じ区分の同じ質問は重ねません）。
             <br />
             <br />
             ここでは保管済みの質問を<strong>まとめて引き直し</strong>、各質問の上位4件と
             RRFスコアを一覧で確認できます。
             <br />
             <br />
-            ④ の評価とは<strong>別のデータ</strong>を見ています。④ は正解ラベル付きの
+            ③ の評価とは<strong>別のデータ</strong>を見ています。③ は正解ラベル付きの
             質問集（<code>eval_questions</code>）を Hit@k / MRR で採点するもの。
             こちらは正解ラベルを持たない実際に聞かれた質問（<code>saved_questions</code>）
             なので○×は付きません。正解を用意する前でも並びを確かめられるのが利点です。
@@ -2687,13 +2723,13 @@ export default function Home() {
           （/verify・Voyageキー必要）
         </h2>
 
-        {/* ④ 側と対になる1行（あちらの panel-note と揃えてある）。
+        {/* ③ 側と対になる1行（あちらの panel-note と揃えてある）。
             どちらのタブから来ても、開かずに違いが読めるようにしておく。 */}
         <p className="hint panel-note">
           ここは②の検索で<strong>自動的に貯まった質問</strong>（
           <code>saved_questions</code>）を引き直して、
           <strong>並びだけ</strong>を確かめる場所（正解ラベルが無いので○×は付かない）。
-          正解ラベル付きの質問集を数字で採点したいときは <strong>④ 評価する</strong>。
+          正解ラベル付きの質問集を数字で採点したいときは <strong>③ 評価する</strong>。
         </p>
 
         <div className="eval-controls">

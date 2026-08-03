@@ -83,25 +83,26 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 
 ![全体像](docs/images/overview.png)
 
-パネルが、そのまま「登録 → 検索 → 回答 → 評価」の各工程に対応している。
+パネルが、そのまま「登録 → 検索 → 評価 → 会話」の各工程に対応している。
 
 | パネル | 対応するAPI | 必要なAPIキー |
 |---|---|---|
 | ① 文書を登録 | `POST /ingest` | Voyage（埋め込み） |
 | ① 入っている文書 | `GET /documents/summary` | 不要 |
-| ② 検索の内訳を見る | `GET /search` | Voyage のみ |
-| ③ 質問する | `POST /chat` | Voyage + Anthropic |
-| ④ 評価する | `GET /eval` | Voyage（リランク時 Anthropic） |
+| ② 質問で資料を検索 | `GET /search` | Voyage のみ |
+| ② 保管質問をまとめて再検索 | `GET /verify` | Voyage のみ |
+| ③ 評価する | `GET /eval` | Voyage（リランク時 Anthropic） |
+| ④ 会話する | `POST /chat` | Voyage + Anthropic |
 
 **検索だけならAnthropicキーは要らない**。回答生成を挟まずに検索の挙動だけを追えるので、
-チューニングの試行錯誤は ② と ④ で完結する。
+チューニングの試行錯誤は ② と ③ で完結する。
 
 ① の配下「入っている文書」は、登録済みの文書を project / topic で絞って一覧する管理用の表。
 **チャンク数0（索引に載っていない）・区分なし（区分で絞った検索から外れる）・同名の二重登録**
 という「黙って検索対象から消えている」状態を、ここで見つけるためのもの。
 
-> ※ 上のスクリーンショットは ①〜③ の頃のもの。④ 評価パネルと出典のダウンロードリンクは
-> 追加後に再取得予定（`cd frontend && npm run screenshot`）。
+> ※ 上のスクリーンショットは 登録・検索・会話 の3画面しか無かった頃のもの。
+> 評価パネルと出典のダウンロードリンクは追加後に再取得予定（`cd frontend && npm run screenshot`）。
 
 ### 検索の内訳 ― このツールの主役
 
@@ -137,7 +138,7 @@ test.txt            0.01562  ← ベクトルにしか出ない（1票のみ）
 - **上部の入力欄** … RRFの `k`、字面の閾値、BM25の `k1`/`b` をその場で変更して再検索できる。
   数式の定数を変えると順位がどう動くかを体感できる
 
-**1位が質問の内容と一致していれば検索は成功**で、この上位チャンクがそのまま ③ の回答生成で根拠として使われる。
+**1位が質問の内容と一致していれば検索は成功**で、この上位チャンクがそのまま ④ の回答生成で根拠として使われる。
 
 > スクリーンショットは `cd frontend && npm run screenshot` で再生成できる（要: backend/frontend 起動）。
 
@@ -255,7 +256,7 @@ python -m app.backtest --file cases.json
 |---|---|---|---|
 | 図表の検索対象化（caption 対 multimodal） | [ViDoRe](https://huggingface.co/vidore) / [ViDoRe v2](https://huggingface.co/collections/vidore/vidore-benchmark-v2) | テキスト化検索 対 画像直接検索を nDCG 系で比較。視覚的ページと非視覚的ページを分けて集計 | **② 検索の内訳**（画像ベクトル検索のチェックを入れて比べる）／方式の比較は `python -m app.eval --compare-image-index` |
 | 埋め込みモデルの選定（`voyage-multimodal-3` を選ぶ根拠） | [MIEB](https://arxiv.org/abs/2504.10471) / [M-BEIR](https://huggingface.co/datasets/TIGER-Lab/M-BEIR) | 画像埋め込みモデルの検索性能の総合評価 | 画面なし（`.env` の `IMAGE_INDEX_METHOD` / `MULTIMODAL_EMBED_MODEL`） |
-| 原本画像を根拠にした回答生成 | [DocVQA](https://www.docvqa.org/) / [VisualMRC](https://github.com/nttmdlab-nlp/VisualMRC) / [JDocQA](https://github.com/mizuumi/JDocQA) | 文書画像に対する QA の正答率（日本語は JDocQA） | **③ 質問する**（回答の根拠に原本画像が出る） |
+| 原本画像を根拠にした回答生成 | [DocVQA](https://www.docvqa.org/) / [VisualMRC](https://github.com/nttmdlab-nlp/VisualMRC) / [JDocQA](https://github.com/mizuumi/JDocQA) | 文書画像に対する QA の正答率（日本語は JDocQA） | **④ 会話する**（回答の根拠に原本画像が出る） |
 | チャート読解支援 | [ChartQA](https://github.com/vis-nlp/ChartQA) / [CharXiv](https://charxiv.github.io/) | チャート画像からの読み取り精度。「予測の前に、そもそも読めているか」を測る土台 | 画面なし（`POST /chart-read` のみ） |
 
 この表は画面からも開ける（サイドバーの「RAG Inspector」をクリック）。表に沿って、
