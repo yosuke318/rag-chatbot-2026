@@ -1,6 +1,6 @@
 "use client";
 
-import { AutoComplete, Select } from "antd";
+import { AutoComplete, Modal, Select } from "antd";
 import { Fragment, useEffect, useRef, useState } from "react";
 
 import { LIST_HEIGHT } from "./antd";
@@ -402,6 +402,109 @@ const EVAL_SUBTABS = [
 
 type EvalSubTab = (typeof EVAL_SUBTABS)[number]["id"];
 
+/** 準拠している公開ベンチマーク（README「参考にした公開ベンチマーク」と同じ内容）。
+ *
+ * ★データセットは使わず、評価設計だけを借りている★
+ *   公開データセットは日本語の社内文書に合わないので、指標と組み立て方
+ *   （何を測れば良い/悪いと言えるのか）だけを借りる、という立場。ここを
+ *   混同されると「そのベンチマークのスコアを出した」と読まれてしまうため、
+ *   表の上に必ず注記を出す。
+ *
+ * READMEと二重管理になるが、READMEを開かずに画面で確認できることを優先した。
+ * 片方を直したらもう片方も直す（README の「参考にした公開ベンチマーク」）。
+ */
+const BENCHMARKS: {
+  work: string;
+  bench: string;
+  href?: string;
+  design: string;
+}[] = [
+  {
+    work: "5-2（実装済み）図表の検索対象化（caption 対 multimodal）",
+    bench: "ViDoRe / ViDoRe v2",
+    href: "https://huggingface.co/vidore",
+    design:
+      "テキスト化検索 対 画像直接検索を nDCG 系で比較。視覚的ページと非視覚的ページを分けて集計",
+  },
+  {
+    work: "埋め込み選定（voyage-multimodal-3 を選ぶ根拠）",
+    bench: "MIEB / M-BEIR",
+    design: "画像埋め込みモデルの検索性能の総合評価",
+  },
+  {
+    work: "5-3（実装済み）原本画像を根拠にした回答生成",
+    bench: "DocVQA / VisualMRC / JDocQA",
+    design: "文書画像に対する QA の正答率（日本語は JDocQA）",
+  },
+  {
+    work: "5-4（実装済み）チャート読解支援",
+    bench: "ChartQA / CharXiv",
+    design:
+      "チャート画像からの読み取り精度。5-4 の「予測の前に、そもそも読めているか」を測る土台",
+  },
+];
+
+/** 準拠ベンチマークの一覧（サイドバーのタイトルから開く）。 */
+function BenchmarkModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      open={open}
+      onCancel={onClose}
+      // 閉じるだけのダイアログなので OK/キャンセルは出さない
+      footer={null}
+      width={880}
+      title="準拠している公開ベンチマーク"
+    >
+      <p className="hint">
+        マルチモーダル各段の評価は、以下の公開ベンチマークの
+        <strong>評価設計に準拠</strong>している。
+        <strong>データセット自体は使っていない</strong>
+        （日本語の社内文書に合わないため）。借りているのは指標と評価の組み立て方
+        ＝「何を測れば良い/悪いと言えるのか」の部分。
+      </p>
+      {/* .table-wrap（横スクロール）は使わない。3列を折り返して収めるほうが
+          「さっと見る」目的に合う（bench-table 側で既定の nowrap を解いている）。 */}
+      <table className="bench-table">
+        <thead>
+          <tr>
+            <th>やること</th>
+            <th>準拠ベンチマーク</th>
+            <th>借りている評価設計</th>
+          </tr>
+        </thead>
+        <tbody>
+          {BENCHMARKS.map((b) => (
+            <tr key={b.bench}>
+              <td>{b.work}</td>
+              <td>
+                {b.href ? (
+                  <a href={b.href} target="_blank" rel="noreferrer">
+                    {b.bench}
+                  </a>
+                ) : (
+                  b.bench
+                )}
+              </td>
+              <td>{b.design}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="hint">
+        5-2 は ViDoRe 型の検索評価を{" "}
+        <code>python -m app.eval --compare-image-index</code> で実装済み。
+        詳細は README の「参考にした公開ベンチマーク」。
+      </p>
+    </Modal>
+  );
+}
+
 const THEME_CHOICES: { id: ThemeChoice; label: string; title: string }[] = [
   { id: "auto", label: "自動", title: "OSの設定に合わせる" },
   { id: "light", label: "ライト", title: "常にライトテーマ" },
@@ -493,14 +596,30 @@ function Sidebar({
   // 初期値 true: 配下タブがあること自体に気づけないと、④ の「質問を追加」に
   // たどり着けない。
   const [evalOpen, setEvalOpen] = useState(true);
+  // 準拠ベンチマークの表（タイトルから開く）
+  const [benchOpen, setBenchOpen] = useState(false);
 
   return (
     <nav className="sidebar" aria-label="機能">
-      {/* ページの見出しはここ1つ。本文側は各機能の h2 から始まる */}
+      {/* ページの見出しはここ1つ。本文側は各機能の h2 から始まる。
+          押すと準拠ベンチマークの表が出る（README を開かずに確認できるように）。
+          ★button は h1 の中に置く★ 逆に button で h1 を包むのはHTML的に
+          許されない（button の中身は phrasing content だけ）うえ、
+          ページの見出しが消えてしまう。 */}
       <div className="sidebar-brand">
-        <h1>RAG Inspector</h1>
+        <h1>
+          <button
+            type="button"
+            className="sidebar-brand-button"
+            title="準拠している公開ベンチマークを表で見る"
+            onClick={() => setBenchOpen(true)}
+          >
+            RAG Inspector
+          </button>
+        </h1>
         <span>RAG検証ラボ</span>
       </div>
+      <BenchmarkModal open={benchOpen} onClose={() => setBenchOpen(false)} />
       <ul className="sidebar-tabs">
         {TABS.map((t) => {
           // ④ だけ配下タブを持つ。開閉ボタンもこのタブにだけ付く。

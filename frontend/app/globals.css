@@ -107,6 +107,47 @@ body {
   margin: 0;
 }
 
+/* タイトルは押せる（準拠ベンチマークの表が出る）。既定の button 見た目を消して
+   見出しのまま見せるが、押せることが分かるように点線の下線を敷いてある
+   （Tip の「？」と同じ考え方で、常時ヒントを出しておく）。 */
+.sidebar-brand-button {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline dotted var(--muted);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.sidebar-brand-button:hover {
+  text-decoration-color: var(--accent);
+}
+
+/* 準拠ベンチマークの表（モーダル）。説明の列が長いので、既定の nowrap を解いて
+   折り返す＝横スクロールせずに3列すべて読める。 */
+.bench-table {
+  table-layout: fixed;
+}
+
+.bench-table th,
+.bench-table td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.bench-table th:nth-child(1),
+.bench-table td:nth-child(1) {
+  width: 34%;
+}
+
+.bench-table th:nth-child(2),
+.bench-table td:nth-child(2) {
+  width: 22%;
+}
+
 .sidebar-brand span {
   color: var(--muted);
   font-size: 12px;
