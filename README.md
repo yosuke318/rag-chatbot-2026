@@ -164,7 +164,7 @@ curl -X POST "http://localhost:8000/admin/reindex-images?method=multimodal"
 > どちらが良いかは eval で決める前提。実測の手順は下記「検索精度を測る」を参照。
 >
 > `/admin/*` は `ADMIN_TOKEN` を設定したときだけ `X-Admin-Token` ヘッダを要求する
-> （未設定なら素通し＝ログインなし・Tailscale閉域の前提のまま）。この操作は画像1枚ごとに
+> （未設定なら素通し＝ログインなし・許可IPからのみ到達できる閉域の前提のまま）。この操作は画像1枚ごとに
 > Claude/Voyage を呼ぶため、**閉域の外に出す構成では必ず設定すること**。
 
 #### 回答は原本画像を見て作る（言語化は索引に格下げ）
@@ -452,10 +452,10 @@ curl -X POST http://localhost:8000/eval-questions -H 'Content-Type: application/
 
 ## アーキテクチャ
 
-**モジュラーモノリス + マネージドサービス**（東京リージョン / ログインなし・Tailscaleで閉域 / Terraform 100%）
+**モジュラーモノリス + マネージドサービス**（東京リージョン / ログインなし・送信元IPホワイトリストで閉域 / Terraform 100%）
 
 ```
-社内ユーザー ─ Tailscale ─► ECS Fargate (Next.js + FastAPI) ─► RDS PostgreSQL + pgvector
+社内ユーザー ─ 許可IPのみ ─► ECS Fargate (Next.js + FastAPI) ─► RDS PostgreSQL + pgvector
                                        │
                             S3(原本) ─ 取り込みバッチ ─► RDS
                                        │
@@ -464,17 +464,19 @@ curl -X POST http://localhost:8000/eval-questions -H 'Content-Type: application/
 
 - **DBは1つに集約**: ベクトル / 全文検索(BM25) / 会話履歴 / メタデータを全部Postgresへ
 - **検索は自作**: ハイブリッド検索（ベクトル + BM25 + RRF）→ LLMリランク → 回答生成
-- **ALB / NAT Gatewayなし**: 10人規模向けにコスト最適化（月 ~$40）
+- **ALB / NAT Gatewayなし**: 10人規模向けにコスト最適化（月 ~$35）
+- **アクセス制御はSecurity Groupの送信元IPホワイトリスト**: 許可リストに無いIPからはTCP接続すら張れない
 - **destroy可能・停止可能**: `terraform destroy` 一発撤去、夜間停止で更に半減
 
 旧版との差分は [docs/design.md](docs/design.md) 第9章を参照。
+dev環境の作り方は [terraform/bootstrap/README.md](terraform/bootstrap/README.md) を参照。
 
 ## ディレクトリ構成
 
 ```
 .
 ├── docs/            # 設計書
-├── terraform/       # IaC（environments と modules を分離）
+├── terraform/       # IaC（bootstrap / environments / modules を分離）
 ├── backend/         # FastAPI（ingest / retrieval / chat / eval のモジュール分割）
 └── frontend/        # Next.js + Vercel AI SDK
 ```

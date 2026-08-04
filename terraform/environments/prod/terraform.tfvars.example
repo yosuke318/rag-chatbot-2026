@@ -1,4 +1,11 @@
 # cp terraform.tfvars.example terraform.tfvars して値を埋める。
-# terraform.tfvars は .gitignore 済み（秘密情報を含めうるため）。
+# terraform.tfvars は .gitignore 済み（接続元IPを含むため）。
+#
+# prod はまだ未適用（YOSUKE-40 のスコープは dev のみ）。main.tf 冒頭の注意書きを読むこと。
 project  = "rag-v2"
 vpc_cidr = "10.0.0.0/16"
+
+# アクセスできる送信元IPのホワイトリスト。「名札 => CIDR」。
+allowed_cidrs = {
+  office = "203.0.113.10/32"
+}

@@ -1,4 +1,6 @@
-variable "project"        { type = string }
-variable "db_endpoint"    { type = string }
-variable "llm_secret_arn" { type = string }
-variable "db_secret_arn"  { type = string }
+variable "project" { type = string }
+
+variable "account_id" {
+  type        = string
+  description = "バケット名を一意にするために混ぜるAWSアカウントID"
+}

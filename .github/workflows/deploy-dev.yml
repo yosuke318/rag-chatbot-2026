@@ -2,19 +2,33 @@
 #   ローカル: docker compose が db/backend/frontend を動かす
 #   dev:      同じ backend/frontend イメージを Fargate、db は RDS(pgvector) に置換
 # これで「ローカルで動いた成果物がそのまま dev で動く」を担保する。
+#
+# 事前に一度だけ必要な準備（terraform/bootstrap/README.md）:
+#   - terraform/bootstrap を手元から apply（stateバケット・ロック・OIDCロール・ECR）
+#   - リポジトリの Secrets に AWS_DEPLOY_ROLE_ARN / TFSTATE_BUCKET / ALLOWED_CIDRS を登録
+#
+# 引き受けるIAMロールの信頼条件は bootstrap の github_allowed_refs で
+# ブランチまで縛っている。トリガーのブランチを変えるときは両方直すこと
+# （片方だけだとAssumeRoleで弾かれる）。
 name: deploy-dev
 
 on:
   push:
-    branches: [develop]
+    branches: [main] # PRがmainにマージされた時点で反映する
   workflow_dispatch: # 手動実行も可
 
 permissions:
   id-token: write # OIDCでAWSロールを引き受ける（アクセスキー不要）
   contents: read
 
+# stateロックを奪い合わないよう、devへのデプロイは同時に1本だけ走らせる。
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
 env:
   AWS_REGION: ap-northeast-1
+  TF_WORKING_DIR: terraform/environments/dev
 
 jobs:
   build-and-deploy:
@@ -25,38 +39,72 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }} # TODO: OIDC用IAMロールを作る
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }} # bootstrap の deploy_role_arn 出力
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # sha タグ: どのコミットが動いているかタスク定義から辿れるようにする。
+      # latest タグ: 手元から terraform apply したときの既定イメージになる。
       - name: Build & push backend image
         run: |
-          IMAGE=${{ steps.ecr.outputs.registry }}/rag-v2-backend:${{ github.sha }}
-          docker build -t "$IMAGE" ./backend
-          docker push "$IMAGE"
-          echo "BACKEND_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          REPO=${{ steps.ecr.outputs.registry }}/rag-v2-backend
+          docker build -t "$REPO:${{ github.sha }}" -t "$REPO:latest" ./backend
+          docker push "$REPO:${{ github.sha }}"
+          docker push "$REPO:latest"
+          echo "BACKEND_IMAGE=$REPO:${{ github.sha }}" >> "$GITHUB_ENV"
 
       - name: Build & push frontend image
         run: |
-          IMAGE=${{ steps.ecr.outputs.registry }}/rag-v2-frontend:${{ github.sha }}
-          docker build -t "$IMAGE" ./frontend
-          docker push "$IMAGE"
-          echo "FRONTEND_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          REPO=${{ steps.ecr.outputs.registry }}/rag-v2-frontend
+          docker build -t "$REPO:${{ github.sha }}" -t "$REPO:latest" ./frontend
+          docker push "$REPO:${{ github.sha }}"
+          docker push "$REPO:latest"
+          echo "FRONTEND_IMAGE=$REPO:${{ github.sha }}" >> "$GITHUB_ENV"
 
       - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
 
-      - name: Terraform apply (dev)
-        working-directory: terraform/environments/prod # TODO: dev用ディレクトリを作る
+      # stateバケット名はアカウントIDを含むためリポジトリに直書きしていない。
+      # bootstrap の出力を Secrets に入れて、ここで渡す（backend.tf の部分設定）。
+      - name: Terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}"
+
+      - name: Terraform format & validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          terraform init
-          terraform apply -auto-approve \
+          terraform fmt -check -recursive ../../
+          terraform validate
+
+      # allowed_cidrs はアクセスを許す送信元IPのホワイトリスト。
+      # 例: {"office":"203.0.113.10/32","maruyama-home":"198.51.100.24/32"}
+      # JSONのままSecretに入れておき、TF_VAR_ で渡す。
+      - name: Terraform apply (dev)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_allowed_cidrs: ${{ secrets.ALLOWED_CIDRS }}
+        run: |
+          terraform apply -auto-approve -input=false \
             -var="backend_image=$BACKEND_IMAGE" \
             -var="frontend_image=$FRONTEND_IMAGE"
-# 前提として先に用意が必要（TODO）:
-#   - ECRリポジトリ rag-v2-backend / rag-v2-frontend
-#   - GitHub OIDC を信頼するIAMロール（ECR push + Terraform操作権限）
-#   - terraform 側で backend_image / frontend_image 変数を受け、ECSタスク定義に流す
-#   - state用のS3バケット + DynamoDBロック（backend.tf 参照）
+
+      # デプロイ完了＝新しいタスクが安定稼働に入るまで待つ。
+      # ここを待たずに成功扱いにすると「applyは通ったが起動に失敗していた」を見逃す。
+      - name: Wait for the service to stabilize
+        run: |
+          aws ecs wait services-stable --cluster rag-v2 --services rag-v2
+
+      # ALBが無いのでURLはタスクのパブリックIP。毎回変わるのでログに残す。
+      - name: Show app URL
+        run: |
+          TASK=$(aws ecs list-tasks --cluster rag-v2 --service-name rag-v2 \
+            --query 'taskArns[0]' --output text)
+          ENI=$(aws ecs describe-tasks --cluster rag-v2 --tasks "$TASK" \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
+          IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI" \
+            --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
+          echo "### dev: http://$IP:3000 （ALLOWED_CIDRS に載っているIPからのみ到達可）" >> "$GITHUB_STEP_SUMMARY"
