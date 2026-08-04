@@ -1,11 +1,13 @@
 # stateはS3バックエンド + DynamoDBロック。ローカルstate禁止。
-# 初回のみ: 下記のbucket / dynamodb_table を手動 or 別スタックで作成してから init する。
+#
+# bucket はグローバル一意（アカウントIDが入る）ためリポジトリに直書きしない。
+# init のときに渡す:
+#   terraform init -backend-config="bucket=$(cd ../../bootstrap && terraform output -raw tfstate_bucket)"
 terraform {
   backend "s3" {
-    bucket         = "TODO-rag-v2-tfstate" # 一意なバケット名に変更
     key            = "prod/terraform.tfstate"
     region         = "ap-northeast-1"
-    dynamodb_table = "TODO-rag-v2-tflock"
+    dynamodb_table = "rag-v2-tflock" # bootstrap が作るロックテーブル
     encrypt        = true
   }
 }

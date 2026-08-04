@@ -16,7 +16,7 @@
 |---|---|
 | 利用者 | 社内 約10名 |
 | リージョン | `ap-northeast-1`（東京）固定。文書データを東京リージョン外に出さない |
-| 認証 | アプリ内ログインなし。ネットワーク層（Tailscale）でアクセス制御 |
+| 認証 | アプリ内ログインなし。ネットワーク層（Security Groupの送信元IPホワイトリスト）でアクセス制御 |
 | セキュリティ | 文書データがAWSリージョン外に出ないこと（LLM APIへ送信する検索チャンクを除く） |
 | 対象文書 | PDF / docx / xlsx（図表を含む） |
 | IaC | Terraform 100%。手作業構築なし |
@@ -82,7 +82,7 @@ Fargate task
 - **コスト**: 常時起動タスクが1つで済む。
 
 **選定理由（CloudFront を使わない）**
-- **閉域前提と矛盾**: 利用者10人が Tailscale 経由でアクセスする閉じたシステムに、公開CDNの CloudFront を
+- **閉域前提と矛盾**: 利用者10人が許可済みIPからのみアクセスする閉じたシステムに、公開CDNの CloudFront を
   挟むと公開面（攻撃対象）が増える。CloudFront は公開・地理分散・高トラフィック静的配信のための道具で、方向が逆。
 - **配信最適化が不要**: 利用者10人・同一組織ではエッジキャッシュ・広域低遅延の価値が出ない。
 - **身軽さの維持**: 部品が増えず、`terraform destroy` 一発の撤去性を保てる。
@@ -93,10 +93,10 @@ Fargate task
 ## 4. 全体構成
 
 ```
-                    ┌─ Tailscale VPN ─┐
-  社内ユーザー ──────┤                 │
-                    └────────┬────────┘
-                             ▼
+                    ┌─ 送信元IPホワイトリスト ─┐
+  社内ユーザー ──────┤  (Security Group)      │
+                    └───────────┬────────────┘
+                                ▼
 ┌─ VPC (10.0.0.0/16) ap-northeast-1 ───────────────────┐
 │                                                       │
 │  ┌─ public subnet ────────────────────────────┐       │
@@ -121,7 +121,18 @@ Fargate task
 ### 設計判断
 
 - **ALB・NAT Gatewayなし**: この2つで月$55かかる。Fargateをpublic subnetに置き、Security Groupで
-  Tailscaleサブネットルーター経由以外を遮断。10人規模ではこれで十分かつ月額が半減する。
+  許可リストに載っていない送信元を遮断。10人規模ではこれで十分かつ月額が半減する。
+- **アクセス制御はSGの送信元IPホワイトリスト**（当初案の Tailscale サブネットルーターから変更）:
+  Tailscale は authkey の発行とマシン承認という「Terraformの外の手作業」が必ず残り、
+  *`main` へのマージだけでdevが立ち上がる* という目標と噛み合わなかった。
+  接続元が固定回線に限られる前提なら、SGの許可リストでも「関係者以外はTCP接続すら張れない」
+  状態が作れて、中継用EC2（t4g.nano・月$3）も要らない。
+  許可CIDRは `allowed_cidrs`（名札 => CIDR）で管理し、`0.0.0.0/0` は variable の validation で弾く。
+  **トレードオフ**: 出先や動的IPの回線からは都度 `allowed_cidrs` を更新して apply が要る。
+  接続元が増えて回らなくなったら、そのときにVPN（Tailscale / Client VPN）へ戻す。
+- **固定URLなし**: ALBが無いので画面のURLは「今動いているタスクのパブリックIP」。
+  タスクを置き換えるたびに変わる（デプロイ後にワークフローのサマリへ出力する）。
+  固定URLが要るようになったらNLBかRoute53の付け替えを検討する。
 - **DBは1つに集約**: ベクトル・BM25全文検索（`pg_trgm` / `tsvector`）・会話履歴・文書メタデータを全部Postgresへ。
   旧版で未完だった「DynamoDB移行」の動機自体を設計で消す。
 
@@ -147,18 +158,21 @@ Fargate task
 
 ```
 terraform/
+├── bootstrap/               # 一度きり・手元から apply（ローカルstate）
+│   └── main.tf              # stateバケット + DynamoDBロック + GitHub OIDCロール + ECR
 ├── environments/
-│   └── prod/
-│       ├── main.tf          # モジュール呼び出しのみ
-│       ├── backend.tf       # S3 + DynamoDB state lock
-│       ├── providers.tf     # region = ap-northeast-1 固定
-│       └── terraform.tfvars
+│   ├── dev/                 # main へのマージで自動適用
+│   │   ├── main.tf          # モジュール呼び出しのみ
+│   │   ├── backend.tf       # S3 + DynamoDB state lock（bucketはinit時に渡す）
+│   │   ├── providers.tf     # region = ap-northeast-1 固定
+│   │   └── terraform.tfvars # allowed_cidrs など（gitignore）
+│   └── prod/                # 未適用（dev と同じ形だけ用意）
 └── modules/
-    ├── network/    # VPC, subnet, SG, Tailscaleサブネットルーター用EC2 (t4g.nano)
-    ├── database/   # RDS PostgreSQL 16 + pgvector, backup 7日
-    ├── app/        # ECS cluster, Fargate service, ECR, task定義
-    ├── ingest/     # S3, EventBridge, 取り込み用ECS task定義
-    └── secrets/    # Secrets Manager (LLM APIキー, DB認証情報)
+    ├── network/    # VPC, subnet, SG（送信元IPホワイトリスト）
+    ├── database/   # RDS PostgreSQL 16 + pgvector, backup 7日, DATABASE_URLをSecrets Managerへ
+    ├── app/        # ECS cluster, Fargate service (1タスク2コンテナ), task定義
+    ├── ingest/     # S3（原本文書）
+    └── secrets/    # Secrets Manager (LLM APIキー, 管理APIトークン)
 ```
 
 ### 設計原則
@@ -166,7 +180,15 @@ terraform/
 - **environmentsとmodulesを分離**し、moduleは環境非依存に保つ（dev追加が数行で済む）。
 - **APIキー・DBパスワードはSecrets Manager経由でタスクへ注入**。tfvarsにもコードにも平文で書かない
   （旧版のbuildspec.ymlにDocker Hubパスワードを平文で書いていた反省を回収）。
-- stateはS3バックエンド + DynamoDBロック。ローカルstate禁止。
+  - LLM APIキーは値をTerraform管理外にする（枠だけ作り、CLIで投入。`ignore_changes`で上書きしない）。
+  - DBパスワードは `random_password` で生成し、組み立て済みの `DATABASE_URL` を
+    Secrets Manager に置いてタスクへ渡す（アプリが読むのは `DATABASE_URL` 一本のため）。
+    生成値はtfstateには載るので、stateバケットはデプロイロールだけが読める設定にしてある。
+- **鶏卵問題は bootstrap スタックに隔離する**: stateの置き場・実行ロール・ECRは
+  「Terraformを回すために先に要るもの」なので、環境スタックとは別にローカルstateで一度だけ作る。
+- stateはS3バックエンド + DynamoDBロック。ローカルstate禁止（bootstrapを除く）。
+- **ECRは bootstrap 側**: ワークフローが「イメージpush → apply」の順に走るため、
+  applyより前に存在している必要がある。
 
 ### コスト運用（destroy可能・停止可能）
 
@@ -180,9 +202,8 @@ terraform/
 |---|---|
 | Fargate 0.5vCPU/1GB 常時1タスク | ~$18 |
 | RDS db.t4g.micro | ~$15 |
-| Tailscale中継用 EC2 t4g.nano | ~$3 |
 | S3 / ECR / Secrets | ~$2 |
-| **インフラ計** | **~$40** |
+| **インフラ計** | **~$35** |
 | LLM API | 使用量次第（10人で$10〜30程度） |
 
 ## 8. 技術スタック

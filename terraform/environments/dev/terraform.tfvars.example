@@ -1,0 +1,24 @@
+# cp terraform.tfvars.example terraform.tfvars して値を埋める。
+# terraform.tfvars は .gitignore 済み（接続元IPは公開したくないため）。
+
+project  = "rag-v2"
+vpc_cidr = "10.0.0.0/16"
+
+# アクセスできる送信元IPのホワイトリスト。「名札 => CIDR」。
+# 自分のグローバルIPは `curl -s ifconfig.me` で確認できる（/32 を付ける）。
+# 家庭回線は再接続でIPが変わることがあるので、変わったらここを直して apply する。
+allowed_cidrs = {
+  office        = "203.0.113.10/32"
+  maruyama-home = "198.51.100.24/32"
+}
+
+# 画面(3000)だけ開けたいなら false。curl や外部クライアントから
+# FastAPI(8000) を直接叩くなら true のままにする。
+allow_direct_api = true
+
+# backendコンテナに渡す追加の環境変数（backend/app/config.py が読むもの）。
+# 秘密情報はここではなく Secrets Manager へ。
+# backend_env = {
+#   USE_RERANK         = "false"
+#   IMAGE_INDEX_METHOD = "caption"
+# }
