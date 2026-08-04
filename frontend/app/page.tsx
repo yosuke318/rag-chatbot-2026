@@ -1443,6 +1443,10 @@ export default function Home() {
   const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
   const [evalError, setEvalError] = useState("");
+  // 「質問が0件」は GET /eval が 404 で返す（n=0 の空レポートではなくなった）。
+  // ★エラーとは別の state に持つ★ 失敗ではなく「まだ登録していないだけ」なので、
+  // 赤いエラー表示ではなく案内（.empty-note）として出す。
+  const [evalEmpty, setEvalEmpty] = useState("");
   // 評価用の数値パラメータ。②検索と同じキー（rrf_k / trgm_min_similarity / bm25_k1 / bm25_b）
   const [evalParamValues, setEvalParamValues] = useState<Record<string, string>>({});
 
@@ -1517,6 +1521,7 @@ export default function Home() {
     if (evalRunning) return;
     setEvalRunning(true);
     setEvalError("");
+    setEvalEmpty("");
     try {
       const params = new URLSearchParams({ top_k: "4" });
       if (evalSelected.length > 0) params.set("retrievers", evalSelected.join(","));
@@ -1536,8 +1541,11 @@ export default function Home() {
       const res = await fetch(`/api/backend/eval?${params}`);
       const err = await errorMessage(res);
       if (err) {
-        setEvalError(err);
         setEvalReport(null);
+        // 404 = 測る対象が無い。区分で絞って0件か、そもそも1件も無いかで
+        // 文面はバックエンドが出し分けているので、そのまま案内として出す。
+        if (res.status === 404) setEvalEmpty(err);
+        else setEvalError(err);
         return;
       }
       setEvalReport(await res.json());
@@ -2652,14 +2660,11 @@ export default function Home() {
 
         {evalError && <p className="error-note">{evalError}</p>}
 
-        {evalReport &&
-          (evalReport.n === 0 ? (
-            <p className="empty-note">
-              評価用の質問がありません。
-              <code>python -m app.eval --seed</code> でサンプルを投入するか、
-              <code>POST /eval-questions</code> で登録してください。
-            </p>
-          ) : (
+        {/* 質問0件の案内（GET /eval の 404）。文面はバックエンド側にある
+            ＝ CLI(app.compare)とも同じことを言う。 */}
+        {evalEmpty && <p className="empty-note">{evalEmpty}</p>}
+
+        {evalReport && (
             <>
               {/* 集計スコア（大きく表示） */}
               <div className="eval-score">
@@ -2771,7 +2776,7 @@ export default function Home() {
                 手法やリランクを変えて再検証し、Hit@k / MRR が上がるかで改良の効果を確かめる。
               </p>
             </>
-          ))}
+          )}
         </>
         )}
       </section>

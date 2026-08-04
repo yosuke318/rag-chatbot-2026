@@ -166,7 +166,12 @@ def print_comparison(outcome: dict) -> None:
     """2構成の結果を並べて出力する。"""
     runs = outcome["runs"]
     if not runs:
-        print("評価用の質問がありません。`task seed` で投入してください。")
+        # 文言は GET /eval の 404（no_eval_questions）と揃える。CLIと画面で
+        # 別のことを言われると、どちらが正しい手順か分からなくなる。
+        print(
+            "評価用の質問がまだ登録されていません。"
+            "`task seed`（または `python -m app.eval --seed`）で投入してください。"
+        )
         return
 
     before, after = runs[False], runs[True]

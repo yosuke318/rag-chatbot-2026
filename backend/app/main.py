@@ -1513,7 +1513,17 @@ def list_eval_questions(project: Optional[str] = None, topic: Optional[str] = No
     }
 
 
-@app.get("/eval", response_model=EvalReport, responses=_ERRORS)
+# 404 は /eval だけの応答なので _ERRORS（全エンドポイント共通）には足さず、
+# ここで足す。共通側に入れると、404 を返さない /search や /chat の
+# OpenAPI にも「404 あり」と載って嘘になる。
+@app.get(
+    "/eval",
+    response_model=EvalReport,
+    responses={
+        **_ERRORS,
+        404: {"model": ErrorResponse, "description": "評価用の質問が0件"},
+    },
+)
 def run_eval(
     top_k: int = 4,
     retrievers: Optional[str] = None,
@@ -1538,8 +1548,17 @@ def run_eval(
     リランクは rerank=True のときだけ走る。方式は rerank_method で切り替える
     （voyage=専用リランクAPI / llm=プロンプト式。未指定は設定の既定）。
     Claudeを呼ぶのは rerank=True かつ方式が llm のときだけ。
-    質問が0件なら n=0 の空レポートを返す（UI側で「まず質問を登録」と促す）。
     contexts など内部フィールドは response_model(EvalReport)で自動的に落ちる。
+
+    ★質問0件は 404★
+      以前は n=0 の空レポートを 200 で返していたが、それだと「測ったら0点」と
+      「そもそも測る対象が無い」が同じ形で返り、Hit@k=0.000 が並んで
+      ★精度が悪いように見える★。データが無いことはHTTPステータスで表す。
+
+    ★0件でも2種類ある★
+      - 全体で0件      … まだ何も登録していない → 登録手段を案内する
+      - その区分で0件  … 他の区分には在る → ★区分を外せば見られる★と案内する
+      同じ404でも次にすべきことが違うので、error コードと文面を分ける。
     """
     names = (
         [n.strip() for n in retrievers.split(",") if n.strip()] if retrievers else None
@@ -1556,7 +1575,30 @@ def run_eval(
         cleaned = {k: v for k, v in vals.items() if v is not None}
         if cleaned:
             params[r] = cleaned
-    gold = load_questions(project=_blank_to_none(project), topic=_blank_to_none(topic))
+    scoped_project = _blank_to_none(project)
+    scoped_topic = _blank_to_none(topic)
+    gold = load_questions(project=scoped_project, topic=scoped_topic)
+    if not gold:
+        # 絞り込んでいたときだけ、絞り込み無しでも0件かを確かめる（案内を分けるため）。
+        # 追加のクエリは0件のときにしか走らないので、通常の評価は今までどおり1回。
+        scoped = scoped_project is not None or scoped_topic is not None
+        if scoped and load_questions():
+            return _error(
+                404,
+                "no_eval_questions_in_scope",
+                "この区分には評価用の質問がありません。",
+                "区分の指定を「すべて」に戻すと、他の区分の質問で評価できます。"
+                "この区分で測りたい場合は「質問を追加」から登録してください。",
+                "",
+            )
+        return _error(
+            404,
+            "no_eval_questions",
+            "評価用の質問がまだ登録されていません。",
+            "「質問を追加」から登録するか、"
+            "`task seed`（または `python -m app.eval --seed`）でサンプルを投入してください。",
+            "",
+        )
     return evaluate(
         top_k=top_k,
         retrievers=names,

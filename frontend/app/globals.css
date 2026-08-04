@@ -1066,6 +1066,9 @@ p.hint .term {
   padding: 8px 10px;
   margin: 0;
   line-height: 1.7;
+  /* APIのエラー本文（message と hint を改行で繋いだもの）をそのまま出すため。
+     .error-note と揃える。 */
+  white-space: pre-wrap;
 }
 
 /* --- ツールチップ（見出しにカーソル/フォーカスで説明を表示）--- */
