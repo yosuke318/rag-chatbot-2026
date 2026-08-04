@@ -16,6 +16,23 @@ variable "github_repository" {
   default     = "yosuke318/rag-chatbot-2026"
 }
 
+variable "github_repository_immutable" {
+  type        = string
+  description = <<-EOT
+    同じリポジトリを不変ID付きで表した文字列（owner@ownerId/repo@repoId）。
+    GitHubのOIDCトークンは sub クレームをこの形式で送ってくることがあり、
+    その場合 owner/repo だけを書いた信頼ポリシーとは一致せず AssumeRole が
+    AccessDenied になる。名前の変更で信頼関係が壊れないようにするための仕組み。
+
+    値は失敗したときの CloudTrail（AssumeRoleWithWebIdentity の userName）か、
+    以下のAPIで確認できる:
+      gh api repos/<owner>/<repo> --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"'
+
+    空文字にすると owner/repo 形式だけを許可する。
+  EOT
+  default     = "yosuke318@73513978/rag-chatbot-2026@1304657314"
+}
+
 variable "github_allowed_refs" {
   type        = list(string)
   description = <<-EOT
