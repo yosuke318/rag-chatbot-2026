@@ -182,8 +182,15 @@ def test_print_comparison_stays_quiet_when_nothing_moved(capsys):
 
 
 def test_print_comparison_without_questions(capsys):
+    """文言は GET /eval の 404（no_eval_questions）と揃える。
+
+    CLIと画面で別のことを言われると、どちらが正しい投入手順か分からなくなる。
+    """
     compare_module.print_comparison({"gold": [], "runs": {}})
-    assert "評価用の質問がありません" in capsys.readouterr().out
+
+    out = capsys.readouterr().out
+    assert "評価用の質問がまだ登録されていません" in out
+    assert "task seed" in out
 
 
 def test_reingest_passes_contextual_and_retry_waits(monkeypatch, tmp_path):

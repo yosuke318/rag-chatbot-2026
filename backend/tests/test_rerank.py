@@ -199,6 +199,11 @@ EMPTY_REPORT = {
     "rrf_k": None, "params": None, "hit_at_k": 0.0, "mrr": 0.0, "results": [],
 }
 
+# ここで見たいのは rerank_method の受け渡しだけだが、質問が0件だと
+# GET /eval は evaluate を呼ぶ前に 404 を返す（test_eval_empty.py 参照）ので、
+# 「1件はある」状態にしておく必要がある。
+GOLD = [{"question": "有給は何日？", "expected_source": "有給休暇.txt"}]
+
 
 @pytest.fixture(scope="module")
 def client():
@@ -209,7 +214,7 @@ def client():
 
 
 def test_eval_passes_rerank_method_through(client):
-    with patch.object(main_module, "load_questions", return_value=[]), \
+    with patch.object(main_module, "load_questions", return_value=GOLD), \
          patch.object(main_module, "evaluate", return_value=EMPTY_REPORT) as m:
         res = client.get("/eval?rerank=true&rerank_method=llm")
 
@@ -220,7 +225,7 @@ def test_eval_passes_rerank_method_through(client):
 
 def test_eval_blank_rerank_method_means_default(client):
     """`?rerank_method=` は「未指定＝設定の既定」（空文字で方式を探しにいかない）。"""
-    with patch.object(main_module, "load_questions", return_value=[]), \
+    with patch.object(main_module, "load_questions", return_value=GOLD), \
          patch.object(main_module, "evaluate", return_value={**EMPTY_REPORT,
                                                             "rerank_method": None}) as m:
         res = client.get("/eval?rerank=true&rerank_method=")
@@ -231,7 +236,7 @@ def test_eval_blank_rerank_method_means_default(client):
 
 def test_eval_unknown_rerank_method_returns_400(client):
     """未知の方式は 500 ではなく、UIがそのまま出せる 400 で返す。"""
-    with patch.object(main_module, "load_questions", return_value=[]), \
+    with patch.object(main_module, "load_questions", return_value=GOLD), \
          patch.object(main_module, "evaluate",
                       side_effect=UnknownReranker("未知のリランク方式: typo")):
         res = client.get("/eval?rerank=true&rerank_method=typo")

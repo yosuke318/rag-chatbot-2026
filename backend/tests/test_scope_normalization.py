@@ -134,13 +134,27 @@ def test_eval_questions_real_value_filters(client):
 
 
 def test_eval_empty_query_is_not_a_filter(client):
-    """/eval も同じ（空クエリで質問0件にならない）。"""
-    with patch("app.main.load_questions", return_value=[]) as m, \
+    """/eval も同じ（空クエリを「空文字という区分」で絞りにいかない）。"""
+    gold = [{"question": "有給は何日？", "expected_source": "有給休暇.txt"}]
+    with patch("app.main.load_questions", return_value=gold) as m, \
          patch("app.main.evaluate", return_value={
-             "n": 0, "top_k": 4, "retrievers": None, "rerank": None,
-             "rrf_k": None, "params": None, "hit_at_k": 0.0, "mrr": 0.0, "results": [],
+             "n": 1, "top_k": 4, "retrievers": None, "rerank": None,
+             "rrf_k": None, "params": None, "hit_at_k": 1.0, "mrr": 1.0, "results": [],
          }):
         res = client.get("/eval?project=&topic=")
 
     assert res.status_code == 200
     assert m.call_args.kwargs == {"project": None, "topic": None}
+
+
+def test_eval_empty_query_reports_plain_shortage(client):
+    """0件のときも同じ規則。空文字を絞り込みとして扱っていないことを404側でも見る。
+
+    ここで空文字を区分と解釈すると、質問が1件も無い人に
+    「区分を外してください」（＝もう外れている）と案内してしまう。
+    """
+    with patch("app.main.load_questions", return_value=[]):
+        res = client.get("/eval?project=&topic=")
+
+    assert res.status_code == 404
+    assert res.json()["error"] == "no_eval_questions"

@@ -641,8 +641,17 @@ export interface paths {
          *     リランクは rerank=True のときだけ走る。方式は rerank_method で切り替える
          *     （voyage=専用リランクAPI / llm=プロンプト式。未指定は設定の既定）。
          *     Claudeを呼ぶのは rerank=True かつ方式が llm のときだけ。
-         *     質問が0件なら n=0 の空レポートを返す（UI側で「まず質問を登録」と促す）。
          *     contexts など内部フィールドは response_model(EvalReport)で自動的に落ちる。
+         *
+         *     ★質問0件は 404★
+         *       以前は n=0 の空レポートを 200 で返していたが、それだと「測ったら0点」と
+         *       「そもそも測る対象が無い」が同じ形で返り、Hit@k=0.000 が並んで
+         *       ★精度が悪いように見える★。データが無いことはHTTPステータスで表す。
+         *
+         *     ★0件でも2種類ある★
+         *       - 全体で0件      … まだ何も登録していない → 登録手段を案内する
+         *       - その区分で0件  … 他の区分には在る → ★区分を外せば見られる★と案内する
+         *       同じ404でも次にすべきことが違うので、error コードと文面を分ける。
          */
         get: operations["run_eval_eval_get"];
         put?: never;
@@ -2952,6 +2961,15 @@ export interface operations {
             };
             /** @description APIキー未設定・認証失敗 */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 評価用の質問が0件 */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
