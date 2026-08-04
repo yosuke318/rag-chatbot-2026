@@ -162,13 +162,11 @@ data "aws_iam_policy_document" "deploy" {
     sid    = "InfraManagement"
     effect = "Allow"
     actions = [
-      "ec2:*",            # VPC / subnet / route table / security group
-      "ecs:*",            # cluster / task definition / service
-      "rds:*",            # DBインスタンス / subnet group
-      "logs:*",           # CloudWatch Logs
-      "secretsmanager:*", # APIキー・DB認証情報
-      "s3:*",             # 原本文書バケット
-      "ecr:*",            # リポジトリ定義（ライフサイクル等）
+      "ec2:*",  # VPC / subnet / route table / security group
+      "ecs:*",  # cluster / task definition / service
+      "rds:*",  # DBインスタンス / subnet group
+      "logs:*", # CloudWatch Logs
+      "ecr:*",  # リポジトリ定義（ライフサイクル等）
       "application-autoscaling:*",
       "events:*", # EventBridge（夜間停止スケジュール等）
       "scheduler:*",
@@ -182,6 +180,26 @@ data "aws_iam_policy_document" "deploy" {
       variable = "aws:RequestedRegion"
       values   = [var.region]
     }
+  }
+
+  # S3とSecrets Managerだけは上のリージョン条件に混ぜず、リソースを名指しで絞る。
+  # バケット名前空間はグローバルで、リージョン条件が効かない操作も混ざるため、
+  # `s3:*` を resources=["*"] で持たせるとアカウント内の全バケットが射程に入る。
+  # プロジェクト接頭辞で縛れば、このロールが漏れても被害はこのプロジェクトに閉じる。
+  statement {
+    sid       = "ProjectBuckets"
+    effect    = "Allow"
+    actions   = ["s3:*"]
+    resources = ["arn:aws:s3:::${var.project}-*", "arn:aws:s3:::${var.project}-*/*"]
+  }
+
+  # シークレットのARNは末尾に6文字のランダム接尾辞が付く（rag-v2/database-url-AbCdEf）
+  # ので、`rag-v2/*` の末尾ワイルドカードでそのまま一致する。
+  statement {
+    sid       = "ProjectSecrets"
+    effect    = "Allow"
+    actions   = ["secretsmanager:*"]
+    resources = ["arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${var.project}/*"]
   }
 
   # ECSタスクロール等の作成。プロジェクト名で始まるロールだけに限定する

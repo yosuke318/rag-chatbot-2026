@@ -174,8 +174,11 @@ resource "aws_ecs_task_definition" "this" {
       secrets = local.backend_secrets
 
       # イメージにcurlが入っていない(python:3.12-slim)ので標準ライブラリで叩く。
+      # timeout=3 は必須: 省略すると urlopen がソケット既定（無制限）で待ち、
+      # 接続が詰まったときにヘルスチェック自体がぶら下がる。
+      # シェルを挟まないCMD形式にして、引用符の入れ子を無くしている。
       healthCheck = {
-        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${var.api_port}/health')\" || exit 1"]
+        command     = ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${var.api_port}/health', timeout=3)"]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -206,8 +209,11 @@ resource "aws_ecs_task_definition" "this" {
       # backendが健康になってから起動する（起動直後の500を減らす）。
       dependsOn = [{ containerName = "backend", condition = "HEALTHY" }]
 
+      # wget(busybox)ではなくnodeで叩く。wgetはベースイメージ側の都合で
+      # 消えうるが、nodeはこのコンテナがnodeで動いている以上必ず在る。
+      # AbortSignal.timeout で3秒で切り上げる（ぶら下がり防止）。
       healthCheck = {
-        command     = ["CMD-SHELL", "wget -q --spider http://localhost:${var.frontend_port}/ || exit 1"]
+        command     = ["CMD", "node", "-e", "fetch('http://localhost:${var.frontend_port}/', { signal: AbortSignal.timeout(3000) }).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
         interval    = 30
         timeout     = 5
         retries     = 3
