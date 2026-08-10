@@ -1,4 +1,4 @@
-"""区分(project / topic)マスタのテスト（YOSUKE-35）。
+"""区分(project / topic)マスタのテスト。
 
 確かめること:
   - 選択肢がマスタ(projects / topics)から引かれること（以前は文書と質問の

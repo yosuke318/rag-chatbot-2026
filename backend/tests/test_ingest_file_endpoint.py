@@ -75,7 +75,7 @@ def test_200_returns_ingest_response_shape(client: TestClient):
 
 
 def test_200_passes_extracted_images_to_ingest(client: TestClient):
-    """文書内画像を抽出して ingest_text に渡し、枚数をレスポンスに載せる（5-1）。"""
+    """文書内画像を抽出して ingest_text に渡し、枚数をレスポンスに載せる。"""
     with (
         patch("app.main.extract_text", return_value="取り込み本文テキスト"),
         patch("app.main.extract_images", return_value=["img1", "img2"]) as extract,

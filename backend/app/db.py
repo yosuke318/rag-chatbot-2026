@@ -192,8 +192,8 @@ def init_db() -> None:
         conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS context TEXT;")
         # 文書内画像の原本のS3キー（app.storage.image_key）。
         # NULL = テキストチャンク。値あり = 画像チャンク（その1枚が根拠になる）。
-        # 画像チャンクは 5-1 の時点では embedding も content_nouns も持たないため
-        # 検索にはヒットしない（検索対象化は 5-2）。回答生成で原本画像を渡す（5-3）
+        # 画像チャンクは登録した時点では embedding も content_nouns も持たないため
+        # 検索にはヒットしない（検索対象化は索引作成で別途行う）。回答生成で原本画像を渡す
         # ときに、ヒットしたチャンクからこのキーで原本を引く。
         conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS image_path TEXT;")
         # 画像チャンクは「その文書の分を丸ごと入れ替える」形で書くので、
@@ -421,7 +421,7 @@ def init_db() -> None:
             "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
             "topic_id BIGINT REFERENCES topics(id);"
         )
-        # 正解を「どの種類のチャンクで引けたら正解か」まで下ろす軸（5-2の索引方式の比較評価用）。
+        # 正解を「どの種類のチャンクで引けたら正解か」まで下ろす軸（画像の索引方式の比較評価用）。
         #   'any'（既定） … 文書が上位に来れば正解（従来どおり）
         #   'text'        … 本文チャンクで引けたときだけ正解
         #   'image'       … ★画像チャンクで引けたときだけ正解★
@@ -433,7 +433,7 @@ def init_db() -> None:
             "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
             "expected_kind TEXT NOT NULL DEFAULT 'any';"
         )
-        # 正解ラベルを「その文書のどこか」から「このチャンク」へ下ろす軸（6-1）。
+        # 正解ラベルを「その文書のどこか」から「このチャンク」へ下ろす軸。
         #   NULL   … 従来どおり文書名だけで判定する（既存の質問の意味を変えない）
         #   値あり … その語句を含むチャンクを引けたときだけ正解
         # これが無いと、分割・文脈付与・リランクといった★チャンク単位の改良★が

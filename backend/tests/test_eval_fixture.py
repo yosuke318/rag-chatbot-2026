@@ -37,7 +37,7 @@ def test_expected_sources_exist_in_seed_docs():
 
 
 def test_expected_texts_land_in_exactly_one_chunk():
-    """★チャンク単位のラベルが機能する状態を保つ★（YOSUKE-28）
+    """★チャンク単位のラベルが機能する状態を保つ★
 
     expected_text は「正解チャンクに必ず含まれる語句」なので、次の2つが要る:
       - 1つ以上のチャンクに含まれる  … 0件なら、正しく引けても必ず×になる
