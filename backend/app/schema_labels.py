@@ -97,7 +97,7 @@ SCHEMA_LABELS: dict[str, dict] = {
             "rating": "評価（+1=👍 / -1=👎）",
             "comment": "コメント",
             "created_at": "登録日時",
-            # ここから下は「どういう条件で出た回答への評価か」（8-1）。
+            # ここから下は「どういう条件で出た回答への評価か」。
             # 記録より前の行は空欄になる。
             "conversation_id": "会話ID",
             "message_id": "回答ID（この評価の対象）",

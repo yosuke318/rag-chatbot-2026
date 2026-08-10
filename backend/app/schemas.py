@@ -428,7 +428,7 @@ class Citation(BaseModel):
 
 
 class RetrievalMeta(BaseModel):
-    """この回答を作るのに実際に使った検索の条件（8-1）。
+    """この回答を作るのに実際に使った検索の条件。
 
     ★利用者が選べない値なので、サーバが返す★
       /chat は検索手法・top_k・リランカーをリクエストで受け取らず、設定の既定で
