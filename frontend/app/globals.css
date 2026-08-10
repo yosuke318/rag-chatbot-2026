@@ -801,6 +801,293 @@ button:disabled {
   color: var(--muted);
 }
 
+/* 👎の理由（任意）。押した時点で👎は記録済みなので、無視して先へ進める見た目に
+   とどめる（モーダルにして操作を止めない） */
+.fb-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.fb-reason-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fb-reason-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fb-chip {
+  padding: 2px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.fb-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.fb-chip:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.fb-chip.fb-chip-on {
+  border-color: var(--accent);
+  background: var(--bot-bubble);
+}
+
+.fb-reason-note {
+  display: flex;
+  gap: 6px;
+}
+
+/* ③配下の「👍/👎 を見る」。上=集計、下=1件ずつ */
+.fb-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fb-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.fb-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fb-sub {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.fb-overall {
+  margin: 6px 0;
+  font-size: 15px;
+}
+
+/* 時系列。棒の長さ=評価の件数、内側の塗り=そのうち👎の割合。
+   率だけで描くと、1件しか評価が無い日が満杯に見えて読み違える。 */
+.fb-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fb-bars li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.fb-bar-label {
+  flex: 0 0 92px;
+  color: var(--muted);
+}
+
+.fb-bar-track {
+  flex: 1;
+  min-width: 0;
+  height: 14px;
+  background: var(--bot-bubble);
+  border-radius: 3px;
+}
+
+.fb-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.fb-bar-down {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.fb-bar-value {
+  flex: 0 0 110px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.fb-reason-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fb-reason-counts li {
+  display: flex;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+/* 一覧（トリアージ）。1行=1件の評価で、開くと根拠と会話が出る */
+.fb-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fb-rows > li {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.fb-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.fb-row-head:hover {
+  background: var(--bot-bubble);
+}
+
+.fb-row-question {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fb-row-when {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fb-tag {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.fb-row-body {
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.fb-answer {
+  margin: 10px 0 6px;
+  font-size: 13px;
+}
+
+.fb-comment {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.fb-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.fb-detail-block h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fb-chunks,
+.fb-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  font-size: 12px;
+}
+
+.fb-chunk-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.fb-chunk-body {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+
+.fb-messages li {
+  display: flex;
+  gap: 8px;
+}
+
+.fb-msg-role {
+  flex: 0 0 32px;
+  color: var(--muted);
+}
+
+/* 評価された回答そのもの。会話が長いとどれのことか分からなくなる */
+.fb-msg-target {
+  padding: 2px 6px;
+  margin-left: -6px;
+  background: var(--accent-soft);
+  border-radius: 4px;
+}
+
+.fb-reason-note input {
+  flex: 1;
+  max-width: 320px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
 .chat-input {
   display: flex;
   gap: 8px;

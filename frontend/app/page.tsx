@@ -1,7 +1,7 @@
 "use client";
 
 import { AutoComplete, Modal, Select } from "antd";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { LIST_HEIGHT } from "./antd";
 
@@ -117,6 +117,14 @@ type Message = {
   messageId?: number;
   retrieval?: RetrievalMeta;
   latencyMs?: number;
+  // 質問したときに選んでいた区分。👍/👎 に添えて送るために回答ごとに抱える
+  // （送信時に今のセレクタを読むと、聞いた後で切り替えた区分が記録される）。
+  project?: string;
+  topic?: string;
+  // 記録した👍/👎のID。👎の理由を後から足す宛先になる（理由を選ぶまで送信を
+  // 待たない代わりに、記録済みの行を指せるようにしておく）。
+  feedbackId?: number;
+  reason?: string;
 };
 
 /** レスポンスがエラーならUI表示用の文字列を返す。正常なら null。 */
@@ -202,6 +210,90 @@ function useTopics(project: string, reloadKey: number): string[] {
     };
   }, [project, reloadKey]);
   return topics;
+}
+
+/** 👎の理由の選択肢を取ってくる（GET /feedback/reasons）。
+ *
+ * 画面に文言を焼かないのは、記録される値と表示される文言を同じものに保つため。
+ * 取れなければ空配列＝理由を聞く欄が出ないだけで、👎そのものは記録できる。
+ */
+function useFeedbackReasons(): string[] {
+  const [reasons, setReasons] = useState<string[]>([]);
+  useEffect(() => {
+    fetch("/api/backend/feedback/reasons")
+      .then((r) => r.json())
+      .then((d) => setReasons(d.reasons ?? []))
+      .catch(() => {});
+  }, []);
+  return reasons;
+}
+
+/** 👎を押した直後に理由を聞く欄。★押した時点で👎は記録済み★
+ *
+ * 理由を選ぶまで送信を待つと、押しただけで画面を離れた人の👎が消える。ここは
+ * 記録済みの評価に後から足すだけなので、無視して先へ進んでも何も失われない。
+ * 👍のときは出さない（催促を増やすと満足度が下がる）。
+ */
+function ReasonPicker({
+  reasons,
+  picked,
+  onPick,
+  onComment,
+}: {
+  reasons: string[];
+  picked?: string;
+  onPick: (reason: string) => void;
+  onComment: (comment: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const [sent, setSent] = useState(false);
+  if (reasons.length === 0) return null;
+  return (
+    <div className="fb-reason">
+      <span className="fb-reason-label">
+        {picked ? "ありがとうございます。" : "よければ理由を教えてください（任意）"}
+      </span>
+      <div className="fb-reason-choices">
+        {reasons.map((r) => (
+          <button
+            key={r}
+            className={`fb-chip ${picked === r ? "fb-chip-on" : ""}`}
+            onClick={() => onPick(r)}
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+      {/* 選択肢に無いことを書いてもらう欄。選択肢と別に持つのは、自由記述に
+          混ぜると「情報が古い が増えている」のような数え方ができなくなるため。 */}
+      <div className="fb-reason-note">
+        <input
+          placeholder="補足があれば（任意）"
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setSent(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && text.trim()) {
+              onComment(text.trim());
+              setSent(true);
+            }
+          }}
+        />
+        <button
+          className="fb-chip"
+          disabled={!text.trim() || sent}
+          onClick={() => {
+            onComment(text.trim());
+            setSent(true);
+          }}
+        >
+          {sent ? "送信済み" : "送信"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /** その区分に属する文書名を取ってくる（GET /documents）。
@@ -826,6 +918,11 @@ type TabId = (typeof TABS)[number]["id"];
 const EVAL_SUBTABS = [
   { id: "add", label: "質問を追加", hint: "/eval-questions" },
   { id: "run", label: "質問集を評価", hint: "/eval" },
+  // ★ここに置いたのは「評価するもの」が同じだから★
+  //   ③は正解ラベルを人が用意して採点する。👍/👎 は利用者が付けた評価で、
+  //   正解が無い代わりに実際に聞かれた質問に付く。どちらも「今の出来を測る」
+  //   材料で、④（会話そのもの）ではなくこちらに属する。
+  { id: "feedback", label: "👍/👎 を見る", hint: "/feedback" },
 ] as const;
 
 type EvalSubTab = (typeof EVAL_SUBTABS)[number]["id"];
@@ -955,6 +1052,443 @@ const BENCHMARKS: {
     ),
   },
 ];
+
+/** 👎率の切り口ごとの1行分（全体・区分別・時系列で同じ形）。 */
+type Rate = { total: number; down: number; down_rate: number | null };
+
+type FeedbackStats = Rate & {
+  bucket: string;
+  by_scope: (Rate & { project: string | null; topic: string | null })[];
+  by_period: (Rate & { period: string })[];
+  by_reason: { reason: string | null; count: number }[];
+};
+
+type FeedbackRow = {
+  id: number;
+  question: string;
+  answer: string;
+  sources: string[];
+  rating: number;
+  reason: string | null;
+  comment: string | null;
+  created_at: string | null;
+  project: string | null;
+  topic: string | null;
+  conversation_id: number | null;
+  message_id: number | null;
+  retriever: string | null;
+  top_k: number | null;
+  reranked: boolean | null;
+  chunk_ids: number[];
+  latency_ms: number | null;
+};
+
+type ChunkDetail = {
+  id: number;
+  source: string;
+  chunk_index: number;
+  content: string;
+  context: string | null;
+  image_path: string | null;
+};
+
+type ConversationMessage = {
+  id: number;
+  role: string;
+  content: string;
+  sources: string[];
+};
+
+/** 👎率を「0件＝まだ誰も評価していない」と区別して出す。 */
+function formatRate(rate: number | null): string {
+  return rate === null ? "—" : `${(rate * 100).toFixed(0)}%`;
+}
+
+/** 期間の絞り込み。★既定を「すべて」にしない★
+ *
+ * 👎率は「いつからか上がった」を見るためのものなので、既定が全期間だと
+ * 大昔の分に薄められて最近の変化が見えない。よく使う幅を並べて選ばせる。
+ */
+const FEEDBACK_RANGES = [
+  { id: "7", label: "直近7日", days: 7, bucket: "day" },
+  { id: "30", label: "直近30日", days: 30, bucket: "day" },
+  { id: "90", label: "直近90日", days: 90, bucket: "week" },
+  { id: "all", label: "すべて", days: 0, bucket: "month" },
+] as const;
+
+type FeedbackRange = (typeof FEEDBACK_RANGES)[number]["id"];
+
+/** 👎1件を開いて、そのとき渡したチャンクと元の会話を読む（L2 トリアージ）。
+ *
+ * ★1件の👎からは原因が分解できない★
+ *   検索が外したのか・生成が外したのか・そもそも文書に答えが無かったのかは、
+ *   「そのとき何を根拠に渡していたか」を見ないと分けられない。この2つを
+ *   開けるようにするのが、👎を調査の入口にするということ。
+ */
+function FeedbackDetail({ row }: { row: FeedbackRow }) {
+  const [chunks, setChunks] = useState<ChunkDetail[] | null>(null);
+  const [messages, setMessages] = useState<ConversationMessage[] | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (row.chunk_ids.length === 0) {
+      setChunks([]);
+      return;
+    }
+    // 並びは記録したまま渡す（＝順位）。サーバもその並びで返す。
+    fetch(`/api/backend/chunks?ids=${row.chunk_ids.join(",")}`)
+      .then((r) => r.json())
+      .then((d) => setChunks(d.chunks ?? []))
+      .catch(() => setError("チャンクを読めませんでした"));
+  }, [row.chunk_ids]);
+
+  useEffect(() => {
+    if (row.conversation_id === null) {
+      setMessages([]);
+      return;
+    }
+    fetch(`/api/backend/conversations/${row.conversation_id}`)
+      .then((r) => r.json())
+      .then((d) => setMessages(d.messages ?? []))
+      .catch(() => setError("会話を読めませんでした"));
+  }, [row.conversation_id]);
+
+  return (
+    <div className="fb-detail">
+      {error && <p className="hint">{error}</p>}
+      <div className="fb-detail-block">
+        <h4>
+          そのとき渡したチャンク（{row.chunk_ids.length}件・並びが順位）
+        </h4>
+        {row.chunk_ids.length === 0 ? (
+          <p className="hint">
+            記録されていない（この記録より前の👎、または根拠なしで答えた回答）。
+          </p>
+        ) : chunks === null ? (
+          <p className="hint">読み込み中…</p>
+        ) : (
+          <ol className="fb-chunks">
+            {chunks.map((c) => (
+              <li key={c.id}>
+                <div className="fb-chunk-head">
+                  <SourceLink source={c.source} />
+                  <code>chunk #{c.id}</code>
+                  {c.image_path && <span className="fb-tag">画像</span>}
+                </div>
+                <p className="fb-chunk-body">{c.content}</p>
+              </li>
+            ))}
+          </ol>
+        )}
+        {chunks !== null && chunks.length < row.chunk_ids.length && (
+          <p className="hint">
+            {row.chunk_ids.length - chunks.length}件は今のDBに無い（文書が
+            消されている）。評価は残す作りなので、これ自体は壊れていない。
+          </p>
+        )}
+      </div>
+      <div className="fb-detail-block">
+        <h4>元の会話</h4>
+        {row.conversation_id === null ? (
+          <p className="hint">記録されていない（この記録より前の👎）。</p>
+        ) : messages === null ? (
+          <p className="hint">読み込み中…</p>
+        ) : (
+          <ol className="fb-messages">
+            {messages.map((m) => (
+              <li
+                key={m.id}
+                className={m.id === row.message_id ? "fb-msg-target" : undefined}
+              >
+                <span className="fb-msg-role">
+                  {m.role === "user" ? "質問" : "回答"}
+                </span>
+                <span>{m.content}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 👍/👎 の集計と一覧（③の配下）。
+ *
+ * ★上半分は集計、下半分は1件ずつ★
+ *   生の👎は単体では意味が分解できないので、「改善のインプット」ではなく
+ *   ★調査対象を絞り込むフィルタ★として扱う。上で「どの区分・いつが怪しいか」を
+ *   決め、そのまま下の一覧を同じ条件で絞って1件ずつ開く、という順で使う。
+ */
+function FeedbackPanel({
+  projects,
+  scopeVersion,
+}: {
+  projects: string[];
+  scopeVersion: number;
+}) {
+  const [project, setProject] = useState("");
+  const [topic, setTopic] = useState("");
+  const topics = useTopics(project, scopeVersion);
+  const [range, setRange] = useState<FeedbackRange>("30");
+  // 一覧はまず👎から見る（👍は数えるものであって、読むものではない）
+  const [rating, setRating] = useState<"-1" | "1" | "">("-1");
+  const [stats, setStats] = useState<FeedbackStats | null>(null);
+  const [rows, setRows] = useState<FeedbackRow[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [error, setError] = useState("");
+
+  const selected = FEEDBACK_RANGES.find((r) => r.id === range)!;
+
+  /** 集計と一覧で同じ絞り込みを使う（別々に組むと画面の中で食い違う）。 */
+  const filters = useMemo(() => {
+    const params = new URLSearchParams();
+    if (project.trim()) params.set("project", project.trim());
+    if (topic.trim()) params.set("topic", topic.trim());
+    if (selected.days > 0) {
+      const since = new Date();
+      since.setDate(since.getDate() - selected.days);
+      params.set("since", since.toISOString());
+    }
+    return params;
+  }, [project, topic, selected.days]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(filters);
+    params.set("bucket", selected.bucket);
+    let current = true;
+    fetch(`/api/backend/feedback/stats?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!current) return;
+        if (d.error) setError(d.message);
+        else setStats(d);
+      })
+      .catch(() => setError("集計を読めませんでした"));
+    return () => {
+      current = false;
+    };
+  }, [filters, selected.bucket]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(filters);
+    if (rating) params.set("rating", rating);
+    let current = true;
+    fetch(`/api/backend/feedback?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!current) return;
+        setRows(d.feedback ?? []);
+        setTotal(d.total ?? 0);
+      })
+      .catch(() => setError("一覧を読めませんでした"));
+    return () => {
+      current = false;
+    };
+  }, [filters, rating]);
+
+  // 棒の長さは「その刻みで一番多かった件数」を基準にする（率だけだと1件しか
+  // 評価が無い日が満杯に見える）。
+  const peak = Math.max(1, ...(stats?.by_period ?? []).map((p) => p.total));
+
+  return (
+    <div className="fb-panel">
+      {error && <p className="error-box">{error}</p>}
+
+      <div className="fb-filters">
+        <ScopeSelect
+          idPrefix="fb"
+          project={project}
+          topic={topic}
+          projects={projects}
+          topics={topics}
+          onProject={setProject}
+          onTopic={setTopic}
+        />
+        <div className="fb-range">
+          {FEEDBACK_RANGES.map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              className={`fb-chip ${range === r.id ? "fb-chip-on" : ""}`}
+              onClick={() => setRange(r.id)}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* --- L1 集計 ------------------------------------------------------ */}
+      <h3 className="stage-title">👎率（/feedback/stats）</h3>
+      <p className="hint">
+        全体の👎率はまず動かない。見るのは
+        <strong>「この区分だけ突出している」「この日から上がった」</strong>で、
+        それが調べに行く先を絞ってくれる。
+        <strong>件数の小さい区分は率が跳ねる</strong>ので、率と件数を一緒に読む。
+      </p>
+      {stats && (
+        <>
+          <p className="fb-overall">
+            全体 <strong>{formatRate(stats.down_rate)}</strong>（👎 {stats.down}
+            {" / "}
+            {stats.total}件）
+          </p>
+
+          <h4 className="fb-sub">時系列</h4>
+          {stats.by_period.length === 0 ? (
+            <p className="hint">この期間に評価がありません。</p>
+          ) : (
+            <ul className="fb-bars">
+              {stats.by_period.map((p) => (
+                <li key={p.period}>
+                  <span className="fb-bar-label">
+                    {formatDateTime(p.period).slice(0, 10)}
+                  </span>
+                  <span className="fb-bar-track">
+                    <span
+                      className="fb-bar-fill"
+                      style={{ width: `${(p.total / peak) * 100}%` }}
+                    >
+                      <span
+                        className="fb-bar-down"
+                        style={{ width: `${(p.down / p.total) * 100}%` }}
+                      />
+                    </span>
+                  </span>
+                  <span className="fb-bar-value">
+                    {formatRate(p.down_rate)}（{p.down}/{p.total}）
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <h4 className="fb-sub">区分別（👎率の高い順）</h4>
+          {stats.by_scope.length === 0 ? (
+            <p className="hint">この期間に評価がありません。</p>
+          ) : (
+            <table className="doc-table">
+              <thead>
+                <tr>
+                  <th>プロジェクト</th>
+                  <th>トピック</th>
+                  <th>👎率</th>
+                  <th>👎</th>
+                  <th>評価数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.by_scope.map((s) => (
+                  <tr key={`${s.project}/${s.topic}`}>
+                    <td>{s.project ?? "（区分なし）"}</td>
+                    <td>{s.topic ?? "（なし）"}</td>
+                    <td>{formatRate(s.down_rate)}</td>
+                    <td>{s.down}</td>
+                    <td>{s.total}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <h4 className="fb-sub">👎の理由</h4>
+          {stats.by_reason.length === 0 ? (
+            <p className="hint">この期間に👎がありません。</p>
+          ) : (
+            <ul className="fb-reason-counts">
+              {stats.by_reason.map((r) => (
+                <li key={r.reason ?? "none"}>
+                  <span>{r.reason ?? "（理由なし）"}</span>
+                  <strong>{r.count}</strong>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+
+      {/* --- L2 トリアージ ------------------------------------------------- */}
+      <h3 className="stage-title">1件ずつ見る（/feedback）</h3>
+      <p className="hint">
+        👎 1件では、<strong>検索が外した</strong>のか
+        <strong>生成が外した</strong>のか
+        <strong>そもそも文書に答えが無い</strong>のかを区別できない。
+        行を開いて、そのとき渡したチャンクと元の会話を確かめる。
+      </p>
+      <div className="fb-range">
+        {[
+          { id: "-1" as const, label: "👎だけ" },
+          { id: "1" as const, label: "👍だけ" },
+          { id: "" as const, label: "すべて" },
+        ].map((r) => (
+          <button
+            key={r.id || "all"}
+            type="button"
+            className={`fb-chip ${rating === r.id ? "fb-chip-on" : ""}`}
+            onClick={() => setRating(r.id)}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+      {rows === null ? (
+        <p className="hint">読み込み中…</p>
+      ) : rows.length === 0 ? (
+        <p className="hint">この条件の評価はまだありません。</p>
+      ) : (
+        <>
+          <p className="hint">
+            {total}件中 {rows.length}件を表示（新しい順）
+          </p>
+          <ul className="fb-rows">
+            {rows.map((row) => (
+              <li key={row.id}>
+                <button
+                  type="button"
+                  className="fb-row-head"
+                  aria-expanded={openId === row.id}
+                  onClick={() =>
+                    setOpenId((id) => (id === row.id ? null : row.id))
+                  }
+                >
+                  <span className="fb-row-rating">
+                    {row.rating === -1 ? "👎" : "👍"}
+                  </span>
+                  <span className="fb-row-question">{row.question}</span>
+                  {row.reason && <span className="fb-tag">{row.reason}</span>}
+                  <span className="fb-row-when">
+                    {formatDateTime(row.created_at)}
+                  </span>
+                </button>
+                {openId === row.id && (
+                  <div className="fb-row-body">
+                    <p className="fb-answer">{row.answer}</p>
+                    {row.comment && (
+                      <p className="fb-comment">補足: {row.comment}</p>
+                    )}
+                    {/* 条件を並べるのは「設定を変えたら👎が減ったか」を
+                        突き合わせるため（同じ条件の👎が並ぶなら設定を疑う）。 */}
+                    <p className="hint">
+                      区分: {row.project ?? "（なし）"} /{" "}
+                      {row.topic ?? "（なし）"} ・ 検索:{" "}
+                      {row.retriever ?? "未記録"} ・ top_k:{" "}
+                      {row.top_k ?? "未記録"} ・ リランク:{" "}
+                      {row.reranked === null ? "未記録" : row.reranked ? "あり" : "なし"}{" "}
+                      ・ 所要: {row.latency_ms === null ? "未記録" : `${row.latency_ms}ms`}
+                    </p>
+                    <FeedbackDetail row={row} />
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
 
 /** 準拠ベンチマークの一覧（サイドバーのタイトルから開く）。 */
 function BenchmarkModal({
@@ -1388,6 +1922,8 @@ export default function Home() {
   const [chatProject, setChatProject] = useState("");
   const [chatTopic, setChatTopic] = useState("");
   const chatTopics = useTopics(chatProject, scopeVersion);
+  // 👎の理由の選択肢。回答ごとに取り直す必要は無いので1回だけ引く。
+  const feedbackReasons = useFeedbackReasons();
 
   // --- 評価パネル（/eval = 質問集で Hit@k / MRR を測る）---
   const [evalSelected, setEvalSelected] = useState<string[]>([]);
@@ -1737,10 +2273,12 @@ export default function Home() {
     // 質問と「これから埋まる空の回答」を同時に置く。以降 delta が届くたびに
     // 末尾（＝この空の回答）を書き換えていく。
     // question を持たせておくと、この回答に 👍/👎 を付けられる（送信時に復元する）。
+    const project = chatProject.trim();
+    const topic = chatTopic.trim();
     setMessages((m) => [
       ...m,
       { role: "user", text: q },
-      { role: "bot", text: "", question: q },
+      { role: "bot", text: "", question: q, project, topic },
     ]);
     setQuestion("");
     setLoading(true);
@@ -1753,8 +2291,8 @@ export default function Home() {
         body: JSON.stringify({
           question: q,
           conversation_id: conversationId,
-          project: chatProject.trim() || null,
-          topic: chatTopic.trim() || null,
+          project: project || null,
+          topic: topic || null,
         }),
       });
       const err = await errorMessage(res);
@@ -1837,14 +2375,50 @@ export default function Home() {
           // chunk_ids を別に受け取らないのは、二重に持つと片方だけズレるため。
           chunk_ids: (msg.citations ?? []).map((c) => c.chunk_id),
           latency_ms: msg.latencyMs ?? null,
+          // 区分だけは meta の戻しではなく、質問したときの選択（未選択は null）。
+          // これが無いと「この区分だけ👎率が高い」を後から出せない。
+          project: msg.project || null,
+          topic: msg.topic || null,
         }),
       });
       if (!res.ok) throw new Error(String(res.status));
+      // 記録できたIDを覚えておく。👎の理由はこの行に後から足す。
+      const { id } = await res.json();
+      setMessages((m) =>
+        m.map((x, i) => (i === index ? { ...x, feedbackId: id } : x)),
+      );
     } catch {
       // 失敗したら印を戻して再送できるようにする
       setMessages((m) =>
         m.map((x, i) => (i === index ? { ...x, rating: undefined } : x)),
       );
+    }
+  }
+
+  /** 記録済みの👎に理由・補足を後から足す（PATCH /feedback/{id}）。
+   *
+   * 失敗しても👎そのものは残っているので、印は戻さない（戻すと「押せていない」と
+   * 誤解させる）。理由が付かなかっただけの状態になる。
+   */
+  async function sendReason(
+    index: number,
+    patch: { reason?: string; comment?: string },
+  ) {
+    const msg = messages[index];
+    if (!msg?.feedbackId) return;
+    if (patch.reason) {
+      setMessages((m) =>
+        m.map((x, i) => (i === index ? { ...x, reason: patch.reason } : x)),
+      );
+    }
+    try {
+      await fetch(`/api/backend/feedback/${msg.feedbackId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+    } catch {
+      // 通信できなくても👎は記録済み。ここで出せる復旧手段が無いので黙って諦める。
     }
   }
 
@@ -2415,6 +2989,16 @@ export default function Home() {
                   {m.rating && <span className="fb-thanks">記録しました</span>}
                 </div>
               )}
+              {/* 理由を聞くのは👎だけ。👍にも聞くと催促が増えて満足度が下がる。
+                  記録できた（feedbackId がある）ときだけ出す＝足す先がある状態。 */}
+              {m.rating === -1 && m.feedbackId && (
+                <ReasonPicker
+                  reasons={feedbackReasons}
+                  picked={m.reason}
+                  onPick={(reason) => sendReason(i, { reason })}
+                  onComment={(comment) => sendReason(i, { comment })}
+                />
+              )}
             </div>
           ))}
           {loading && <div className="msg bot">考え中…</div>}
@@ -2433,7 +3017,33 @@ export default function Home() {
       )}
 
       {/* 評価フロー: 質問集(eval_questions) → 各問を検索 → Hit@k / MRR を集計 */}
-      {tab === "eval" && (
+      {/* 👍/👎 は③の配下だが、上の見出し（正解ラベル付きの質問集を採点する）とは
+          扱うものが違うので、同じ section には入れず別のパネルにする。 */}
+      {tab === "eval" && evalSubTab === "feedback" && (
+        <section className="panel">
+          <h2>
+            <Tip label="③ 👍/👎 を見る">
+              ④で回答に付いた<strong>👍/👎</strong>を、集計（どこが怪しいか）と
+              一覧（1件ずつ何が起きたか）で見る。
+              <br />
+              <br />
+              ★<strong>生の👎は改善のインプットにならない</strong>★
+              1件の👎からは、検索が外したのか・生成が外したのか・そもそも文書に
+              答えが無かったのかを区別できない。ここは
+              <strong>調べに行く先を絞り込むためのフィルタ</strong>として使う。
+              <br />
+              <br />
+              ③の評価（Hit@k / MRR）は<strong>人が用意した正解</strong>で測るのに対し、
+              こちらは<strong>実際に聞かれた質問に利用者が付けた評価</strong>。
+              正解ラベルが無い代わりに、現場で何が起きているかが出る。
+            </Tip>
+            （/feedback・キー不要）
+          </h2>
+          <FeedbackPanel projects={projects} scopeVersion={scopeVersion} />
+        </section>
+      )}
+
+      {tab === "eval" && evalSubTab !== "feedback" && (
       <section className="panel">
         <h2>
           <Tip label="③ 評価する">

@@ -107,7 +107,7 @@ export interface paths {
          *     保存すると原本ダウンロードが壊れるため、取り込みは store_original=False にし、
          *     原本の保存はここで明示的に行う。
          *
-         *     加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する（5-1）。
+         *     加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する。
          *     画像を持つのは原本バイナリがあるこの経路だけなので、/ingest（テキスト貼り付け）
          *     には無い処理になる。
          */
@@ -394,7 +394,7 @@ export interface paths {
         put?: never;
         /**
          * Reindex Images Endpoint
-         * @description S3の原本画像から、画像チャンクの索引だけを作り直す（5-2の索引方式の比較評価用）。
+         * @description S3の原本画像から、画像チャンクの索引だけを作り直す（画像の索引方式の比較評価用）。
          *
          *     画像の索引方式（自動キャプション / マルチモーダル埋め込み）は取り込み時に
          *     決まるため、方式を変えて比べるには索引を作り直す必要がある。原本画像はS3に
@@ -424,9 +424,9 @@ export interface paths {
         put?: never;
         /**
          * Chart Read
-         * @description 文書内のチャート画像を読解する（5-4）。★売買判断は返さない★
+         * @description 文書内のチャート画像を読解する。★売買判断は返さない★
          *
-         *     5-3（原本画像を根拠にした回答）をチャートに向けたもの。検索でヒットした
+         *     原本画像を根拠にした回答の仕組みを、チャートに向けたもの。検索でヒットした
          *     画像チャンクだけを根拠にし、「今どういう状態か」を言葉にする。
          *     複数レポートの図表を集めて要約する用途もここに乗る。
          *
@@ -507,6 +507,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chunks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Chunks
+         * @description 指定したIDのチャンクを、★渡した並びのまま★返す。
+         *
+         *     👎の行が持つ chunk_ids（回答生成に渡した順＝順位）をそのまま渡して、
+         *     「そのとき何を根拠にしていたか」を後から読むための口。ID順に並べ替えて
+         *     返すと順位が消えるので、並びは呼び出し側の指定を保つ。
+         *
+         *     存在しないIDは黙って飛ばす（404にしない）。文書を消しても評価は残る作りなので、
+         *     「一部のチャンクだけ消えている」は起こりうる正常な状態で、残りは読めた方がいい。
+         */
+        get: operations["list_chunks_chunks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Conversation
+         * @description 会話の全文を古い順で返す。
+         *
+         *     👎の行から「どういう流れでその質問が出たのか」を辿るための口。回答生成に
+         *     載せる直近N件（app.conversations.load_history）とは別物で、こちらは途中を
+         *     切らない: 流れを読むのが目的なので、切ると用を成さない。
+         */
+        get: operations["get_conversation_conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/feedback/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Feedback Stats
+         * @description 👎率を、全体・区分別・時系列・理由別に返す。
+         *
+         *     ★rating で絞る口を置いていない★
+         *       率には分母（その区分・その日の全評価）が要る。👎だけを数えても「3件」までしか
+         *       言えず、多いのか少ないのかが出せない。👎そのものを読むのは GET /feedback。
+         *
+         *     ★この画面で探すのは全体の数値ではなく偏り★
+         *       全体の👎率はまず動かない。「この区分だけ突出している」「この日から上がった」が
+         *       調べに行く先を絞ってくれる。分母が小さいと率は跳ねるので、件数も一緒に返す。
+         */
+        get: operations["feedback_stats_feedback_stats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/feedback/reasons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Feedback Reasons
+         * @description 👎の理由の選択肢を返す。UIのボタンはこれを並べる。
+         *
+         *     画面に文言を焼かずここから取るのは、選択肢を足したときに片方だけ古くなるのを
+         *     防ぐため（記録される値と表示される文言が同じものであることを保証する）。
+         */
+        get: operations["list_feedback_reasons_feedback_reasons_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/feedback": {
         parameters: {
             query?: never;
@@ -514,10 +616,26 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List Feedback
+         * @description 記録した 👍/👎 を新しい順で返す。指定しなかった軸は絞り込まない。
+         *
+         *     ★この一覧の役割は「👎を読んで直す」ではなく「調べる場所を絞る」★
+         *       👎 1件では、検索が外したのか・生成が外したのか・そもそも文書に答えが
+         *       無かったのかを区別できない。区分や期間で絞って👎を並べ、1件ずつ元の会話と
+         *       渡したチャンクへ辿るための入口として使う。
+         *
+         *     期間は since 以上 until 未満（半開区間）。両端を含めると、月ごとに区切って
+         *     眺めたときに境界の1件が両方に出て二重に数えられる。
+         *
+         *     rating だけは 400 で弾く: +1/-1 以外を渡すと必ず0件になり、「まだ👎が無い」と
+         *     「指定を間違えた」が画面上で見分けられない。件数の上限超過（limit）は
+         *     表示件数の話なので黙って丸める（/documents/summary と同じ）。
+         */
+        get: operations["list_feedback_feedback_get"];
         put?: never;
         /**
-         * Feedback
+         * Add Feedback
          * @description 回答への 👍/👎 を記録する。
          *
          *     貯めたフィードバック（特に👎）は eval のQA候補に回す運用を想定。
@@ -529,12 +647,45 @@ export interface paths {
          *       /chat が返した meta / done をそのまま添えてもらう想定だが、無くても記録する。
          *       「条件が分からない👎」でも、質問と回答が残るだけで評価の素材にはなる。
          *       ここを必須にすると、条件を持たない古いクライアントの👎が丸ごと消える。
+         *
+         *     ★理由(reason)も任意★
+         *       画面は「👎を記録してから理由を聞く」（PATCH /feedback/{id}）ので、ここに
+         *       理由が入るのは最初から分かっている場合だけ。理由を必須にすると、押しただけで
+         *       去った人の👎が消える＝一番多い操作を一番落としやすい作りになる。
          */
-        post: operations["feedback_feedback_post"];
+        post: operations["add_feedback_feedback_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/feedback/{feedback_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Feedback Reason
+         * @description 記録済みの評価に、後から理由と自由記述を足す。
+         *
+         *     ★👎を押す操作と理由を選ぶ操作を分けてある★
+         *       理由を選ぶまで送信を待つと、押しただけで画面を離れた人の👎が消える。
+         *       先に👎を記録し、返ったIDに対してここで理由を足す。理由を選ばなければ
+         *       「理由なしの👎」がそのまま残る（従来どおり）。
+         *
+         *     渡さなかった項目は書き換えない。自由記述を消したいときは空文字を送る
+         *     （null は「変更しない」の意味なので、消すのに使えない）。
+         */
+        patch: operations["update_feedback_reason_feedback__feedback_id__patch"];
         trace?: never;
     };
     "/eval-questions": {
@@ -707,7 +858,7 @@ export interface components {
         };
         /**
          * ChartReadRequest
-         * @description チャート読解のリクエスト（5-4）。売買判断は返さない。
+         * @description チャート読解のリクエスト。売買判断は返さない。
          */
         ChartReadRequest: {
             /**
@@ -819,6 +970,44 @@ export interface components {
             latency_ms: number;
         };
         /**
+         * ChunkDetail
+         * @description チャンク1件の中身。👎のときに渡していたものを後から読むためのもの。
+         */
+        ChunkDetail: {
+            /** Id */
+            id: number;
+            /**
+             * Source
+             * @description この文書から切り出したチャンク
+             */
+            source: string;
+            /**
+             * Chunk Index
+             * @description 文書内の連番
+             */
+            chunk_index: number;
+            /** Content */
+            content: string;
+            /**
+             * Context
+             * @description 文書内での位置づけ（null=付けていない）
+             */
+            context?: string | null;
+            /**
+             * Image Path
+             * @description 画像チャンクの保管キー（null=本文チャンク）
+             */
+            image_path?: string | null;
+        };
+        /**
+         * ChunksResponse
+         * @description 指定したIDのチャンク。★渡した並びのまま★返す（見つからないIDは含まない）。
+         */
+        ChunksResponse: {
+            /** Chunks */
+            chunks: components["schemas"]["ChunkDetail"][];
+        };
+        /**
          * Citation
          * @description 回答の根拠に使ったチャンク1件。
          *
@@ -888,6 +1077,41 @@ export interface components {
              * @description この手法が寄与したRRFスコア 1/(k + 順位 + 1)
              */
             rrf_term: number | null;
+        };
+        /**
+         * ConversationMessage
+         * @description 会話の発言1件。
+         */
+        ConversationMessage: {
+            /** Id */
+            id: number;
+            /**
+             * Role
+             * @description user / assistant
+             */
+            role: string;
+            /** Content */
+            content: string;
+            /**
+             * Sources
+             * @description 回答の根拠に使った出典（質問側は空）
+             */
+            sources: string[];
+            /**
+             * Created At
+             * @description 発言日時
+             */
+            created_at?: string | null;
+        };
+        /**
+         * ConversationResponse
+         * @description 会話1件の全文（古い順）。生成に載せる直近N件とは別で、人が読むためのもの。
+         */
+        ConversationResponse: {
+            /** Conversation Id */
+            conversation_id: number;
+            /** Messages */
+            messages: components["schemas"]["ConversationMessage"][];
         };
         /**
          * DocumentInfo
@@ -1227,6 +1451,219 @@ export interface components {
             retrieved_kinds?: string[];
         };
         /**
+         * FeedbackItem
+         * @description 記録済みの 👍/👎 1件。
+         *
+         *     ★文脈（conversation_id 以降）は null がありうる★
+         *       条件を記録する前に付いた評価と、条件を送らないクライアントからの評価が
+         *       該当する。「記録していなかった」を 0 や "" で埋めると「そう記録された」と
+         *       読めてしまうので、そのまま null で返す。
+         */
+        FeedbackItem: {
+            /** Id */
+            id: number;
+            /** Question */
+            question: string;
+            /** Answer */
+            answer: string;
+            /**
+             * Sources
+             * @description 回答の根拠に使った出典
+             */
+            sources: string[];
+            /**
+             * Rating
+             * @description +1 = 👍 / -1 = 👎
+             */
+            rating: number;
+            /**
+             * Reason
+             * @description 👎の理由（null=選ばなかった）
+             */
+            reason?: string | null;
+            /**
+             * Comment
+             * @description 自由記述（null=未入力）
+             */
+            comment?: string | null;
+            /**
+             * Created At
+             * @description 登録日時
+             */
+            created_at?: string | null;
+            /**
+             * Project
+             * @description 評価時に選んでいたプロジェクト（null=区分なし）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description 評価時に選んでいたトピック（null=区分なし）
+             */
+            topic?: string | null;
+            /**
+             * Conversation Id
+             * @description この回答が属する会話のID（null=未記録）
+             */
+            conversation_id?: number | null;
+            /**
+             * Message Id
+             * @description 評価対象の回答そのもののID（null=未記録）
+             */
+            message_id?: number | null;
+            /**
+             * Retriever
+             * @description 使った検索手法。カンマ区切り（null=未記録）
+             */
+            retriever?: string | null;
+            /**
+             * Top K
+             * @description 回答生成に渡したチャンク数（null=未記録）
+             */
+            top_k?: number | null;
+            /**
+             * Reranked
+             * @description リランカーを通したか（null=未記録）
+             */
+            reranked?: boolean | null;
+            /**
+             * Chunk Ids
+             * @description 回答生成に渡したチャンクID。★並びがそのまま順位★（先頭が1位）
+             */
+            chunk_ids?: number[];
+            /**
+             * Latency Ms
+             * @description 回答までにかかった時間（ミリ秒・null=未記録）
+             */
+            latency_ms?: number | null;
+        };
+        /**
+         * FeedbackListResponse
+         * @description フィードバック一覧。ページ送りは offset で行う。
+         *
+         *     total は★絞り込んだ後の総件数★（返した件数ではない）。これが無いと
+         *     「次のページがあるか」も「今どこを見ているか」も画面に出せない。
+         */
+        FeedbackListResponse: {
+            /**
+             * Total
+             * @description 条件に合う総件数（このページの件数ではない）
+             */
+            total: number;
+            /**
+             * Limit
+             * @description 実際に使われた取得件数の上限（上限超過は丸められる）
+             */
+            limit: number;
+            /**
+             * Offset
+             * @description 読み飛ばした件数
+             */
+            offset: number;
+            /**
+             * Feedback
+             * @description 新しい順
+             */
+            feedback: components["schemas"]["FeedbackItem"][];
+        };
+        /**
+         * FeedbackPeriodRate
+         * @description 時系列の1点。刻み(bucket)の開始時刻を period に入れる。
+         */
+        FeedbackPeriodRate: {
+            /**
+             * Total
+             * @description 評価の総数（👍＋👎）
+             */
+            total: number;
+            /**
+             * Down
+             * @description 👎の数
+             */
+            down: number;
+            /**
+             * Down Rate
+             * @description 👎率（0〜1）。null=まだ評価が1件も無い（0.0 とは別）
+             */
+            down_rate?: number | null;
+            /**
+             * Period
+             * Format: date-time
+             * @description この刻みの開始時刻
+             */
+            period: string;
+        };
+        /**
+         * FeedbackReasonCount
+         * @description 👎の理由の内訳。理由を選ばなかった👎は reason=null の行になる。
+         */
+        FeedbackReasonCount: {
+            /**
+             * Reason
+             * @description null=理由を選ばなかった
+             */
+            reason?: string | null;
+            /** Count */
+            count: number;
+        };
+        /**
+         * FeedbackReasonRequest
+         * @description 記録済みの👎に後から足す理由。どちらも任意だが、両方 null なら 400。
+         *
+         *     ★評価そのものは書き換えられない★
+         *       👍/👎 を後から反転できると、同じ行が「いつの時点の評価か」を失う。
+         *       評価を変えたいときは押し直し（新しい行）で表現する。
+         */
+        FeedbackReasonRequest: {
+            /**
+             * Reason
+             * @description GET /feedback/reasons の選択肢から1つ（null=変更しない）
+             */
+            reason?: string | null;
+            /**
+             * Comment
+             * @description 自由記述（null=変更しない。空文字で消せる）
+             */
+            comment?: string | null;
+        };
+        /**
+         * FeedbackReasonResponse
+         * @description 理由を足した後のフィードバック。触らなかった項目も含めて今の値を返す。
+         */
+        FeedbackReasonResponse: {
+            /**
+             * Id
+             * @description 更新したフィードバックのID
+             */
+            id: number;
+            /**
+             * Rating
+             * @description 記録済みの評価（+1 / -1。ここでは変わらない）
+             */
+            rating: number;
+            /**
+             * Reason
+             * @description 👎の理由（null=未選択）
+             */
+            reason?: string | null;
+            /**
+             * Comment
+             * @description 自由記述（null=未入力）
+             */
+            comment?: string | null;
+        };
+        /**
+         * FeedbackReasonsResponse
+         * @description 👎の理由の選択肢。UIのボタンはこれを並べる（画面に文言を焼かない）。
+         */
+        FeedbackReasonsResponse: {
+            /**
+             * Reasons
+             * @description 選べる理由。この並びで表示する想定
+             */
+            reasons: string[];
+        };
+        /**
          * FeedbackRequest
          * @description 回答への 👍/👎。評価(eval)のQA候補として貯める。
          *
@@ -1257,6 +1694,11 @@ export interface components {
              * @description 回答の根拠に使った出典
              */
             sources?: string[];
+            /**
+             * Reason
+             * @description 👎の理由（GET /feedback/reasons の選択肢から1つ。任意）
+             */
+            reason?: string | null;
             /**
              * Comment
              * @description 自由記述（任意）
@@ -1297,6 +1739,16 @@ export interface components {
              * @description 検索から回答完成までにかかった時間（ミリ秒・任意）
              */
             latency_ms?: number | null;
+            /**
+             * Project
+             * @description 評価時に選んでいたプロジェクト（任意）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description 評価時に選んでいたトピック（任意）
+             */
+            topic?: string | null;
         };
         /** FeedbackResponse */
         FeedbackResponse: {
@@ -1310,6 +1762,78 @@ export interface components {
              * @description 記録した評価（+1 / -1）
              */
             rating: number;
+        };
+        /**
+         * FeedbackScopeRate
+         * @description 区分ごとの👎率。★見るのは全体ではなくここの偏り★
+         */
+        FeedbackScopeRate: {
+            /**
+             * Total
+             * @description 評価の総数（👍＋👎）
+             */
+            total: number;
+            /**
+             * Down
+             * @description 👎の数
+             */
+            down: number;
+            /**
+             * Down Rate
+             * @description 👎率（0〜1）。null=まだ評価が1件も無い（0.0 とは別）
+             */
+            down_rate?: number | null;
+            /**
+             * Project
+             * @description null=区分なし
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description null=区分なし
+             */
+            topic?: string | null;
+        };
+        /**
+         * FeedbackStatsResponse
+         * @description 👎率の集計。全体の値より、区分別・時系列の偏りを見るためのもの。
+         */
+        FeedbackStatsResponse: {
+            /**
+             * Total
+             * @description 評価の総数（👍＋👎）
+             */
+            total: number;
+            /**
+             * Down
+             * @description 👎の数
+             */
+            down: number;
+            /**
+             * Down Rate
+             * @description 👎率（0〜1）。null=まだ評価が1件も無い（0.0 とは別）
+             */
+            down_rate?: number | null;
+            /**
+             * Bucket
+             * @description 時系列の刻み（day / week / month）
+             */
+            bucket: string;
+            /**
+             * By Scope
+             * @description 👎率の高い順
+             */
+            by_scope: components["schemas"]["FeedbackScopeRate"][];
+            /**
+             * By Period
+             * @description 古い順。登録日時を持たない古い行は含まない
+             */
+            by_period: components["schemas"]["FeedbackPeriodRate"][];
+            /**
+             * By Reason
+             * @description 多い順
+             */
+            by_reason: components["schemas"]["FeedbackReasonCount"][];
         };
         /**
          * FusedHit
@@ -1483,7 +2007,7 @@ export interface components {
         };
         /**
          * RetrievalMeta
-         * @description この回答を作るのに実際に使った検索の条件（8-1）。
+         * @description この回答を作るのに実際に使った検索の条件。
          *
          *     ★利用者が選べない値なので、サーバが返す★
          *       /chat は検索手法・top_k・リランカーをリクエストで受け取らず、設定の既定で
@@ -2769,7 +3293,197 @@ export interface operations {
             };
         };
     };
-    feedback_feedback_post: {
+    list_chunks_chunks_get: {
+        parameters: {
+            query: {
+                ids: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChunksResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_conversation_conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationResponse"];
+                };
+            };
+            /** @description 該当なし */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    feedback_stats_feedback_stats_get: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                topic?: string | null;
+                since?: string | null;
+                until?: string | null;
+                bucket?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackStatsResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_feedback_reasons_feedback_reasons_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackReasonsResponse"];
+                };
+            };
+        };
+    };
+    list_feedback_feedback_get: {
+        parameters: {
+            query?: {
+                rating?: number | null;
+                project?: string | null;
+                topic?: string | null;
+                since?: string | null;
+                until?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackListResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_feedback_feedback_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -2793,6 +3507,59 @@ export interface operations {
             };
             /** @description 入力不正 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_feedback_reason_feedback__feedback_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                feedback_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackReasonRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackReasonResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 該当なし */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

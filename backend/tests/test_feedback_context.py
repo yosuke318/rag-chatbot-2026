@@ -104,6 +104,7 @@ def test_records_the_context_of_the_answer(client):
         "answer": "10日です。[1]",
         "sources": ["有給休暇.txt"],
         "rating": -1,
+        "reason": None,
         "comment": None,
         "conversation_id": 5,
         "message_id": 42,
@@ -114,6 +115,10 @@ def test_records_the_context_of_the_answer(client):
         # 居たか」が分からなくなり、このカラムを足した意味が消える。
         "chunk_ids": [101, 203],
         "latency_ms": 1234,
+        # 区分を送らなければ「区分を選ばずに聞いた」＝NULL
+        # （区分そのものの記録は test_feedback_list.py で見る）
+        "project_id": None,
+        "topic_id": None,
     }
 
 

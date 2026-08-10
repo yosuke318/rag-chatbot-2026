@@ -319,6 +319,36 @@ def init_db() -> None:
         # 質問を受けてから回答が出来上がるまで（検索＋生成）。体感の遅さと
         # 👎の相関を見るため。
         conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS latency_ms INTEGER;")
+        # 評価した時点で選ばれていた区分。NULL=区分を選ばずに聞いた（documents や
+        # saved_questions の project_id/topic_id と同じ約束）。
+        #
+        # ★後から復元できないのでここに残す★
+        #   conversations は区分を持たず、sources（文書名）から逆に辿ると
+        #   「区分を選ばずに聞いたら偶然その文書が出た」のか「その区分に絞って
+        #   聞いた」のかが混ざる。区分別の👎率は「絞って聞いた結果」を数えたいので、
+        #   評価と同時に残すしかない。
+        #
+        # 区分別に数えるのは、全体の👎率がほとんど動かないから。意味があるのは
+        # 「特定の区分だけ👎率が突出している」で、それが調べる場所を絞ってくれる。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS project_id BIGINT "
+            "REFERENCES projects(id);"
+        )
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS topic_id BIGINT "
+            "REFERENCES topics(id);"
+        )
+        # 👎を押した人が選んだ理由（決まった選択肢から1つ。NULL=選ばなかった）。
+        #
+        # ★comment（自由記述）と分けてある★
+        #   自由記述に混ぜると「情報が古い が先月から倍に増えた」のような数え方が
+        #   できなくなる（表記ゆれで数えられない）。選択肢は数えるため、自由記述は
+        #   選択肢に無いことを書いてもらうため、と役割が違う。
+        #
+        # ★入れるのは選択肢の文言そのもの（コードではない）★
+        #   区分(project/topic)をAPIの境界で名前のまま扱うのと同じ理由で、DBを
+        #   直接覗いたときに意味が読めることを優先する。許す値は app.feedback.REASONS。
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reason TEXT;")
         # ②で検索した質問の保管庫。正解ラベルを持たない「実際に聞かれた質問」を
         # 区分ごとに貯め、④でまとめてRRFを検証するのに使う。
         # eval_questions と分けるのは、あちらが expected_source NOT NULL（正解必須）で

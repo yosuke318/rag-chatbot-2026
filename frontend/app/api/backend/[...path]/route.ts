@@ -44,3 +44,9 @@ export async function GET(req: NextRequest, { params }: { params: { path: string
 export async function POST(req: NextRequest, { params }: { params: { path: string[] } }) {
   return proxy(req, params.path);
 }
+
+// 一部だけ書き換える操作（👎に後から理由を足す等）。エクスポートしていないメソッドは
+// Next.js が 405 を返して proxy まで届かないので、対応するメソッドごとに口が要る。
+export async function PATCH(req: NextRequest, { params }: { params: { path: string[] } }) {
+  return proxy(req, params.path);
+}

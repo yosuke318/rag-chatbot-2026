@@ -7,6 +7,7 @@ import secrets
 import time
 import urllib.parse
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
 import anthropic
@@ -14,7 +15,16 @@ import voyageai.error
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from app import apikeys, charts, conversations, saved_questions, scopes, storage
+from app import (
+    apikeys,
+    charts,
+    conversations,
+    feedback,
+    retrieval,
+    saved_questions,
+    scopes,
+    storage,
+)
 from app.config import (
     ADMIN_TOKEN,
     ANSWER_IMAGE_MAX_BYTES,
@@ -59,6 +69,8 @@ from app.schemas import (
     ChartReadResponse,
     ChatRequest,
     ChatResponse,
+    ChunksResponse,
+    ConversationResponse,
     DocumentsResponse,
     DocumentSummariesResponse,
     ErrorResponse,
@@ -66,8 +78,13 @@ from app.schemas import (
     EvalQuestionRequest,
     EvalQuestionsResponse,
     EvalReport,
+    FeedbackListResponse,
+    FeedbackReasonRequest,
+    FeedbackReasonResponse,
+    FeedbackReasonsResponse,
     FeedbackRequest,
     FeedbackResponse,
+    FeedbackStatsResponse,
     HealthResponse,
     IngestRequest,
     IngestResponse,
@@ -1349,12 +1366,128 @@ def chat_stream(req: ChatRequest):
     )
 
 
+def _unknown_reason(reason: str) -> tuple[str, str, str, str]:
+    """選択肢に無い理由を弾くときのエラー本文。
+
+    自由な文字列を受け付けないのは、理由を★数えるため★に持っているから。
+    表記ゆれが混ざると「情報が古い が増えている」を出せなくなる（選択肢に
+    無いことを伝えたいときは自由記述 comment を使う）。
+    """
+    return (
+        "unknown_reason",
+        f"未知の理由: {reason}",
+        f"利用可能: {' / '.join(feedback.REASONS)}",
+        "",
+    )
+
+
+@app.get(
+    "/chunks",
+    response_model=ChunksResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def list_chunks(ids: str):
+    """指定したIDのチャンクを、★渡した並びのまま★返す。
+
+    👎の行が持つ chunk_ids（回答生成に渡した順＝順位）をそのまま渡して、
+    「そのとき何を根拠にしていたか」を後から読むための口。ID順に並べ替えて
+    返すと順位が消えるので、並びは呼び出し側の指定を保つ。
+
+    存在しないIDは黙って飛ばす（404にしない）。文書を消しても評価は残る作りなので、
+    「一部のチャンクだけ消えている」は起こりうる正常な状態で、残りは読めた方がいい。
+    """
+    try:
+        chunk_ids = [int(v) for v in ids.split(",") if v.strip()]
+    except ValueError:
+        return _error(
+            400,
+            "invalid_chunk_ids",
+            "ids はカンマ区切りの数値で指定してください。",
+            f"受け取った値: {ids}",
+            "",
+        )
+    return {"chunks": retrieval.by_ids(chunk_ids)}
+
+
+@app.get(
+    "/conversations/{conversation_id}",
+    response_model=ConversationResponse,
+    responses={404: {"model": ErrorResponse, "description": "該当なし"}},
+)
+def get_conversation(conversation_id: int):
+    """会話の全文を古い順で返す。
+
+    👎の行から「どういう流れでその質問が出たのか」を辿るための口。回答生成に
+    載せる直近N件（app.conversations.load_history）とは別物で、こちらは途中を
+    切らない: 流れを読むのが目的なので、切ると用を成さない。
+    """
+    messages = conversations.load_all(conversation_id)
+    if messages is None:
+        return _error(
+            404,
+            "conversation_not_found",
+            f"会話が見つかりません: {conversation_id}",
+            "フィードバックに記録された会話IDを指定してください。",
+            "",
+        )
+    return {"conversation_id": conversation_id, "messages": messages}
+
+
+@app.get(
+    "/feedback/stats",
+    response_model=FeedbackStatsResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def feedback_stats(
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    bucket: str = feedback.DEFAULT_BUCKET,
+):
+    """👎率を、全体・区分別・時系列・理由別に返す。
+
+    ★rating で絞る口を置いていない★
+      率には分母（その区分・その日の全評価）が要る。👎だけを数えても「3件」までしか
+      言えず、多いのか少ないのかが出せない。👎そのものを読むのは GET /feedback。
+
+    ★この画面で探すのは全体の数値ではなく偏り★
+      全体の👎率はまず動かない。「この区分だけ突出している」「この日から上がった」が
+      調べに行く先を絞ってくれる。分母が小さいと率は跳ねるので、件数も一緒に返す。
+    """
+    if bucket not in feedback.BUCKETS:
+        return _error(
+            400,
+            "unknown_bucket",
+            f"未知の刻み: {bucket}",
+            f"利用可能: {' / '.join(feedback.BUCKETS)}",
+            "",
+        )
+    return feedback.stats(
+        project=_blank_to_none(project),
+        topic=_blank_to_none(topic),
+        since=since,
+        until=until,
+        bucket=bucket,
+    )
+
+
+@app.get("/feedback/reasons", response_model=FeedbackReasonsResponse)
+def list_feedback_reasons():
+    """👎の理由の選択肢を返す。UIのボタンはこれを並べる。
+
+    画面に文言を焼かずここから取るのは、選択肢を足したときに片方だけ古くなるのを
+    防ぐため（記録される値と表示される文言が同じものであることを保証する）。
+    """
+    return {"reasons": feedback.REASONS}
+
+
 @app.post(
     "/feedback",
     response_model=FeedbackResponse,
     responses={400: {"model": ErrorResponse, "description": "入力不正"}},
 )
-def feedback(req: FeedbackRequest):
+def add_feedback(req: FeedbackRequest):
     """回答への 👍/👎 を記録する。
 
     貯めたフィードバック（特に👎）は eval のQA候補に回す運用を想定。
@@ -1366,6 +1499,11 @@ def feedback(req: FeedbackRequest):
       /chat が返した meta / done をそのまま添えてもらう想定だが、無くても記録する。
       「条件が分からない👎」でも、質問と回答が残るだけで評価の素材にはなる。
       ここを必須にすると、条件を持たない古いクライアントの👎が丸ごと消える。
+
+    ★理由(reason)も任意★
+      画面は「👎を記録してから理由を聞く」（PATCH /feedback/{id}）ので、ここに
+      理由が入るのは最初から分かっている場合だけ。理由を必須にすると、押しただけで
+      去った人の👎が消える＝一番多い操作を一番落としやすい作りになる。
     """
     if req.rating not in (1, -1):
         return _error(
@@ -1376,18 +1514,28 @@ def feedback(req: FeedbackRequest):
             "",
         )
     rating = req.rating
+    reason = _blank_to_none(req.reason)
+    if reason is not None and reason not in feedback.REASONS:
+        return _error(400, *_unknown_reason(reason))
+    # 区分をマスタへ写して id を得る（他の書き込み側と同じ。名前のまま行に
+    # 持たせない）。未指定の軸は id も NULL＝「区分を選ばずに聞いた」。
+    project_id, topic_id = scopes.register(
+        _blank_to_none(req.project), _blank_to_none(req.topic)
+    )
     with get_conn() as conn:
         new_id = conn.execute(
             "INSERT INTO feedback ("
-            "question, answer, sources, rating, comment, "
+            "question, answer, sources, rating, reason, comment, "
             "conversation_id, message_id, retriever, top_k, reranked, "
-            "chunk_ids, latency_ms"
-            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            "chunk_ids, latency_ms, project_id, topic_id"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "RETURNING id",
             (
                 req.question,
                 req.answer,
                 req.sources,
                 rating,
+                reason,
                 req.comment,
                 req.conversation_id,
                 req.message_id,
@@ -1396,9 +1544,100 @@ def feedback(req: FeedbackRequest):
                 req.reranked,
                 req.chunk_ids,
                 req.latency_ms,
+                project_id,
+                topic_id,
             ),
         ).fetchone()[0]
     return {"id": new_id, "rating": rating}
+
+
+@app.patch(
+    "/feedback/{feedback_id}",
+    response_model=FeedbackReasonResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "入力不正"},
+        404: {"model": ErrorResponse, "description": "該当なし"},
+    },
+)
+def update_feedback_reason(feedback_id: int, req: FeedbackReasonRequest):
+    """記録済みの評価に、後から理由と自由記述を足す。
+
+    ★👎を押す操作と理由を選ぶ操作を分けてある★
+      理由を選ぶまで送信を待つと、押しただけで画面を離れた人の👎が消える。
+      先に👎を記録し、返ったIDに対してここで理由を足す。理由を選ばなければ
+      「理由なしの👎」がそのまま残る（従来どおり）。
+
+    渡さなかった項目は書き換えない。自由記述を消したいときは空文字を送る
+    （null は「変更しない」の意味なので、消すのに使えない）。
+    """
+    reason = _blank_to_none(req.reason)
+    if reason is not None and reason not in feedback.REASONS:
+        return _error(400, *_unknown_reason(reason))
+    if reason is None and req.comment is None:
+        return _error(
+            400,
+            "empty_feedback_update",
+            "理由か自由記述のどちらかを指定してください。",
+            "どちらも未指定だと書き換える先がありません。",
+            "",
+        )
+    updated = feedback.add_reason(feedback_id, reason, req.comment)
+    if updated is None:
+        return _error(
+            404,
+            "feedback_not_found",
+            f"フィードバックが見つかりません: {feedback_id}",
+            "👍/👎 を記録したときに返ったIDを指定してください。",
+            "",
+        )
+    return updated
+
+
+@app.get(
+    "/feedback",
+    response_model=FeedbackListResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def list_feedback(
+    rating: Optional[int] = None,
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    limit: int = feedback.DEFAULT_LIMIT,
+    offset: int = 0,
+):
+    """記録した 👍/👎 を新しい順で返す。指定しなかった軸は絞り込まない。
+
+    ★この一覧の役割は「👎を読んで直す」ではなく「調べる場所を絞る」★
+      👎 1件では、検索が外したのか・生成が外したのか・そもそも文書に答えが
+      無かったのかを区別できない。区分や期間で絞って👎を並べ、1件ずつ元の会話と
+      渡したチャンクへ辿るための入口として使う。
+
+    期間は since 以上 until 未満（半開区間）。両端を含めると、月ごとに区切って
+    眺めたときに境界の1件が両方に出て二重に数えられる。
+
+    rating だけは 400 で弾く: +1/-1 以外を渡すと必ず0件になり、「まだ👎が無い」と
+    「指定を間違えた」が画面上で見分けられない。件数の上限超過（limit）は
+    表示件数の話なので黙って丸める（/documents/summary と同じ）。
+    """
+    if rating is not None and rating not in (1, -1):
+        return _error(
+            400,
+            "invalid_rating",
+            "rating は +1（👍）か -1（👎）のいずれかにしてください。",
+            f"受け取った値: {rating}",
+            "",
+        )
+    return feedback.load(
+        rating=rating,
+        project=_blank_to_none(project),
+        topic=_blank_to_none(topic),
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.post(

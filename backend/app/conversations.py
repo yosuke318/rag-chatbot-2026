@@ -96,6 +96,37 @@ def add_message(
     return int(row[0])
 
 
+def load_all(conversation_id: int) -> list[dict] | None:
+    """会話の発言を全部、古い順で返す。会話が無ければ None。
+
+    ★load_history とは用途が違う★
+      あちらは生成に載せる直近N件（コストと文脈の折り合い）。こちらは人が
+      読むための全文で、👎の行から「どういう流れでその質問が出たのか」を
+      辿るのに使う。途中を切ると、その流れが読めなくなる。
+
+    0件の会話（作られただけ）と存在しない会話を区別するため、空リストではなく
+    None を返し分ける。
+    """
+    if not exists(conversation_id):
+        return None
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, role, content, sources, created_at FROM messages "
+            "WHERE conversation_id = %s ORDER BY id",
+            (conversation_id,),
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "role": r[1],
+            "content": r[2],
+            "sources": r[3],
+            "created_at": r[4],
+        }
+        for r in rows
+    ]
+
+
 def load_history(conversation_id: int, limit: int = HISTORY_MESSAGES) -> list[dict]:
     """直近の発言を古い順で返す（[{"role", "content"}, ...]）。
 

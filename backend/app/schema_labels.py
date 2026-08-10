@@ -106,6 +106,9 @@ SCHEMA_LABELS: dict[str, dict] = {
             "reranked": "リランカーを通したか",
             "chunk_ids": "渡したチャンクID（並び順＝順位）",
             "latency_ms": "回答までの所要時間（ミリ秒）",
+            "project_id": "プロジェクトID（評価時に選んでいた区分）",
+            "topic_id": "トピックID（評価時に選んでいた区分）",
+            "reason": "👎の理由（選択肢から1つ）",
         },
     },
     "saved_questions": {
