@@ -79,7 +79,19 @@ locals {
   # 「どのリポジトリの・どの実行元なら引き受けてよいか」の許可リスト。
   # ワイルドカード（repo:owner/repo:*）にすると、そのリポジトリの
   # あらゆるブランチ・PRからデプロイできてしまう。ここは必ず列挙で絞る。
-  allowed_subs = [for ref in var.github_allowed_refs : "repo:${var.github_repository}:${ref}"]
+  #
+  # リポジトリの表記が2通りある点に注意。GitHubは sub クレームを
+  # 不変ID付き（owner@ownerId/repo@repoId）で送ってくることがあり、
+  # owner/repo だけを許可していると AccessDenied になる。
+  # どちらで来ても通るよう、両方を完全一致で列挙する
+  # （ワイルドカードではないので、許可範囲はこのリポジトリのまま広がらない）。
+  repo_identifiers = compact([var.github_repository, var.github_repository_immutable])
+
+  allowed_subs = flatten([
+    for repo in local.repo_identifiers : [
+      for ref in var.github_allowed_refs : "repo:${repo}:${ref}"
+    ]
+  ])
 }
 
 data "aws_iam_policy_document" "deploy_assume" {
