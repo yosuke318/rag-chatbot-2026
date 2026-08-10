@@ -97,6 +97,15 @@ SCHEMA_LABELS: dict[str, dict] = {
             "rating": "評価（+1=👍 / -1=👎）",
             "comment": "コメント",
             "created_at": "登録日時",
+            # ここから下は「どういう条件で出た回答への評価か」（8-1）。
+            # 記録より前の行は空欄になる。
+            "conversation_id": "会話ID",
+            "message_id": "回答ID（この評価の対象）",
+            "retriever": "使った検索手法",
+            "top_k": "回答に渡したチャンク数",
+            "reranked": "リランカーを通したか",
+            "chunk_ids": "渡したチャンクID（並び順＝順位）",
+            "latency_ms": "回答までの所要時間（ミリ秒）",
         },
     },
     "saved_questions": {

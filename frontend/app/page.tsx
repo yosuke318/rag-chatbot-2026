@@ -24,6 +24,7 @@ type SearchStages = components["schemas"]["SearchResponse"];
 type VerifyReport = components["schemas"]["VerifyReport"];
 type ApiError = components["schemas"]["ErrorResponse"];
 type RetrieverInfo = components["schemas"]["RetrieverInfo"];
+type RetrievalMeta = components["schemas"]["RetrievalMeta"];
 type ParamSpec = components["schemas"]["ParamSpec"];
 type DocumentSummary = components["schemas"]["DocumentSummary"];
 
@@ -98,6 +99,13 @@ const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
 //           これが入っている bot メッセージだけがフィードバック対象（エラーは対象外）。
 // rating:   送信済みの評価。二重送信を防ぎ、選んだ側をハイライトする。
 // citations: チャンク単位の根拠。回答本文の [n] と citations[n-1] が対応する。
+//
+// ★下4つは画面に出さない★（8-1）
+//   👍/👎 と一緒に「どういう条件で出た回答か」をサーバへ返すためだけに持つ。
+//   /chat/stream の meta（検索条件）と done（回答ID・所要時間）で届いたものを
+//   そのまま抱えておき、フィードバック送信時に添える。回答ごとに違う値なので、
+//   画面の state ではなくメッセージに持たせないと、あとから押した👎に
+//   別の回答の条件が付いてしまう。
 type Message = {
   role: "user" | "bot";
   text: string;
@@ -105,6 +113,10 @@ type Message = {
   citations?: Citation[];
   question?: string;
   rating?: 1 | -1;
+  conversationId?: number;
+  messageId?: number;
+  retrieval?: RetrievalMeta;
+  latencyMs?: number;
 };
 
 /** レスポンスがエラーならUI表示用の文字列を返す。正常なら null。 */
@@ -1768,10 +1780,22 @@ export default function Home() {
       if (name === "meta") {
         // 根拠は生成より先に確定するので、本文が届く前に出せる
         setConversationId(data.conversation_id);
-        patchLastMessage({ sources: data.sources, citations: data.citations });
+        patchLastMessage({
+          sources: data.sources,
+          citations: data.citations,
+          // 画面には出さない。👍/👎 に添えて送るため抱えておく（8-1）
+          conversationId: data.conversation_id,
+          retrieval: data.retrieval,
+        });
       } else if (name === "delta") {
         answer += data.text;
         patchLastMessage({ text: answer });
+      } else if (name === "done") {
+        // 回答IDと所要時間は生成が終わらないと決まらないので done で届く
+        patchLastMessage({
+          messageId: data.message_id,
+          latencyMs: data.latency_ms,
+        });
       } else if (name === "error") {
         // 生成中の失敗。HTTPは200で流れているのでイベントで受け取る
         const message = data.hint ? `${data.message}\n${data.hint}` : data.message;
@@ -1800,6 +1824,19 @@ export default function Home() {
           answer: msg.text,
           sources: msg.sources ?? [],
           rating,
+          // ★どういう条件で出た回答かを一緒に残す★（8-1）
+          //   本文だけだと「この設定変更で👎が減った」「👎のとき正解は何位に
+          //   居たのか」が後から追えない。値はサーバが meta/done で返したものを
+          //   そのまま戻すだけ（クライアントで組み立てない）。
+          conversation_id: msg.conversationId ?? null,
+          message_id: msg.messageId ?? null,
+          retriever: msg.retrieval?.retriever ?? null,
+          top_k: msg.retrieval?.top_k ?? null,
+          reranked: msg.retrieval?.reranked ?? null,
+          // 順位は citations の並びそのもの（[n] の n = 配列の位置+1）。
+          // chunk_ids を別に受け取らないのは、二重に持つと片方だけズレるため。
+          chunk_ids: (msg.citations ?? []).map((c) => c.chunk_id),
+          latency_ms: msg.latencyMs ?? null,
         }),
       });
       if (!res.ok) throw new Error(String(res.status));

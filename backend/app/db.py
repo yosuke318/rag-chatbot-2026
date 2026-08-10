@@ -282,6 +282,43 @@ def init_db() -> None:
             );
             """
         )
+        # 👍/👎 が「どういう条件で出た回答への評価か」を残す列（8-1）。
+        # 本文コピー（question/answer/sources）はそのまま残し、ここは
+        # ★あれば辿れる補助★として足す。これが無いと「この設定変更で👎が
+        # 減った」「👎のとき正解は何位に居たのか」が後から一切追えない。
+        #
+        # ★すべて任意（NULL可）★
+        #   既存行は NULL のまま＝「記録していなかった頃のもの」。埋められない値を
+        #   NOT NULL にすると過去分を捨てるか嘘の既定値を入れるかになる。
+        #
+        # ★参照は ON DELETE SET NULL（CASCADE にしない）★
+        #   上の「会話が消えてもフィードバックは残す」を維持するため。会話を消したら
+        #   評価の素材まで道連れになる、が一番避けたい壊れ方。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS conversation_id BIGINT "
+            "REFERENCES conversations(id) ON DELETE SET NULL;"
+        )
+        # どの発言への評価か。conversation_id だけだと「会話のどの回答か」が
+        # 定まらない（1つの会話に回答は何度も入る）。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS message_id BIGINT "
+            "REFERENCES messages(id) ON DELETE SET NULL;"
+        )
+        # 使った検索手法。RRFで複数を融合するので "vector,trgm" のように連結して
+        # 持つ（設定 RETRIEVERS と同じ書式にしておくと、そのまま再現に使える）。
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS retriever TEXT;")
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS top_k SMALLINT;")
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reranked BOOLEAN;")
+        # 回答生成に渡したチャンクを★順位どおり★に並べた配列（先頭が1位）。
+        # 空配列を既定にするのは sources と同じ理由（「根拠なし」と「未記録」を
+        # 区別する必要が無く、NULLと空配列の二重の空を作りたくない）。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS "
+            "chunk_ids BIGINT[] NOT NULL DEFAULT '{}';"
+        )
+        # 質問を受けてから回答が出来上がるまで（検索＋生成）。体感の遅さと
+        # 👎の相関を見るため。
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS latency_ms INTEGER;")
         # ②で検索した質問の保管庫。正解ラベルを持たない「実際に聞かれた質問」を
         # 区分ごとに貯め、④でまとめてRRFを検証するのに使う。
         # eval_questions と分けるのは、あちらが expected_source NOT NULL（正解必須）で

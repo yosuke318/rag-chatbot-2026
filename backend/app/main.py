@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import time
 import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -20,7 +21,9 @@ from app.config import (
     ANSWER_MAX_IMAGES,
     IMAGE_INDEX_METHOD,
     RETRIEVERS_DEFAULT,
+    TOP_K,
     UPLOAD_MAX_BYTES,
+    USE_RERANK,
 )
 from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
@@ -46,6 +49,7 @@ from app.retrieval import (
     UnknownRetriever,
     hybrid_search,
     preview,
+    resolve_retrievers,
     retriever_infos,
     search_stages,
 )
@@ -1171,6 +1175,15 @@ def _answer_contexts(hits: list[dict]) -> list:
     return contexts
 
 
+def _elapsed_ms(started: float) -> int:
+    """started（time.monotonic の値）からの経過ミリ秒。
+
+    monotonic を使うのは、途中でシステム時刻が変わっても負の値や飛びが出ないため
+    （time.time だとNTP同期で「所要0ms」や負の所要時間が記録され得る）。
+    """
+    return int((time.monotonic() - started) * 1000)
+
+
 def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
     """回答生成の手前まで（会話の確定・検索・引用の組み立て・履歴の読み出し）。
 
@@ -1187,8 +1200,17 @@ def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
         req.conversation_id, title=req.question, api_key_id=api_key_id
     )
     history = conversations.load_history(conversation_id)
+    # ★既定を hybrid_search に任せず、ここで確定させてから渡す★
+    #   同じ既定を「検索に使う」「meta として返す」の2か所で読むと、片方だけ
+    #   変わったときに『実際に使っていない条件』をフィードバックに記録してしまう。
+    #   確定した値を渡して、返す値と検索に使う値を同一にする。
+    retrievers = resolve_retrievers(None)
+    reranked = USE_RERANK
     hits = hybrid_search(
         req.question,
+        top_n=TOP_K,
+        rerank=reranked,
+        retrievers=retrievers,
         project=_blank_to_none(req.project),
         topic=_blank_to_none(req.topic),
     )
@@ -1201,6 +1223,12 @@ def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
         # 根拠として使ったチャンクの出典も返す（重複排除）
         "sources": list(dict.fromkeys(h["source"] for h in hits)),
         "citations": _citations(hits),
+        # 設定 RETRIEVERS と同じカンマ区切りにしておく（そのまま再現に使える）
+        "retrieval": {
+            "retriever": ",".join(retrievers),
+            "top_k": TOP_K,
+            "reranked": reranked,
+        },
     }
 
 
@@ -1226,9 +1254,12 @@ def _answer(req: ChatRequest, api_key_id: Optional[int] = None):
     """
     if (invalid := _reject_empty_question(req)) is not None:
         return invalid
+    # 計測は検索の手前から。利用者が待つのは「質問を送ってから答えが出るまで」で、
+    # 生成だけを測ると体感と噛み合わない（検索が遅い日を取りこぼす）。
+    started = time.monotonic()
     prepared = _prepare_answer(req, api_key_id=api_key_id)
     answer = generate_answer(req.question, prepared["contexts"], prepared["history"])
-    conversations.add_message(
+    message_id = conversations.add_message(
         prepared["conversation_id"],
         conversations.ASSISTANT,
         answer,
@@ -1237,8 +1268,11 @@ def _answer(req: ChatRequest, api_key_id: Optional[int] = None):
     return {
         "answer": answer,
         "conversation_id": prepared["conversation_id"],
+        "message_id": message_id,
         "sources": prepared["sources"],
         "citations": prepared["citations"],
+        "retrieval": prepared["retrieval"],
+        "latency_ms": _elapsed_ms(started),
     }
 
 
@@ -1252,10 +1286,12 @@ def chat_stream(req: ChatRequest):
     """/chat のストリーミング版。Server-Sent Events で回答を逐次返す。
 
     イベントの順序と意味:
-      meta  … 会話ID・出典・引用（★生成より先に確定する★ので最初に送る。
+      meta  … 会話ID・出典・引用・検索条件（★生成より先に確定する★ので最初に送る。
               受け取り側は本文が届く前に根拠を出せる）
       delta … 回答本文の断片。届いた順に連結すると完成した回答になる
-      done  … 生成完了（ここで初めて履歴に回答を保存する）
+      done  … 生成完了（ここで初めて履歴に回答を保存する）。回答のID(message_id)と
+              所要時間は★ここでしか出せない★ので meta ではなく done に載せる
+              （回答を保存して初めてIDが決まり、時間も終わって初めて分かる）
       error … 生成中の失敗。HTTPステータスは200のまま流れているので、
               エラーは本文の中で伝えるしかない（形は通常のエラー応答と同じ）
 
@@ -1265,6 +1301,7 @@ def chat_stream(req: ChatRequest):
     """
     if (invalid := _reject_empty_question(req)) is not None:
         return invalid
+    started = time.monotonic()
     prepared = _prepare_answer(req)
 
     def events():
@@ -1274,6 +1311,7 @@ def chat_stream(req: ChatRequest):
                 "conversation_id": prepared["conversation_id"],
                 "sources": prepared["sources"],
                 "citations": prepared["citations"],
+                "retrieval": prepared["retrieval"],
             },
         )
         chunks: list[str] = []
@@ -1288,13 +1326,20 @@ def chat_stream(req: ChatRequest):
             yield _sse("error", _error_payload(*_stream_error(exc)))
             return
         answer = "".join(chunks)
-        conversations.add_message(
+        message_id = conversations.add_message(
             prepared["conversation_id"],
             conversations.ASSISTANT,
             answer,
             prepared["sources"],
         )
-        yield _sse("done", {"conversation_id": prepared["conversation_id"]})
+        yield _sse(
+            "done",
+            {
+                "conversation_id": prepared["conversation_id"],
+                "message_id": message_id,
+                "latency_ms": _elapsed_ms(started),
+            },
+        )
 
     return StreamingResponse(
         events(),
@@ -1316,6 +1361,11 @@ def feedback(req: FeedbackRequest):
     外部APIを呼ばないので ANTHROPIC/VOYAGE キーは不要。
     rating は +1(👍) / -1(👎) のみ。0 や欠損は「どちらでもない」を意味してしまい
     👎として誤記録されるため、符号で丸めず 400 で弾く。
+
+    ★文脈（会話・検索条件・チャンク）は任意★
+      /chat が返した meta / done をそのまま添えてもらう想定だが、無くても記録する。
+      「条件が分からない👎」でも、質問と回答が残るだけで評価の素材にはなる。
+      ここを必須にすると、条件を持たない古いクライアントの👎が丸ごと消える。
     """
     if req.rating not in (1, -1):
         return _error(
@@ -1328,9 +1378,25 @@ def feedback(req: FeedbackRequest):
     rating = req.rating
     with get_conn() as conn:
         new_id = conn.execute(
-            "INSERT INTO feedback (question, answer, sources, rating, comment) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (req.question, req.answer, req.sources, rating, req.comment),
+            "INSERT INTO feedback ("
+            "question, answer, sources, rating, comment, "
+            "conversation_id, message_id, retriever, top_k, reranked, "
+            "chunk_ids, latency_ms"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                req.question,
+                req.answer,
+                req.sources,
+                rating,
+                req.comment,
+                req.conversation_id,
+                req.message_id,
+                req.retriever,
+                req.top_k,
+                req.reranked,
+                req.chunk_ids,
+                req.latency_ms,
+            ),
         ).fetchone()[0]
     return {"id": new_id, "rating": rating}
 
