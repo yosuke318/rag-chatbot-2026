@@ -218,8 +218,8 @@ def _events(text: str) -> list[tuple[str, dict]]:
     out = []
     for block in text.strip().split("\n\n"):
         lines = block.split("\n")
-        name = next(l[7:] for l in lines if l.startswith("event: "))
-        raw = next(l[6:] for l in lines if l.startswith("data: "))
+        name = next(line[7:] for line in lines if line.startswith("event: "))
+        raw = next(line[6:] for line in lines if line.startswith("data: "))
         out.append((name, json.loads(raw)))
     return out
 
