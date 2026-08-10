@@ -31,6 +31,10 @@ variable "github_repository_immutable" {
     空文字にすると owner/repo 形式だけを許可する。
   EOT
   default     = "yosuke318@73513978/rag-chatbot-2026@1304657314"
+  # 無効化の入口は「空文字」だけに揃える。null を渡されたら既定値に落とす。
+  # main.tf の compact は null も除くので動きはするが、無効化の手段が2通りあると
+  # 「空文字にしたつもりが null で通っていた（逆も然り）」を読み分けられない。
+  nullable = false
 }
 
 variable "github_allowed_refs" {
