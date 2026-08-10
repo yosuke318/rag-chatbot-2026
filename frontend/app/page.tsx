@@ -100,7 +100,7 @@ const RETRIEVER_TIPS: Record<string, React.ReactNode> = {
 // rating:   送信済みの評価。二重送信を防ぎ、選んだ側をハイライトする。
 // citations: チャンク単位の根拠。回答本文の [n] と citations[n-1] が対応する。
 //
-// ★下4つは画面に出さない★（8-1）
+// ★下4つは画面に出さない★
 //   👍/👎 と一緒に「どういう条件で出た回答か」をサーバへ返すためだけに持つ。
 //   /chat/stream の meta（検索条件）と done（回答ID・所要時間）で届いたものを
 //   そのまま抱えておき、フィードバック送信時に添える。回答ごとに違う値なので、
@@ -1783,7 +1783,7 @@ export default function Home() {
         patchLastMessage({
           sources: data.sources,
           citations: data.citations,
-          // 画面には出さない。👍/👎 に添えて送るため抱えておく（8-1）
+          // 画面には出さない。👍/👎 に添えて送るため抱えておく
           conversationId: data.conversation_id,
           retrieval: data.retrieval,
         });
@@ -1824,7 +1824,7 @@ export default function Home() {
           answer: msg.text,
           sources: msg.sources ?? [],
           rating,
-          // ★どういう条件で出た回答かを一緒に残す★（8-1）
+          // ★どういう条件で出た回答かを一緒に残す★
           //   本文だけだと「この設定変更で👎が減った」「👎のとき正解は何位に
           //   居たのか」が後から追えない。値はサーバが meta/done で返したものを
           //   そのまま戻すだけ（クライアントで組み立てない）。
