@@ -487,10 +487,12 @@ export interface paths {
          * @description /chat のストリーミング版。Server-Sent Events で回答を逐次返す。
          *
          *     イベントの順序と意味:
-         *       meta  … 会話ID・出典・引用（★生成より先に確定する★ので最初に送る。
+         *       meta  … 会話ID・出典・引用・検索条件（★生成より先に確定する★ので最初に送る。
          *               受け取り側は本文が届く前に根拠を出せる）
          *       delta … 回答本文の断片。届いた順に連結すると完成した回答になる
-         *       done  … 生成完了（ここで初めて履歴に回答を保存する）
+         *       done  … 生成完了（ここで初めて履歴に回答を保存する）。回答のID(message_id)と
+         *               所要時間は★ここでしか出せない★ので meta ではなく done に載せる
+         *               （回答を保存して初めてIDが決まり、時間も終わって初めて分かる）
          *       error … 生成中の失敗。HTTPステータスは200のまま流れているので、
          *               エラーは本文の中で伝えるしかない（形は通常のエラー応答と同じ）
          *
@@ -522,6 +524,11 @@ export interface paths {
          *     外部APIを呼ばないので ANTHROPIC/VOYAGE キーは不要。
          *     rating は +1(👍) / -1(👎) のみ。0 や欠損は「どちらでもない」を意味してしまい
          *     👎として誤記録されるため、符号で丸めず 400 で弾く。
+         *
+         *     ★文脈（会話・検索条件・チャンク）は任意★
+         *       /chat が返した meta / done をそのまま添えてもらう想定だが、無くても記録する。
+         *       「条件が分からない👎」でも、質問と回答が残るだけで評価の素材にはなる。
+         *       ここを必須にすると、条件を持たない古いクライアントの👎が丸ごと消える。
          */
         post: operations["feedback_feedback_post"];
         delete?: never;
@@ -789,6 +796,11 @@ export interface components {
              */
             conversation_id: number;
             /**
+             * Message Id
+             * @description この回答そのもののID（messages.id）。フィードバックの宛先になる
+             */
+            message_id: number;
+            /**
              * Sources
              * @description 根拠に使ったチャンクの出典（重複排除済み）
              */
@@ -798,6 +810,13 @@ export interface components {
              * @description 回答の根拠に使ったチャンク（[n] の n はこの並びの1始まりの位置）
              */
             citations?: components["schemas"]["Citation"][];
+            /** @description この回答を作った検索の条件（フィードバックにそのまま添えられる） */
+            retrieval: components["schemas"]["RetrievalMeta"];
+            /**
+             * Latency Ms
+             * @description 検索から回答完成までにかかった時間（ミリ秒）
+             */
+            latency_ms: number;
         };
         /**
          * Citation
@@ -1210,6 +1229,12 @@ export interface components {
         /**
          * FeedbackRequest
          * @description 回答への 👍/👎。評価(eval)のQA候補として貯める。
+         *
+         *     ★文脈（下半分）はすべて任意★
+         *       送らなくても 200 で通り、DBには NULL（chunk_ids は空配列）が入る。
+         *       この機能より前のクライアントからのリクエストを壊さないため。
+         *       値は /chat・/chat/stream が返した meta / done をそのまま返せばよい
+         *       （利用者に見えない設定値なので、クライアント側で組み立てるものではない）。
          */
         FeedbackRequest: {
             /**
@@ -1237,6 +1262,41 @@ export interface components {
              * @description 自由記述（任意）
              */
             comment?: string | null;
+            /**
+             * Conversation Id
+             * @description この回答が属する会話のID（任意）
+             */
+            conversation_id?: number | null;
+            /**
+             * Message Id
+             * @description 評価対象の回答そのもののID（任意）
+             */
+            message_id?: number | null;
+            /**
+             * Retriever
+             * @description 使った検索手法。複数はカンマ区切り（例 "vector,trgm"）
+             */
+            retriever?: string | null;
+            /**
+             * Top K
+             * @description 回答生成に渡したチャンク数（任意）
+             */
+            top_k?: number | null;
+            /**
+             * Reranked
+             * @description リランカーを通したか（任意）
+             */
+            reranked?: boolean | null;
+            /**
+             * Chunk Ids
+             * @description 回答生成に渡したチャンクID。★並びがそのまま順位★（先頭が1位）
+             */
+            chunk_ids?: number[];
+            /**
+             * Latency Ms
+             * @description 検索から回答完成までにかかった時間（ミリ秒・任意）
+             */
+            latency_ms?: number | null;
         };
         /** FeedbackResponse */
         FeedbackResponse: {
@@ -1420,6 +1480,35 @@ export interface components {
              * @description トピック（任意）。キーのプロジェクト内をさらに絞る
              */
             topic?: string | null;
+        };
+        /**
+         * RetrievalMeta
+         * @description この回答を作るのに実際に使った検索の条件（8-1）。
+         *
+         *     ★利用者が選べない値なので、サーバが返す★
+         *       /chat は検索手法・top_k・リランカーをリクエストで受け取らず、設定の既定で
+         *       動く（②の検索パネルと違うところ）。つまりクライアントはこの値を知らない。
+         *       フィードバックに条件を残すには、使った側＝サーバが返すしかない。
+         *
+         *     チャンクIDはここに持たない。citations[] が同じ並び（＝順位）で chunk_id を
+         *     持っており、二重に載せると片方だけ直したときに食い違うため。
+         */
+        RetrievalMeta: {
+            /**
+             * Retriever
+             * @description 使った検索手法。カンマ区切り（例 "vector,trgm"）
+             */
+            retriever: string;
+            /**
+             * Top K
+             * @description 回答生成に渡したチャンク数の上限
+             */
+            top_k: number;
+            /**
+             * Reranked
+             * @description リランカーを通したか
+             */
+            reranked: boolean;
         };
         /**
          * RetrieverInfo

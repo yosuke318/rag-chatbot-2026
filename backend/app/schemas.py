@@ -59,13 +59,42 @@ class PublicChatRequest(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    """回答への 👍/👎。評価(eval)のQA候補として貯める。"""
+    """回答への 👍/👎。評価(eval)のQA候補として貯める。
+
+    ★文脈（下半分）はすべて任意★
+      送らなくても 200 で通り、DBには NULL（chunk_ids は空配列）が入る。
+      この機能より前のクライアントからのリクエストを壊さないため。
+      値は /chat・/chat/stream が返した meta / done をそのまま返せばよい
+      （利用者に見えない設定値なので、クライアント側で組み立てるものではない）。
+    """
 
     question: str = Field(description="評価対象の質問")
     answer: str = Field(description="評価対象の回答")
     rating: int = Field(description="+1 = 👍 / -1 = 👎")
     sources: List[str] = Field(default_factory=list, description="回答の根拠に使った出典")
     comment: Optional[str] = Field(default=None, description="自由記述（任意）")
+    conversation_id: Optional[int] = Field(
+        default=None, description="この回答が属する会話のID（任意）"
+    )
+    message_id: Optional[int] = Field(
+        default=None, description="評価対象の回答そのもののID（任意）"
+    )
+    retriever: Optional[str] = Field(
+        default=None, description='使った検索手法。複数はカンマ区切り（例 "vector,trgm"）'
+    )
+    top_k: Optional[int] = Field(
+        default=None, description="回答生成に渡したチャンク数（任意）"
+    )
+    reranked: Optional[bool] = Field(
+        default=None, description="リランカーを通したか（任意）"
+    )
+    chunk_ids: List[int] = Field(
+        default_factory=list,
+        description="回答生成に渡したチャンクID。★並びがそのまま順位★（先頭が1位）",
+    )
+    latency_ms: Optional[int] = Field(
+        default=None, description="検索から回答完成までにかかった時間（ミリ秒・任意）"
+    )
 
 
 class SavedQuestionRequest(BaseModel):
@@ -398,6 +427,23 @@ class Citation(BaseModel):
     )
 
 
+class RetrievalMeta(BaseModel):
+    """この回答を作るのに実際に使った検索の条件（8-1）。
+
+    ★利用者が選べない値なので、サーバが返す★
+      /chat は検索手法・top_k・リランカーをリクエストで受け取らず、設定の既定で
+      動く（②の検索パネルと違うところ）。つまりクライアントはこの値を知らない。
+      フィードバックに条件を残すには、使った側＝サーバが返すしかない。
+
+    チャンクIDはここに持たない。citations[] が同じ並び（＝順位）で chunk_id を
+    持っており、二重に載せると片方だけ直したときに食い違うため。
+    """
+
+    retriever: str = Field(description='使った検索手法。カンマ区切り（例 "vector,trgm"）')
+    top_k: int = Field(description="回答生成に渡したチャンク数の上限")
+    reranked: bool = Field(description="リランカーを通したか")
+
+
 class ChatResponse(BaseModel):
     answer: str = Field(
         description="回答本文。各文の末尾に根拠を指す引用マーカー [n] が付く"
@@ -405,10 +451,19 @@ class ChatResponse(BaseModel):
     conversation_id: int = Field(
         description="この発言が属する会話のID。次の質問にこれを渡すと履歴が効く"
     )
+    message_id: int = Field(
+        description="この回答そのもののID（messages.id）。フィードバックの宛先になる"
+    )
     sources: List[str] = Field(description="根拠に使ったチャンクの出典（重複排除済み）")
     citations: List[Citation] = Field(
         default_factory=list,
         description="回答の根拠に使ったチャンク（[n] の n はこの並びの1始まりの位置）",
+    )
+    retrieval: RetrievalMeta = Field(
+        description="この回答を作った検索の条件（フィードバックにそのまま添えられる）"
+    )
+    latency_ms: int = Field(
+        description="検索から回答完成までにかかった時間（ミリ秒）"
     )
 
 
