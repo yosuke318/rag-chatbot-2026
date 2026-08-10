@@ -1,6 +1,6 @@
 # このファイルはモジュール呼び出しのみ。実リソース定義は modules/ 側に置く。
 #
-# 注意: prod はまだ一度も apply していない（YOSUKE-40 のスコープは dev のみ）。
+# 注意: prod はまだ一度も apply していない（dev のみ構築済み）。
 # モジュール側のインタフェース変更に追従させるためだけに、dev と同じ形で置いてある。
 # 実際に prod を立てる前に少なくとも次を見直すこと:
 #   - modules/database の skip_final_snapshot = true（prodでは消したくない）

@@ -1,4 +1,4 @@
-"""原本画像を根拠にした回答生成（5-3）のテスト。
+"""原本画像を根拠にした回答生成のテスト。
 
 ★この段の主張★
   検索でヒットしたチャンクが図表なら、言語化テキストではなく画像そのものを
@@ -63,7 +63,7 @@ def test_image_label_is_only_the_origin_not_a_description():
     """★ラベルは「どこの図か」だけ★
 
     中身の説明をここに書くと、Claude が画像を見ずにその説明文から答えてしまい、
-    「原本で判断する」という 5-3 の主張が崩れる。
+    「原本で判断する」という主張が崩れる。
     """
     blocks = llm._context_blocks([_image("シート「売上」の画像1")])
 
@@ -168,7 +168,7 @@ def _hit(image_path=None, content="本文", context=None, hit_id=1):
 
 
 def test_image_chunk_is_replaced_by_the_original_image(monkeypatch):
-    """★言語化テキストではなく原本画像を渡す★（5-3の核心）。"""
+    """★言語化テキストではなく原本画像を渡す★（この機能の核心）。"""
     monkeypatch.setattr(
         main_module.storage, "get_object", lambda key: (b"raw-png", "image/png")
     )
@@ -193,7 +193,7 @@ def test_image_chunk_is_replaced_by_the_original_image(monkeypatch):
 
 
 def test_falls_back_to_the_caption_when_the_image_is_missing(monkeypatch):
-    """S3から取れなくても回答は成立させる（5-2までの品質に落ちるだけ）。"""
+    """S3から取れなくても回答は成立させる（言語化テキストで答える品質に落ちるだけ）。"""
     monkeypatch.setattr(main_module.storage, "get_object", lambda key: None)
 
     contexts = main_module._answer_contexts(

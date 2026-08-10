@@ -558,7 +558,7 @@ async def ingest_file(
     保存すると原本ダウンロードが壊れるため、取り込みは store_original=False にし、
     原本の保存はここで明示的に行う。
 
-    加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する（5-1）。
+    加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する。
     画像を持つのは原本バイナリがあるこの経路だけなので、/ingest（テキスト貼り付け）
     には無い処理になる。
     """
@@ -997,7 +997,7 @@ def backfill_files():
     dependencies=[Depends(require_admin)],
 )
 def reindex_images_endpoint(method: Optional[str] = None):
-    """S3の原本画像から、画像チャンクの索引だけを作り直す（5-2の索引方式の比較評価用）。
+    """S3の原本画像から、画像チャンクの索引だけを作り直す（画像の索引方式の比較評価用）。
 
     画像の索引方式（自動キャプション / マルチモーダル埋め込み）は取り込み時に
     決まるため、方式を変えて比べるには索引を作り直す必要がある。原本画像はS3に
@@ -1025,9 +1025,9 @@ def reindex_images_endpoint(method: Optional[str] = None):
 
 @app.post("/chart-read", response_model=ChartReadResponse, responses=_ERRORS)
 def chart_read(req: ChartReadRequest):
-    """文書内のチャート画像を読解する（5-4）。★売買判断は返さない★
+    """文書内のチャート画像を読解する。★売買判断は返さない★
 
-    5-3（原本画像を根拠にした回答）をチャートに向けたもの。検索でヒットした
+    原本画像を根拠にした回答の仕組みを、チャートに向けたもの。検索でヒットした
     画像チャンクだけを根拠にし、「今どういう状態か」を言葉にする。
     複数レポートの図表を集めて要約する用途もここに乗る。
 
@@ -1089,7 +1089,7 @@ def _citations(hits: list[dict]) -> list[dict]:
     原本URLは出典ごとに1回だけ引く（S3のhead_objectを同じ文書で何度も叩かない）。
 
     画像チャンクには image_url も付ける。回答生成に渡したのと同じ1枚を利用者にも
-    見せるため ＝ 「この図のここが根拠」を自分の目で確かめられる（5-3）。
+    見せるため ＝ 「この図のここが根拠」を自分の目で確かめられる。
     """
     urls: dict[str, str | None] = {}
     citations = []
@@ -1119,7 +1119,7 @@ def _image_context(hit: dict) -> Optional[ImageContext]:
 
     None を返した場合、呼び出し側は言語化テキスト（キャプション等）で代替する。
     ★画像が取れないことを理由に回答を失敗させない★のが方針で、S3障害でも
-    5-2 までの品質（言語化テキストで答える）には落ちるだけで済ませる。
+    言語化テキストで答える品質に落ちるだけで済ませる。
 
     大きすぎる画像を弾くのは、Claude の画像1枚の上限(5MB)を超えると
     リクエストごと失敗し、回答が1文字も返らなくなるため。
@@ -1155,7 +1155,7 @@ def _image_context(hit: dict) -> Optional[ImageContext]:
 def _answer_contexts(hits: list[dict]) -> list:
     """回答生成に渡すコンテキストを組み立てる。並びは hits と1対1（引用番号の根拠）。
 
-    ★画像チャンクは言語化テキストではなく原本画像を渡す（5-3）★
+    ★画像チャンクは言語化テキストではなく原本画像を渡す★
       キャプションは検索で見つけるための索引に格下げし、判断は毎回原本に
       対して行わせる。こうしないと「言語化した時点で書かれなかったこと」を
       後から問えない（それが2023年方式の弱点だった）。
@@ -1218,7 +1218,7 @@ def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
     return {
         "conversation_id": conversation_id,
         "history": history,
-        # 画像チャンクは原本画像そのものが入る（テキストと混在する。5-3）
+        # 画像チャンクは原本画像そのものが入る（テキストと混在する）
         "contexts": _answer_contexts(hits),
         # 根拠として使ったチャンクの出典も返す（重複排除）
         "sources": list(dict.fromkeys(h["source"] for h in hits)),

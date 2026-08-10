@@ -115,7 +115,7 @@ def test_print_comparison_marks_improvements(harness, capsys):
 
 
 def test_print_comparison_shows_a_swapped_top_chunk_at_the_same_rank(capsys):
-    """★順位だけ見ていると変化を見落とす★（YOSUKE-28）
+    """★順位だけ見ていると変化を見落とす★
 
     正解ラベルが文書単位の設問では、同じ文書の別チャンクに入れ替わっても順位は
     動かない。contextual retrieval が変えるのはまさにそこなので、順位が同じでも

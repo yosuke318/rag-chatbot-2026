@@ -416,7 +416,7 @@ class Citation(BaseModel):
     )
     # 以下2つは画像チャンクのときだけ値が入る（テキストチャンクは null）。
     # 回答生成に渡したのと同じ1枚を利用者にも見せ、図表を根拠にした回答を
-    # 自分の目で検証できるようにするためのもの（5-3）。
+    # 自分の目で検証できるようにするためのもの。
     image_url: Optional[str] = Field(
         default=None,
         description="根拠が文書内の図表のとき、その画像を開くURL。null=画像ではない",
@@ -568,7 +568,7 @@ class EvalResult(BaseModel):
 
 
 class ChartReadRequest(BaseModel):
-    """チャート読解のリクエスト（5-4）。売買判断は返さない。"""
+    """チャート読解のリクエスト。売買判断は返さない。"""
 
     question: str = Field(description="チャートについて知りたいこと")
     project: Optional[str] = Field(default=None, description="プロジェクト（未指定は全体）")

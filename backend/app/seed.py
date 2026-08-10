@@ -39,7 +39,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 SEED_DIR = _BACKEND / "seed_docs"
 SCOPES_PATH = _BACKEND / "seed_data" / "documents.json"
 
-# 評価専用コーパス（YOSUKE-29）。指標が飽和しない規模と紛らわしさを持たせた文書群。
+# 評価専用コーパス。指標が飽和しない規模と紛らわしさを持たせた文書群。
 CORPUS_DIR = _BACKEND / "eval_corpus" / "docs"
 CORPUS_SCOPES_PATH = _BACKEND / "eval_corpus" / "documents.json"
 # コーパスの文書と質問に付ける区分。評価はこの project で絞ることで

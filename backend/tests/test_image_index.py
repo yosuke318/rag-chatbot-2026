@@ -1,4 +1,4 @@
-"""画像の検索対象化（5-2）のテスト。
+"""画像の検索対象化のテスト。
 
 案A（自動キャプション）と案B（マルチモーダル埋め込み）は eval で比べて選ぶもの
 なので、両方が「同じ形の索引」を作り、切り替えだけで入れ替わることを確かめる。
@@ -529,7 +529,7 @@ def test_image_search_uses_the_multimodal_vector_not_the_text_one(monkeypatch):
     assert "image_embedding IS NOT NULL" in sql
     assert params[0] == [0.5] and params[-2] == [0.5]  # 使うのは image_query_vec だけ
     assert hits[0]["cosine_similarity"] == pytest.approx(0.8)
-    # 5-2の評価と5-3の回答生成が「これは画像チャンクだ」と判定する手がかり
+    # 画像チャンクの評価と回答生成が「これは画像チャンクだ」と判定する手がかり
     assert hits[0]["image_path"] == "images/決算.pdf/0001.png"
 
 

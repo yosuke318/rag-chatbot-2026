@@ -1,4 +1,4 @@
-"""project / topic での検索スコープ絞り込みのテスト（YOSUKE-20）。
+"""project / topic での検索スコープ絞り込みのテスト。
 
 確かめること:
   - 3つの検索関数それぞれが WHERE に区分の条件を足し、値を正しい順で渡すこと
@@ -260,8 +260,8 @@ def test_search_endpoint_treats_blank_scope_as_unspecified(client):
 
 
 # /projects・/topics（＝区分の選択肢）のテストは test_scopes.py にある。
-# 選択肢の出どころが「文書と質問の DISTINCT 導出」からマスタへ移ったため
-# （YOSUKE-35）、ここではなくマスタ側のテストで見る。このファイルが受け持つのは
+# 選択肢の出どころが「文書と質問の DISTINCT 導出」からマスタへ移ったので、
+# ここではなくマスタ側のテストで見る。このファイルが受け持つのは
 # 「選んだ区分が検索の WHERE に効くか」。
 
 

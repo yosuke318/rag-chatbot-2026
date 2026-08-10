@@ -58,14 +58,14 @@ CONTEXT_CONCURRENCY = int(os.getenv("CONTEXT_CONCURRENCY", "4"))
 # メモリを食い潰す。既定20MB。社内文書想定なら十分で、必要なら環境変数で調整。
 UPLOAD_MAX_BYTES = int(os.getenv("UPLOAD_MAX_MB", "20")) * 1024 * 1024
 
-# 文書内画像の抽出（フェーズ5 マルチモーダルの土台。app.parsers / app.ingest）。
+# 文書内画像の抽出（マルチモーダル対応の土台。app.parsers / app.ingest）。
 # 抽出した画像は原本を S3 に置き、chunks.image_path から辿れるようにする。
-# 画像を検索対象にする（キャプション or マルチモーダル埋め込み）のは次段(5-2)。
+# 画像を検索対象にする（キャプション or マルチモーダル埋め込み）のは次段。
 EXTRACT_IMAGES = os.getenv("EXTRACT_IMAGES", "true").lower() == "true"
 
 # PDF は「埋め込みラスタ画像」ではなく★ページ全体をレンダリング★して1枚の画像にする。
 # Excel/PowerPoint から出力したPDFの図表はベクタ描画で、埋め込み画像として
-# 取り出せないものが多いため（チャート読解(5-4)がごっそり取りこぼす）。
+# 取り出せないものが多いため（チャート読解がごっそり取りこぼす）。
 # スケールは 1.0 = 72dpi。2.0 ≒ 144dpi で、細かい軸ラベルも読める程度。
 # 上げるほど読みやすくなるがS3容量と入力トークンが増える。
 PDF_RENDER_SCALE = float(os.getenv("PDF_RENDER_SCALE", "2.0"))
@@ -78,7 +78,7 @@ IMAGE_MIN_PIXELS = int(os.getenv("IMAGE_MIN_PIXELS", "100"))
 # 1文書あたりの抽出上限。数百ページのPDFで S3 と DB が膨らむのを止める安全弁。
 IMAGE_MAX_PER_DOC = int(os.getenv("IMAGE_MAX_PER_DOC", "50"))
 
-# 抽出画像を「テキストの質問で引ける」状態にする方式（5-2）。
+# 抽出画像を「テキストの質問で引ける」状態にする方式。
 # ★どちらが良いかは eval で決める★ ものなので、両方を実装して切り替え可能にしてある。
 #
 #   "caption"    … 案A: Claudeに画像を説明文へ変換させ、その文を既存のテキスト経路
@@ -87,7 +87,7 @@ IMAGE_MAX_PER_DOC = int(os.getenv("IMAGE_MAX_PER_DOC", "50"))
 #   "multimodal" … 案B: voyage-multimodal-3 で画像を直接ベクトル化し、テキストと
 #                  同じ空間に置く。言語化を挟まないので「説明文に書かれなかった
 #                  情報」を落とさないが、専用の検索手法(image)が要る。
-#   "none"       … 索引を作らない（5-1のまま＝保管だけ）。画像APIのコストを止める用。
+#   "none"       … 索引を作らない（抽出してS3に保管するだけ）。画像APIのコストを止める用。
 #
 # 比較のしかたは app.eval のドキュメント参照。
 IMAGE_INDEX_METHOD = os.getenv("IMAGE_INDEX_METHOD", "caption").lower()
@@ -103,7 +103,7 @@ CAPTION_CONCURRENCY = int(os.getenv("CAPTION_CONCURRENCY", "4"))
 MULTIMODAL_EMBED_MODEL = os.getenv("MULTIMODAL_EMBED_MODEL", "voyage-multimodal-3")
 MULTIMODAL_EMBED_DIM = int(os.getenv("MULTIMODAL_EMBED_DIM", "1024"))
 
-# 回答生成に添付する原本画像（5-3）。
+# 回答生成に添付する原本画像。
 # 検索でヒットしたチャンクが画像なら、言語化テキストではなく★画像そのもの★を
 # Claude に渡す。言語化は「検索で見つけるための索引」に格下げし、判断は毎回
 # 原本に対して行わせる（言語化時に書かれなかったことを後から問えるようにする）。
