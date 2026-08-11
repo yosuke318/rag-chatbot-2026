@@ -478,6 +478,25 @@ def init_db() -> None:
         conn.execute(
             "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS expected_text TEXT;"
         )
+        # 👎から作った評価用質問への参照（NULL = まだ評価データセットに入れていない）。
+        # ★feedback の列だが、置き場所はここ★
+        #   参照先の eval_questions より前では外部キーを張れないので、feedback の
+        #   他の列と離れてもテーブルが揃った後に足す。
+        #
+        # ★これが「二重に昇格できない」の実体★
+        #   同じ👎から評価用質問を2度作ると、評価データセットの中で同じ質問が
+        #   二重に数えられ、Hit@k / MRR がその1問に引っ張られる。一覧に印を
+        #   出すのも、昇格を1回に抑えるのも、この列1本で決まる。
+        #
+        # ★ON DELETE SET NULL（CASCADE にしない）★
+        #   評価用質問を消したときに消えるべきなのは「紐付け」だけで、元の👎では
+        #   ない（👎は評価の素材として残す、が feedback テーブル全体の約束）。
+        #   NULL に戻れば、その👎はもう一度昇格できる状態に戻る。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS "
+            "promoted_eval_question_id BIGINT "
+            "REFERENCES eval_questions(id) ON DELETE SET NULL;"
+        )
         # 既存DB向けの冪等マイグレーション: 会社・部署の2軸は当初の実装で、
         # 本来の設計軸は project/topic。データを保ったまま改名する
         # （改名後のTEXTカラムは、後段の正規化マイグレーションで id 参照になる）。

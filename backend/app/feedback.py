@@ -1,4 +1,5 @@
-"""貯めた 👍/👎 の読み出し。書き込み（POST /feedback）は app.main 側。
+"""貯めた 👍/👎 の読み出しと、記録済みの行への後追いの書き込み（理由・昇格）。
+最初の記録（POST /feedback）だけは app.main 側にある。
 
 なぜ要るか:
   feedback テーブルは長らく INSERT だけで、読む口が一つも無かった。評価の素材と
@@ -123,7 +124,7 @@ def load(
             "SELECT f.id, f.question, f.answer, f.sources, f.rating, f.reason, "
             "f.comment, f.created_at, p.name, t.name, f.conversation_id, "
             "f.message_id, f.retriever, f.top_k, f.reranked, f.chunk_ids, "
-            "f.latency_ms "
+            "f.latency_ms, f.promoted_eval_question_id "
             f"{joins}{where}"
             # 新しい順。NULLS LAST は created_at を持たない古い行を末尾に送るため
             # （既定の DESC では NULL が先頭に来て、一番新しく見えてしまう）。
@@ -154,6 +155,7 @@ def load(
                 "reranked": r[14],
                 "chunk_ids": r[15],
                 "latency_ms": r[16],
+                "promoted_eval_question_id": r[17],
             }
             for r in rows
         ],
@@ -273,6 +275,80 @@ def add_reason(
     if row is None:
         return None
     return {"id": row[0], "rating": row[1], "reason": row[2], "comment": row[3]}
+
+
+def promote(
+    feedback_id: int,
+    question: str,
+    expected_source: str,
+    expected_kind: str,
+    expected_text: str | None,
+    project_id: int | None,
+    topic_id: int | None,
+    note: str | None,
+) -> int | None:
+    """この👎を評価用質問(eval_questions)として登録し、昇格済みの印を付ける。
+
+    作った質問のIDを返す。既に昇格済み、または行が無ければ None
+    （どちらだったかは promoted_of で分ける。呼ぶのは失敗した後だけ）。
+
+    ★機械的に流し込む口ではない★
+      ここに渡す正解(expected_source)は人が選び直したもの。eval_questions は
+      expected_source NOT NULL（正解必須）の設計で、「そもそも文書に答えが無い」
+      質問を混ぜると、引けなくて当然のものを不正解として数えることになり、
+      Hit@k / MRR そのものが読めなくなる。だから👎を一括で昇格する関数は作らない。
+
+    ★登録と印付けをSQL1文で行う★
+      2文に分けると、印を付ける前に落ちたときに「評価用質問だけが増え、元の👎は
+      未昇格のまま」が残り、次に押すと同じ質問がもう1件できる。CTEにすると
+      「未昇格の行が1件見つかったときだけ INSERT する」が不可分に決まる。
+      FOR UPDATE で行を押さえるのは、同時に2回押されたときに後から来た方が
+      条件（未昇格）を評価し直して0件になるようにするため。
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "WITH target AS ("
+            "    SELECT id FROM feedback"
+            "     WHERE id = %s AND promoted_eval_question_id IS NULL"
+            "     FOR UPDATE"
+            "), created AS ("
+            "    INSERT INTO eval_questions"
+            "        (project_id, topic_id, question, expected_source,"
+            "         expected_kind, expected_text, note)"
+            "    SELECT %s::bigint, %s::bigint, %s::text, %s::text,"
+            "           %s::text, %s::text, %s::text FROM target"
+            "    RETURNING id"
+            ")"
+            "UPDATE feedback f SET promoted_eval_question_id = created.id"
+            "  FROM created WHERE f.id = (SELECT id FROM target)"
+            " RETURNING f.promoted_eval_question_id",
+            (
+                feedback_id,
+                project_id,
+                topic_id,
+                question,
+                expected_source,
+                expected_kind,
+                expected_text,
+                note,
+            ),
+        ).fetchone()
+    return None if row is None else row[0]
+
+
+def promoted_of(feedback_id: int) -> int | None:
+    """昇格済みなら、その評価用質問のID。未昇格・行なしは None。
+
+    promote が0件だったときに「もう昇格されている」のか「そんな行は無い」のかを
+    分けるために使う（rating_of と同じ役回りで、呼ぶのは失敗した後だけ）。
+    既に作られている質問のIDを返せると、画面が「どれになったか」を指せる。
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT promoted_eval_question_id FROM feedback WHERE id = %s",
+            (feedback_id,),
+        ).fetchone()
+    return None if row is None else row[0]
 
 
 def rating_of(feedback_id: int) -> int | None:

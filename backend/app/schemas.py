@@ -146,6 +146,17 @@ class EvalQuestionRequest(BaseModel):
     note: Optional[str] = Field(default=None, description="何を確かめる質問かのメモ（任意）")
 
 
+class FeedbackPromoteRequest(EvalQuestionRequest):
+    """👎から評価用質問を作るときの中身。項目は直接登録するときと同じ。
+
+    ★フィードバックの内容をそのまま使わない★
+      画面は質問・区分をフィードバックから写して初期値にするが、届くのは人が
+      直した後の値。特に正解(expected_source)は「そのとき出典に挙がった文書」
+      ではなく「本当はどれを引くべきだったか」で、両者が違うことこそ👎の中身。
+      サーバが元の行から埋めてしまうと、間違った出典が正解ラベルとして固定される。
+    """
+
+
 # --- レスポンス ---------------------------------------------------------------
 
 
@@ -539,6 +550,15 @@ class FeedbackItem(BaseModel):
     latency_ms: Optional[int] = Field(
         default=None, description="回答までにかかった時間（ミリ秒・null=未記録）"
     )
+    # 「未記録」ではなく「まだやっていない」を意味する唯一の項目。ここが埋まって
+    # いる行に昇格ボタンを出すと、同じ質問が評価データセットに二重に入る。
+    promoted_eval_question_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "この評価から作った評価用質問のID（null=まだ評価データセットに"
+            "入れていない）"
+        ),
+    )
 
 
 class FeedbackListResponse(BaseModel):
@@ -694,6 +714,16 @@ class EvalQuestionsResponse(BaseModel):
     """評価用質問の一覧（会社・部署で絞り込める）。"""
 
     questions: List[EvalQuestion]
+
+
+class FeedbackPromoteResponse(EvalQuestion):
+    """昇格して出来た評価用質問。直接登録したときと同じものが返る。
+
+    昇格元(feedback_id)を添えるのは、一覧が「どの行に印を付けるか」をレスポンス
+    だけで決められるようにするため（送った側の記憶と突き合わせなくてよい）。
+    """
+
+    feedback_id: int = Field(description="昇格元のフィードバックID")
 
 
 class SavedQuestion(BaseModel):

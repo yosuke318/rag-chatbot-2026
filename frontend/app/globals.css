@@ -1024,6 +1024,33 @@ button:disabled {
   color: var(--muted);
 }
 
+/* 👎を評価用質問に昇格させる導線。ボタンと「入れてよいのはどれか」を横に並べる
+   （説明が無いと、答えの載っていない質問まで機械的に入れられて指標が壊れる）。 */
+.fb-promote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.fb-promote .hint {
+  flex: 1;
+  min-width: 240px;
+  margin: 0;
+}
+
+/* 行の中に置くので、既定のボタン（.eval-add の登録ボタン等）より一段小さく。
+   ここは1件ずつ読みながら押すもので、画面の主役ではない。 */
+.fb-promote-button {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
 .fb-detail {
   display: flex;
   flex-direction: column;

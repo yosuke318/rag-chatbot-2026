@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app import feedback  # noqa: E402
 from app import main as main_module  # noqa: E402
 
-# SELECT が並べる17列と同じ並びの1行。
+# SELECT が並べる18列と同じ並びの1行。
 ROW = (
     3,                                              # id
     "有給は?",                                       # question
@@ -46,6 +46,7 @@ ROW = (
     False,                                          # reranked
     [101, 203],                                     # chunk_ids
     1234,                                           # latency_ms
+    None,                                           # promoted_eval_question_id
 )
 
 
@@ -135,8 +136,23 @@ def test_returns_the_answer_with_the_context_it_was_given(client):
             # が分からなくなる。
             "chunk_ids": [101, 203],
             "latency_ms": 1234,
+            # 評価用質問にしたかどうか。null=まだ＝一覧に昇格ボタンを出してよい行
+            "promoted_eval_question_id": None,
         }
     ]
+
+
+def test_promoted_rows_carry_the_eval_question_they_became(client):
+    """昇格済みの行は、出来た評価用質問のIDを持って返ること。
+
+    ★これが無いと二度登録できてしまう★
+      一覧が「もう入れたか」を知る手掛かりはこの1列だけ。落ちると同じ質問が
+      評価データセットに二重に入り、その1問だけが Hit@k / MRR に二重で効く。
+    """
+    promoted = (*ROW[:17], 55)
+    body, _ = _get(client, rows=[promoted])
+
+    assert body["feedback"][0]["promoted_eval_question_id"] == 55
 
 
 def test_total_is_the_filtered_count_not_the_page_size(client):

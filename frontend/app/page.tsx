@@ -1081,6 +1081,8 @@ type FeedbackRow = {
   reranked: boolean | null;
   chunk_ids: number[];
   latency_ms: number | null;
+  /** この評価から作った評価用質問のID（null=まだ評価データセットに入れていない）。 */
+  promoted_eval_question_id: number | null;
 };
 
 type ChunkDetail = {
@@ -1213,6 +1215,251 @@ function FeedbackDetail({ row }: { row: FeedbackRow }) {
   );
 }
 
+/** 正解と認めるチャンクの種類（バックエンドの EXPECTED_KINDS と同じ並び）。
+ *
+ * 昇格のダイアログにだけ置いてある。👎は「その文書は引けていたのに、答えの
+ * 載っている図表ではなく本文を渡していた」のように★どの種類を引くべきだったか★
+ * まで分かっていることが多く、そこまで残せると同じ失敗を測れるようになる。
+ */
+const EXPECTED_KINDS = [
+  { id: "any", label: "どれでもよい", hint: "文書が上位に来れば正解（既定）" },
+  { id: "text", label: "本文", hint: "本文チャンクで引けたときだけ正解" },
+  { id: "image", label: "図表", hint: "画像チャンクで引けたときだけ正解" },
+] as const;
+
+/** 👎を評価用質問（正解ラベル付き）に昇格させるダイアログ。
+ *
+ * ★👎を貯める意味はここで完結する★
+ *   読んで終わりの👎は、次の変更で同じ質問がまた壊れても誰も気づけない。
+ *   評価データセットに入って初めて Hit@k / MRR に乗り、以後の改良すべてが
+ *   この1問を巻き込んで検証されるようになる。
+ *
+ * ★ただし機械的に流し込まない★
+ *   評価用質問は正解(expected_source)が必須で、「そもそも文書に答えが無い」
+ *   質問を混ぜると、引けなくて当然のものを不正解として数え続けることになり、
+ *   指標そのものが読めなくなる。だから1件ずつ人が開いて、正解を選んでから通す。
+ */
+function PromoteModal({
+  row,
+  scopeVersion,
+  onClose,
+  onPromoted,
+}: {
+  /** 昇格しようとしている👎（null=閉じている）。 */
+  row: FeedbackRow | null;
+  scopeVersion: number;
+  onClose: () => void;
+  onPromoted: (feedbackId: number, evalQuestionId: number) => void;
+}) {
+  const [question, setQuestion] = useState("");
+  const [expected, setExpected] = useState("");
+  const [kind, setKind] = useState<string>("any");
+  const [expectedText, setExpectedText] = useState("");
+  const [note, setNote] = useState("");
+  const [status, setStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // 正解の候補は★その👎を聞いた区分★で絞る。評価は同じ区分の文書だけを検索
+  // するので、区分をまたいだ組み合わせを正解にすると永久に不正解になる
+  //（③「質問を追加」の候補と同じ規則）。
+  const docs = useDocuments(row?.project ?? "", row?.topic ?? "", scopeVersion);
+
+  // 開くたびにフィードバックの内容で埋め直す。前に開いた行の入力が残ると、
+  // 別の👎に前の質問文を正解付きで登録してしまう。
+  useEffect(() => {
+    if (!row) return;
+    setQuestion(row.question);
+    // ★正解は初期選択しない★
+    //   出典に挙がった文書が正しければ👎は付いていない可能性が高い。既定で
+    //   選んでおくと、そのまま押されて「間違った文書」が正解ラベルとして固定される。
+    setExpected("");
+    setKind("any");
+    setExpectedText("");
+    // 何を見て作った質問かを残す。後から eval_questions を読むとき、この1行が
+    // 無いと「なぜこの質問が入っているのか」を辿れない。
+    setNote(
+      [
+        "👎から昇格",
+        row.reason ? `理由: ${row.reason}` : "",
+        row.comment ? `補足: ${row.comment}` : "",
+      ]
+        .filter(Boolean)
+        .join(" / "),
+    );
+    setStatus("");
+  }, [row]);
+
+  // そのとき出典に挙がった文書のうち、今も引けるものだけを候補にする。
+  // 消された文書を正解に指定できると、その設問は何をやっても不正解になる。
+  const cited = (docs ?? []).filter((d) => row?.sources.includes(d));
+  const gone = (row?.sources ?? []).filter((s) => docs !== null && !docs.includes(s));
+  const others = (docs ?? []).filter((d) => !cited.includes(d));
+  const options: { label: string; options: { value: string; label: string }[] }[] = [];
+  if (cited.length > 0) {
+    options.push({ label: "そのとき出典に挙がった文書", options: toOptions(cited) });
+  }
+  if (others.length > 0) {
+    options.push({ label: "この区分のほかの文書", options: toOptions(others) });
+  }
+
+  async function submit() {
+    if (!row || saving) return;
+    setSaving(true);
+    setStatus("");
+    try {
+      const res = await fetch(`/api/backend/feedback/${row.id}/promote`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question,
+          expected_source: expected,
+          expected_kind: kind,
+          // 空欄は送らない（＝文書単位で判定する従来どおりの質問になる）
+          expected_text: expectedText.trim() || null,
+          // 区分は聞いたときのものをそのまま引き継ぐ（選び直させない）。
+          // ここを変えると、正解に選んだ文書が評価時には検索対象外になる。
+          project: row.project,
+          topic: row.topic,
+          note: note.trim() || null,
+        }),
+      });
+      const err = await errorMessage(res);
+      if (err) {
+        setStatus(err);
+        return;
+      }
+      const created = await res.json();
+      onPromoted(row.id, created.id);
+    } catch (e) {
+      setStatus(`エラー: ${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={row !== null}
+      onCancel={onClose}
+      onOk={submit}
+      okText="評価用質問として登録"
+      cancelText="やめる"
+      // 正解を選ぶまで押せない。空のまま送れると、サーバに弾かれるだけの
+      // 往復になる（正解必須なのはUIより先にDBの制約）。
+      okButtonProps={{ disabled: !question.trim() || !expected || saving }}
+      confirmLoading={saving}
+      width={720}
+      title="この👎を評価用質問にする"
+    >
+      {status && <p className="error-box">{status}</p>}
+      <p className="hint">
+        ここで作った質問は、以後 <code>python -m app.eval</code> の
+        <strong>Hit@k / MRR に毎回乗る</strong>。逆に
+        <strong>そもそも文書に答えが無い</strong>と分かった👎は入れないこと
+        （引けなくて当然のものを不正解として数え続けることになり、
+        指標そのものが読めなくなる）。
+      </p>
+      <div className="scope-field">
+        <label className="scope-label" htmlFor="promote-question">
+          質問（👎の質問がそのまま入っている。直してよい）
+        </label>
+        <input
+          id="promote-question"
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+        />
+      </div>
+      <div className="scope-field">
+        <label className="scope-label" htmlFor="promote-expected">
+          正解の文書（本当はどれを引くべきだったか）
+        </label>
+        <Select
+          id="promote-expected"
+          value={expected || undefined}
+          placeholder={
+            docs === null
+              ? "文書を読み込み中…"
+              : options.length === 0
+                ? "この区分に文書がありません"
+                : "文書を選ぶ"
+          }
+          options={options}
+          onChange={(v?: string) => setExpected(v ?? "")}
+          disabled={docs === null || options.length === 0}
+          allowClear
+          showSearch
+          listHeight={LIST_HEIGHT}
+        />
+      </div>
+      <p className="hint">
+        ★出典に挙がった文書が正解とは限らない★
+        違う文書を引くべきだったことこそ👎の中身なので、
+        <strong>選び直す前提</strong>で候補として並べてある。 区分（
+        {row?.project ?? "なし"} / {row?.topic ?? "なし"}）は聞いたときのまま。
+        {gone.length > 0 && (
+          <>
+            <br />
+            出典のうち <code>{gone.join(" / ")}</code> は今のDBに無い（文書が
+            消されている）ので候補に出していない。
+          </>
+        )}
+      </p>
+      <div className="scope-field">
+        <span className="scope-label">正解と認めるチャンクの種類</span>
+        <div className="fb-range">
+          {EXPECTED_KINDS.map((k) => (
+            <button
+              key={k.id}
+              type="button"
+              className={`fb-chip ${kind === k.id ? "fb-chip-on" : ""}`}
+              onClick={() => setKind(k.id)}
+              title={k.hint}
+            >
+              {k.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="hint">
+        {EXPECTED_KINDS.find((k) => k.id === kind)?.hint}
+        {/* 👎は「文書は合っていたが渡した根拠が違った」ことが多く、そこまで
+            指定できると同じ失敗を測れる。分からなければ「どれでもよい」でよい。 */}
+      </p>
+      <details className="q-optional">
+        <summary>
+          チャンク単位で採点する（任意・ふつうは空欄のままでよい）
+          {expectedText.trim() && (
+            <span className="q-optional-value">{expectedText.trim()}</span>
+          )}
+        </summary>
+        <div className="hint q-optional-body">
+          <p>
+            正解チャンクに<strong>必ず含まれる語句</strong>を入れると、
+            「その文書のどこか」ではなく
+            <strong>「この段落を引けたか」</strong>で採点する。
+            渡したチャンクは下の一覧（行を開いた先）で読める。
+          </p>
+          <input
+            placeholder="例: 1日2時間を超える場合"
+            value={expectedText}
+            onChange={(e) => setExpectedText(e.target.value)}
+          />
+        </div>
+      </details>
+      <div className="scope-field">
+        <label className="scope-label" htmlFor="promote-note">
+          メモ（何を確かめる質問か）
+        </label>
+        <input
+          id="promote-note"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </div>
+    </Modal>
+  );
+}
+
 /** 👍/👎 の集計と一覧（③の配下）。
  *
  * ★上半分は集計、下半分は1件ずつ★
@@ -1237,6 +1484,8 @@ function FeedbackPanel({
   const [rows, setRows] = useState<FeedbackRow[] | null>(null);
   const [total, setTotal] = useState(0);
   const [openId, setOpenId] = useState<number | null>(null);
+  // 昇格ダイアログを開いている行（null=閉じている）
+  const [promoting, setPromoting] = useState<FeedbackRow | null>(null);
   const [error, setError] = useState("");
 
   const selected = FEEDBACK_RANGES.find((r) => r.id === range)!;
@@ -1291,6 +1540,24 @@ function FeedbackPanel({
   // 棒の長さは「その刻みで一番多かった件数」を基準にする（率だけだと1件しか
   // 評価が無い日が満杯に見える）。
   const peak = Math.max(1, ...(stats?.by_period ?? []).map((p) => p.total));
+
+  /** 昇格できた行に印を付ける。★取り直さずその場で書き換える★
+   *
+   * 一覧を引き直すと、その間に増えた評価で並びがずれて「今開いていた行」を
+   * 見失う。二度登録を防ぐのに要るのは印だけなので、返ってきたIDを入れる。
+   */
+  function markPromoted(feedbackId: number, evalQuestionId: number) {
+    setRows(
+      (rs) =>
+        rs &&
+        rs.map((r) =>
+          r.id === feedbackId
+            ? { ...r, promoted_eval_question_id: evalQuestionId }
+            : r,
+        ),
+    );
+    setPromoting(null);
+  }
 
   return (
     <div className="fb-panel">
@@ -1458,6 +1725,11 @@ function FeedbackPanel({
                   </span>
                   <span className="fb-row-question">{row.question}</span>
                   {row.reason && <span className="fb-tag">{row.reason}</span>}
+                  {/* 開かなくても「もう評価データセットに入れた」が分かること。
+                      これが見えないと、同じ👎を二度登録しに行ってしまう。 */}
+                  {row.promoted_eval_question_id !== null && (
+                    <span className="fb-tag">評価用質問にした</span>
+                  )}
                   <span className="fb-row-when">
                     {formatDateTime(row.created_at)}
                   </span>
@@ -1478,6 +1750,34 @@ function FeedbackPanel({
                       {row.reranked === null ? "未記録" : row.reranked ? "あり" : "なし"}{" "}
                       ・ 所要: {row.latency_ms === null ? "未記録" : `${row.latency_ms}ms`}
                     </p>
+                    {/* ★調べた結果を残す唯一の出口★
+                        ここを通さない限り、👎は読んで終わり＝次の変更で同じ
+                        質問が壊れても誰も気づけない。入れた質問は以後の
+                        Hit@k / MRR に毎回乗る。 */}
+                    <div className="fb-promote">
+                      {row.promoted_eval_question_id === null ? (
+                        <>
+                          <button
+                            type="button"
+                            className="fb-promote-button"
+                            onClick={() => setPromoting(row)}
+                          >
+                            評価用質問として登録
+                          </button>
+                          <span className="hint">
+                            下の根拠を見て
+                            <strong>「文書に答えはあるのに引けていない／答えが違う」</strong>
+                            なら、評価データセットに入れて以後の回帰テストに乗せる。
+                            <strong>そもそも文書に答えが無い</strong>ものは入れない。
+                          </span>
+                        </>
+                      ) : (
+                        <span className="hint">
+                          評価用質問 #{row.promoted_eval_question_id}{" "}
+                          として登録済み（③「質問集を評価」の採点対象に入っている）。
+                        </span>
+                      )}
+                    </div>
                     <FeedbackDetail row={row} />
                   </div>
                 )}
@@ -1486,6 +1786,13 @@ function FeedbackPanel({
           </ul>
         </>
       )}
+
+      <PromoteModal
+        row={promoting}
+        scopeVersion={scopeVersion}
+        onClose={() => setPromoting(null)}
+        onPromoted={markPromoted}
+      />
     </div>
   );
 }
