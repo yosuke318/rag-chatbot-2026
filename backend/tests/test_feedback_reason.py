@@ -25,11 +25,16 @@ from app import main as main_module  # noqa: E402
 
 
 class FakeConn:
-    """UPDATE の RETURNING に更新後の行を返す偽コネクション。row=None で「該当なし」。"""
+    """UPDATE の RETURNING に更新後の行を返す偽コネクション。row=None で「該当なし」。
 
-    def __init__(self, calls: list, row=(3, -1, "情報が古い", None)):
+    after は2回目以降の execute が返す行。UPDATE が0件だったときに評価を引き直す
+    （app.feedback.rating_of）ので、1回目と違う答えを返せるようにしてある。
+    """
+
+    def __init__(self, calls: list, row=(3, -1, "情報が古い", None), after=None):
         self.calls = calls
         self.row = row
+        self.after = after
 
     def __call__(self):
         return self
@@ -42,8 +47,8 @@ class FakeConn:
 
     def execute(self, sql, params=None):
         self.calls.append((sql, list(params or [])))
-        outer = self
-        return type("R", (), {"fetchone": lambda _s: outer.row})()
+        result = self.row if len(self.calls) == 1 else self.after
+        return type("R", (), {"fetchone": lambda _s: result})()
 
 
 @pytest.fixture(scope="module")
@@ -89,8 +94,9 @@ def test_reason_is_attached_to_the_recorded_feedback(client):
     sql, params = calls[0]
     assert sql.startswith("UPDATE feedback SET")
     assert params == ["情報が古い", 3]
-    # 評価そのものは書き換えない（いつの時点の評価かが失われる）
-    assert "rating =" not in sql
+    # 評価そのものは書き換えない（いつの時点の評価かが失われる）。
+    # WHERE 側には👎に限る条件が入るので、書き換え対象の SET だけを見る。
+    assert "rating =" not in sql.split("WHERE")[0]
 
 
 def test_untouched_fields_are_left_alone(client):
@@ -144,6 +150,55 @@ def test_missing_feedback_is_404(client):
     res, _ = _patch(client, {"reason": "情報が古い"}, feedback_id=999, row=None)
     assert res.status_code == 404
     assert res.json()["error"] == "feedback_not_found"
+
+
+# --- 理由が付くのは👎だけ ------------------------------------------------------
+
+
+def test_reason_cannot_be_attached_to_a_thumbs_up(client):
+    """★👍に理由を付けさせない★
+
+    選択肢は「👎の理由」で、stats の by_reason も👎だけを数える。👍に理由が
+    入ると👎の件数と理由の合計が合わなくなり、「理由なしの👎が何件か」を
+    数え違える。
+    """
+    # UPDATE が0件（=👎ではなかった）→ 評価を引き直すと👍だった、という流れ
+    res, calls = _patch(client, {"reason": "情報が古い"}, row=None, after=(1,))
+
+    assert res.status_code == 400
+    assert res.json()["error"] == "reason_needs_thumbs_down"
+    # 判定はSQLの条件で行う（読んでから書くと、その間に評価が変わる余地が残る）
+    assert "AND rating = -1" in calls[0][0]
+    # 0件の理由を分けるために評価を引き直しているだけ。書き換えはしていない。
+    assert calls[1][0].startswith("SELECT rating")
+
+
+def test_thumbs_up_with_a_reason_is_rejected_on_record(client):
+    """記録時も同じ。ここを素通しにすると PATCH 側の検査に意味が無くなる。"""
+    calls: list = []
+    with patch.object(main_module, "get_conn", FakeConn(calls)):
+        res = client.post(
+            "/feedback",
+            json={
+                "question": "有給は?",
+                "answer": "10日です。",
+                "rating": 1,
+                "reason": "情報が古い",
+            },
+        )
+    assert res.status_code == 400
+    assert res.json()["error"] == "reason_needs_thumbs_down"
+    assert calls == []
+
+
+def test_comment_is_allowed_on_a_thumbs_up(client):
+    """自由記述は制限しない（「👍だが一言ある」はあり得る）。"""
+    res, calls = _patch(client, {"comment": "助かった"}, row=(3, 1, None, "助かった"))
+
+    assert res.status_code == 200, res.text
+    assert res.json()["rating"] == 1
+    # 理由を触らない更新なので、👎に限る条件は付かない
+    assert "AND rating = -1" not in calls[0][0]
 
 
 # --- 記録側 -------------------------------------------------------------------

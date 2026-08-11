@@ -242,12 +242,21 @@ def add_reason(
     普通の使われ方なので、片方の指定でもう片方が消えると押し間違いが起きる。
     どちらも None なら書き換える先が無いので ValueError
     （app.scopes.create_project が空の名前を弾くのと同じ扱い）。
+
+    ★理由を足せるのは👎だけ★
+      REASONS は「👎の理由」で、stats の by_reason も👎だけを数える。👍に理由が
+      入ると、集計の分母（👎の数）と理由の合計が合わなくなり、読んだ人が
+      「理由なしの👎が何件か」を数え違える。条件をSQLに入れて弾くので、
+      更新の直前に評価が変わっても👍に書き込まれることはない。
+      自由記述(comment)は「👍だが一言ある」があり得るので制限しない。
     """
     sets: list[str] = []
     params: list = []
+    only_down = ""
     if reason is not None:
         sets.append("reason = %s")
         params.append(reason)
+        only_down = " AND rating = -1"
     if comment is not None:
         sets.append("comment = %s")
         params.append(comment)
@@ -257,10 +266,23 @@ def add_reason(
     # 触らなかった項目の扱いを2か所で決めることになる）。
     with get_conn() as conn:
         row = conn.execute(
-            f"UPDATE feedback SET {', '.join(sets)} WHERE id = %s "
+            f"UPDATE feedback SET {', '.join(sets)} WHERE id = %s{only_down} "
             "RETURNING id, rating, reason, comment",
             [*params, feedback_id],
         ).fetchone()
     if row is None:
         return None
     return {"id": row[0], "rating": row[1], "reason": row[2], "comment": row[3]}
+
+
+def rating_of(feedback_id: int) -> int | None:
+    """記録済みの評価（+1 / -1）。行が無ければ None。
+
+    add_reason が0件だったときに「行が無い」のか「👍だったので弾かれた」のかを
+    分けるためだけに使う。呼ぶのは失敗した後だけなので、通常の更新はSQL1発のまま。
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT rating FROM feedback WHERE id = %s", (feedback_id,)
+        ).fetchone()
+    return None if row is None else row[0]

@@ -1381,6 +1381,24 @@ def _unknown_reason(reason: str) -> tuple[str, str, str, str]:
     )
 
 
+def _reason_needs_thumbs_down() -> tuple[str, str, str, str]:
+    """👍に理由を付けようとしたときのエラー本文。
+
+    ★黙って無視せず弾く★
+      選択肢は「👎の理由」で、/feedback/stats の by_reason も👎だけを数える。
+      👍に理由が入ると、👎の件数と理由の合計が合わなくなり、読んだ人が
+      「理由なしの👎が何件か」を数え違える。NULLに倒して受け付けると、
+      送った側は記録できたつもりのまま値だけ消えるので、その場で気づける方がいい。
+      自由記述(comment)は「👍だが一言ある」があり得るので制限していない。
+    """
+    return (
+        "reason_needs_thumbs_down",
+        "理由を付けられるのは👎（rating=-1）だけです。",
+        "👍に一言添えたいときは comment（自由記述）を使ってください。",
+        "",
+    )
+
+
 @app.get(
     "/chunks",
     response_model=ChunksResponse,
@@ -1500,10 +1518,11 @@ def add_feedback(req: FeedbackRequest):
       「条件が分からない👎」でも、質問と回答が残るだけで評価の素材にはなる。
       ここを必須にすると、条件を持たない古いクライアントの👎が丸ごと消える。
 
-    ★理由(reason)も任意★
+    ★理由(reason)は任意、ただし👎のときだけ★
       画面は「👎を記録してから理由を聞く」（PATCH /feedback/{id}）ので、ここに
       理由が入るのは最初から分かっている場合だけ。理由を必須にすると、押しただけで
       去った人の👎が消える＝一番多い操作を一番落としやすい作りになる。
+      👍に理由を付けさせないのは _reason_needs_thumbs_down を参照。
     """
     if req.rating not in (1, -1):
         return _error(
@@ -1517,6 +1536,8 @@ def add_feedback(req: FeedbackRequest):
     reason = _blank_to_none(req.reason)
     if reason is not None and reason not in feedback.REASONS:
         return _error(400, *_unknown_reason(reason))
+    if reason is not None and rating != -1:
+        return _error(400, *_reason_needs_thumbs_down())
     # 区分をマスタへ写して id を得る（他の書き込み側と同じ。名前のまま行に
     # 持たせない）。未指定の軸は id も NULL＝「区分を選ばずに聞いた」。
     project_id, topic_id = scopes.register(
@@ -1569,6 +1590,9 @@ def update_feedback_reason(feedback_id: int, req: FeedbackReasonRequest):
 
     渡さなかった項目は書き換えない。自由記述を消したいときは空文字を送る
     （null は「変更しない」の意味なので、消すのに使えない）。
+
+    理由を足せるのは👎だけ（_reason_needs_thumbs_down 参照）。判定はSQLの条件で
+    行うので、記録側の検査と同じ結論になる。
     """
     reason = _blank_to_none(req.reason)
     if reason is not None and reason not in feedback.REASONS:
@@ -1583,6 +1607,10 @@ def update_feedback_reason(feedback_id: int, req: FeedbackReasonRequest):
         )
     updated = feedback.add_reason(feedback_id, reason, req.comment)
     if updated is None:
+        # 0件の理由は2つある。行が無いのか、👍に理由を付けようとしたのか。
+        # 「見つかりません」で片付けると、後者のとき存在するIDを疑うことになる。
+        if feedback.rating_of(feedback_id) is not None:
+            return _error(400, *_reason_needs_thumbs_down())
         return _error(
             404,
             "feedback_not_found",

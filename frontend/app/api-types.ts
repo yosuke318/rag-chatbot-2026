@@ -648,10 +648,11 @@ export interface paths {
          *       「条件が分からない👎」でも、質問と回答が残るだけで評価の素材にはなる。
          *       ここを必須にすると、条件を持たない古いクライアントの👎が丸ごと消える。
          *
-         *     ★理由(reason)も任意★
+         *     ★理由(reason)は任意、ただし👎のときだけ★
          *       画面は「👎を記録してから理由を聞く」（PATCH /feedback/{id}）ので、ここに
          *       理由が入るのは最初から分かっている場合だけ。理由を必須にすると、押しただけで
          *       去った人の👎が消える＝一番多い操作を一番落としやすい作りになる。
+         *       👍に理由を付けさせないのは _reason_needs_thumbs_down を参照。
          */
         post: operations["add_feedback_feedback_post"];
         delete?: never;
@@ -684,6 +685,9 @@ export interface paths {
          *
          *     渡さなかった項目は書き換えない。自由記述を消したいときは空文字を送る
          *     （null は「変更しない」の意味なので、消すのに使えない）。
+         *
+         *     理由を足せるのは👎だけ（_reason_needs_thumbs_down 参照）。判定はSQLの条件で
+         *     行うので、記録側の検査と同じ結論になる。
          */
         patch: operations["update_feedback_reason_feedback__feedback_id__patch"];
         trace?: never;
@@ -1478,7 +1482,7 @@ export interface components {
             rating: number;
             /**
              * Reason
-             * @description 👎の理由（null=選ばなかった）
+             * @description 👎の理由（null=選ばなかった。👍の行では常に null）
              */
             reason?: string | null;
             /**
@@ -1617,12 +1621,12 @@ export interface components {
         FeedbackReasonRequest: {
             /**
              * Reason
-             * @description GET /feedback/reasons の選択肢から1つ（null=変更しない）
+             * @description GET /feedback/reasons の選択肢から1つ（null=変更しない）。★足せるのは👎の行だけ★ 👍の行に付けると400
              */
             reason?: string | null;
             /**
              * Comment
-             * @description 自由記述（null=変更しない。空文字で消せる）
+             * @description 自由記述（null=変更しない。空文字で消せる）。👍の行にも足せる
              */
             comment?: string | null;
         };
@@ -1696,12 +1700,12 @@ export interface components {
             sources?: string[];
             /**
              * Reason
-             * @description 👎の理由（GET /feedback/reasons の選択肢から1つ。任意）
+             * @description 👎の理由（GET /feedback/reasons の選択肢から1つ。任意）。★rating=-1 のときだけ★ 👍に付けると400
              */
             reason?: string | null;
             /**
              * Comment
-             * @description 自由記述（任意）
+             * @description 自由記述（任意）。👍/👎 どちらにも付けられる
              */
             comment?: string | null;
             /**

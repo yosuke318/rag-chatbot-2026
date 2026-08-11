@@ -74,9 +74,14 @@ class FeedbackRequest(BaseModel):
     sources: List[str] = Field(default_factory=list, description="回答の根拠に使った出典")
     reason: Optional[str] = Field(
         default=None,
-        description="👎の理由（GET /feedback/reasons の選択肢から1つ。任意）",
+        description=(
+            "👎の理由（GET /feedback/reasons の選択肢から1つ。任意）。"
+            "★rating=-1 のときだけ★ 👍に付けると400"
+        ),
     )
-    comment: Optional[str] = Field(default=None, description="自由記述（任意）")
+    comment: Optional[str] = Field(
+        default=None, description="自由記述（任意）。👍/👎 どちらにも付けられる"
+    )
     conversation_id: Optional[int] = Field(
         default=None, description="この回答が属する会話のID（任意）"
     )
@@ -499,7 +504,8 @@ class FeedbackItem(BaseModel):
     sources: List[str] = Field(description="回答の根拠に使った出典")
     rating: int = Field(description="+1 = 👍 / -1 = 👎")
     reason: Optional[str] = Field(
-        default=None, description="👎の理由（null=選ばなかった）"
+        default=None,
+        description="👎の理由（null=選ばなかった。👍の行では常に null）",
     )
     comment: Optional[str] = Field(default=None, description="自由記述（null=未入力）")
     # feedback.created_at は NOT NULL ではない（DEFAULT now() だけ）ので、
@@ -638,10 +644,16 @@ class FeedbackReasonRequest(BaseModel):
 
     reason: Optional[str] = Field(
         default=None,
-        description="GET /feedback/reasons の選択肢から1つ（null=変更しない）",
+        description=(
+            "GET /feedback/reasons の選択肢から1つ（null=変更しない）。"
+            "★足せるのは👎の行だけ★ 👍の行に付けると400"
+        ),
     )
     comment: Optional[str] = Field(
-        default=None, description="自由記述（null=変更しない。空文字で消せる）"
+        default=None,
+        description=(
+            "自由記述（null=変更しない。空文字で消せる）。👍の行にも足せる"
+        ),
     )
 
 
