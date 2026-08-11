@@ -109,6 +109,7 @@ SCHEMA_LABELS: dict[str, dict] = {
             "project_id": "プロジェクトID（評価時に選んでいた区分）",
             "topic_id": "トピックID（評価時に選んでいた区分）",
             "reason": "👎の理由（選択肢から1つ。👍の行は常に空欄）",
+            "promoted_eval_question_id": "昇格先の評価用質問ID（空欄=まだ入れていない）",
         },
     },
     "saved_questions": {

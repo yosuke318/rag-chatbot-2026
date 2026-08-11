@@ -79,6 +79,8 @@ from app.schemas import (
     EvalQuestionsResponse,
     EvalReport,
     FeedbackListResponse,
+    FeedbackPromoteRequest,
+    FeedbackPromoteResponse,
     FeedbackReasonRequest,
     FeedbackReasonResponse,
     FeedbackReasonsResponse,
@@ -1381,6 +1383,31 @@ def _unknown_reason(reason: str) -> tuple[str, str, str, str]:
     )
 
 
+def _feedback_not_found(feedback_id: int) -> tuple[str, str, str, str]:
+    """記録済みの評価を指せなかったときのエラー本文（理由の追記・昇格で共通）。"""
+    return (
+        "feedback_not_found",
+        f"フィードバックが見つかりません: {feedback_id}",
+        "👍/👎 を記録したときに返ったIDを指定してください。",
+        "",
+    )
+
+
+def _already_promoted(eval_question_id: int) -> tuple[str, str, str, str]:
+    """既に評価用質問になっている行を、もう一度昇格しようとしたときのエラー本文。
+
+    ★404 で片付けない★
+      2度押ししただけの人が、存在するIDを疑うことになる。出来ている質問のIDを
+      添えるのは、画面が「もう入っている」とその質問を指して言えるようにするため。
+    """
+    return (
+        "already_promoted",
+        "このフィードバックは既に評価用質問になっています。",
+        "同じ質問を2件登録すると、その1問だけが評価で二重に数えられます。",
+        f"eval_question_id={eval_question_id}",
+    )
+
+
 def _reason_needs_thumbs_down() -> tuple[str, str, str, str]:
     """👍に理由を付けようとしたときのエラー本文。
 
@@ -1508,7 +1535,8 @@ def list_feedback_reasons():
 def add_feedback(req: FeedbackRequest):
     """回答への 👍/👎 を記録する。
 
-    貯めたフィードバック（特に👎）は eval のQA候補に回す運用を想定。
+    貯めたフィードバック（特に👎）は、人が1件ずつ見て評価用質問に昇格させる
+    （POST /feedback/{id}/promote）。ここはその素材を残すだけ。
     外部APIを呼ばないので ANTHROPIC/VOYAGE キーは不要。
     rating は +1(👍) / -1(👎) のみ。0 や欠損は「どちらでもない」を意味してしまい
     👎として誤記録されるため、符号で丸めず 400 で弾く。
@@ -1611,13 +1639,7 @@ def update_feedback_reason(feedback_id: int, req: FeedbackReasonRequest):
         # 「見つかりません」で片付けると、後者のとき存在するIDを疑うことになる。
         if feedback.rating_of(feedback_id) is not None:
             return _error(400, *_reason_needs_thumbs_down())
-        return _error(
-            404,
-            "feedback_not_found",
-            f"フィードバックが見つかりません: {feedback_id}",
-            "👍/👎 を記録したときに返ったIDを指定してください。",
-            "",
-        )
+        return _error(404, *_feedback_not_found(feedback_id))
     return updated
 
 
@@ -1668,6 +1690,32 @@ def list_feedback(
     )
 
 
+def _invalid_eval_question(req: EvalQuestionRequest) -> tuple[str, str, str, str] | None:
+    """評価用質問として成立しない入力のエラー本文。問題なければ None。
+
+    直接登録(POST /eval-questions)と👎からの昇格で同じ検査を使う。片方だけ緩いと、
+    そちらの経路からだけ★正解ラベルの無い質問★が評価データセットに入り、引けなくて
+    当然のものを不正解として数え始める（Hit@k / MRR がその分だけ下がったまま戻らない）。
+
+    空文字を明示的に見るのは、Pydantic が "" を str として通してしまうため。
+    """
+    if not req.question.strip() or not req.expected_source.strip():
+        return (
+            "invalid_eval_question",
+            "質問と正解の文書名は必須です。",
+            "question と expected_source の両方を入力してください。",
+            "",
+        )
+    if req.expected_kind not in EXPECTED_KINDS:
+        return (
+            "invalid_eval_question",
+            f"未知の正解種別: {req.expected_kind}",
+            f"利用可能: {', '.join(EXPECTED_KINDS)}",
+            "",
+        )
+    return None
+
+
 @app.post(
     "/eval-questions",
     response_model=EvalQuestion,
@@ -1679,26 +1727,10 @@ def add_eval_question(req: EvalQuestionRequest):
     正解ラベル(expected_source)付きでDBに貯め、`python -m app.eval` がここから
     読んで Hit@k / MRR を測る。コードの定数を編集せずに質問を足せるようにするため
     のエンドポイント。外部APIは呼ばないのでキーは不要。
-
-    質問と正解の文書名は評価の必須要素なので、空文字なら400で弾く（Pydanticは
-    空文字を str として通してしまうため、ここで明示的に検査する）。
     """
-    if not req.question.strip() or not req.expected_source.strip():
-        return _error(
-            400,
-            "invalid_eval_question",
-            "質問と正解の文書名は必須です。",
-            "question と expected_source の両方を入力してください。",
-            "",
-        )
-    if req.expected_kind not in EXPECTED_KINDS:
-        return _error(
-            400,
-            "invalid_eval_question",
-            f"未知の正解種別: {req.expected_kind}",
-            f"利用可能: {', '.join(EXPECTED_KINDS)}",
-            "",
-        )
+    invalid = _invalid_eval_question(req)
+    if invalid is not None:
+        return _error(400, *invalid)
     project = _blank_to_none(req.project)
     topic = _blank_to_none(req.topic)
     # 空欄は NULL に倒す（＝文書単位で判定）。空文字のまま入れるとどのチャンクにも
@@ -1724,6 +1756,87 @@ def add_eval_question(req: EvalQuestionRequest):
         ).fetchone()[0]
     return {
         "id": new_id,
+        "question": req.question,
+        "expected_source": req.expected_source,
+        "expected_kind": req.expected_kind,
+        "expected_text": expected_text,
+        "project": project,
+        "topic": topic,
+        "note": req.note,
+    }
+
+
+@app.post(
+    "/feedback/{feedback_id}/promote",
+    response_model=FeedbackPromoteResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "入力不正"},
+        404: {"model": ErrorResponse, "description": "該当なし"},
+        409: {"model": ErrorResponse, "description": "すでに昇格済み"},
+    },
+)
+def promote_feedback(feedback_id: int, req: FeedbackPromoteRequest):
+    """この評価を評価用質問(eval_questions)に昇格し、昇格済みの印を付ける。
+
+    ★👎を貯める意味はここで完結する★
+      貯めた👎は、評価データセットに入って初めて「次に同じことが起きたら気づける」
+      に変わる。入れなければ、読んで終わり＝次の変更で同じ質問が壊れても分からない。
+      入った質問はそのまま `python -m app.eval` の対象になり、Hit@k / MRR に乗る。
+
+    ★人が1件ずつ通す口で、👎をまとめて流し込む口ではない★
+      eval_questions は expected_source NOT NULL（正解必須）の設計。そもそも文書に
+      答えが無い質問を混ぜると、引けなくて当然のものを不正解として数え続けることに
+      なり、指標そのものが読めなくなる。だから一括で昇格するAPIは用意しない。
+
+    ★中身は POST /eval-questions と同じものを受け取る★
+      画面はフィードバックの内容を初期値にするが、送られてくるのは人が直した後の値。
+      特に正解(expected_source)は「そのとき出典に挙がった文書」ではなく
+      「本当はどれを引くべきだったか」で、その2つが違うことこそ👎の中身なので、
+      サーバが元の行から埋めることはしない。
+
+    昇格済みの行にもう一度送ると 409。既に出来ている質問のIDを一緒に返すので、
+    画面はそれを指して「もう入っている」と言える（作り直しにはならない）。
+    """
+    invalid = _invalid_eval_question(req)
+    if invalid is not None:
+        return _error(400, *invalid)
+    # ★区分をマスタに書く前に、昇格できる行かを見る★
+    #   この後の scopes.register は渡された名前をマスタに作る。順番が逆だと、
+    #   存在しないIDを叩かれたときに昇格は失敗するのに区分だけが増える。
+    #   ここで弾けば、書くものが何も無い呼び出しは何も触らずに終わる。
+    exists, promoted = feedback.promotion_state(feedback_id)
+    if not exists:
+        return _error(404, *_feedback_not_found(feedback_id))
+    if promoted is not None:
+        return _error(409, *_already_promoted(promoted))
+    project = _blank_to_none(req.project)
+    topic = _blank_to_none(req.topic)
+    # 空欄は NULL に倒す（add_eval_question と同じ。空文字はどのチャンクにも
+    # 含まれるので、そのまま判定に使うと全問正解になる）。
+    expected_text = _blank_to_none(req.expected_text)
+    project_id, topic_id = scopes.register(project, topic)
+    new_id = feedback.promote(
+        feedback_id,
+        question=req.question,
+        expected_source=req.expected_source,
+        expected_kind=req.expected_kind,
+        expected_text=expected_text,
+        project_id=project_id,
+        topic_id=topic_id,
+        note=req.note,
+    )
+    if new_id is None:
+        # ★上で見た状態は、書くまでの間に変わりうる★
+        #   同時に2回押された・その間に行が消えた、が該当する。実際に昇格を
+        #   1回に抑えているのは promote 側の条件（未昇格の行だけ）なので、
+        #   ここでは0件になった理由をもう一度見て言い分けるだけ。
+        _, promoted = feedback.promotion_state(feedback_id)
+        if promoted is not None:
+            return _error(409, *_already_promoted(promoted))
+        return _error(404, *_feedback_not_found(feedback_id))
+    return {
+        "id": new_id,
+        "feedback_id": feedback_id,
         "question": req.question,
         "expected_source": req.expected_source,
         "expected_kind": req.expected_kind,
