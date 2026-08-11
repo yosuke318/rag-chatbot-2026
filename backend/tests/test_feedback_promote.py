@@ -8,6 +8,7 @@
   2. 同じフィードバックからは1件しか作れない（二重に数えられない）
   3. 昇格と印付けが不可分（評価用質問だけ増えて印が付かない、が起きない）
   4. 送られてきた値をそのまま使う（フィードバックの出典を正解に流用しない）
+  5. 昇格できない呼び出しは何も書かない（区分マスタも増やさない）
 
 DBは触らず get_conn を差し替えて発行SQLとパラメータを見る
 （test_feedback_list.py / test_feedback_reason.py と同じやり方）。
@@ -32,15 +33,20 @@ BODY = {
 }
 
 
-class FakeConn:
-    """昇格SQLの RETURNING に行を返す偽コネクション。
+# 昇格が通るときのSQLの並び。行の状態を見てから書く。
+#   1回目 … 昇格できる行か（app.feedback.promotion_state）。(None,)=行はある・未昇格
+#   2回目 … 昇格そのもの（登録＋印付けの1文）。返るのは出来た質問のID
+PROMOTABLE = ((None,), (42,))
 
-    rows は execute の呼ばれた順に返す。昇格が0件だったときだけ
-    「もう昇格済みか」を引き直す（app.feedback.promoted_of）ので、
-    1回目と2回目で違う答えを返せるようにしてある。
+
+class FakeConn:
+    """発行SQLを記録し、rows を execute の呼ばれた順に返す偽コネクション。
+
+    行の状態を見る SELECT と昇格の1文を撃ち分けるので、呼び出しごとに違う答えを
+    返せるようにしてある（rows を撃ち切った後は None＝該当なし）。
     """
 
-    def __init__(self, calls: list, rows=((42,),)):
+    def __init__(self, calls: list, rows=PROMOTABLE):
         self.calls = calls
         self.rows = list(rows)
 
@@ -66,13 +72,29 @@ def client():
             yield c
 
 
-def _promote(client, body: dict, feedback_id: int = 3, rows=((42,),)):
-    """区分のマスタ登録は別の関心事なので固定idを返す（test_saved_questions と同じ）。"""
+def _promote(client, body: dict, feedback_id: int = 3, rows=PROMOTABLE):
+    """区分のマスタ登録は別の関心事なので固定idを返す（test_saved_questions と同じ）。
+
+    呼ばれたかどうかは見たいので、素の lambda ではなく記録する偽物を渡す
+    （昇格できない呼び出しでマスタを増やさないことを確かめるため）。
+    """
     calls: list = []
+    registered: list = []
+
+    def fake_register(project, topic):
+        registered.append((project, topic))
+        return (7, 8)
+
     with patch.object(feedback, "get_conn", FakeConn(calls, rows)):
-        with patch.object(main_module.scopes, "register", lambda p, t: (7, 8)):
+        with patch.object(main_module.scopes, "register", fake_register):
             res = client.post(f"/feedback/{feedback_id}/promote", json=body)
+    res.registered = registered  # type: ignore[attr-defined]
     return res, calls
+
+
+def _promote_sql(calls: list) -> tuple[str, list]:
+    """昇格そのものの1文（状態を見る SELECT ではない方）。"""
+    return next(c for c in calls if "INSERT INTO eval_questions" in c[0])
 
 
 # --- 正常系 -------------------------------------------------------------------
@@ -88,10 +110,11 @@ def test_promote_creates_the_eval_question_and_marks_the_feedback(client):
     res, calls = _promote(client, BODY)
 
     assert res.status_code == 200, res.text
-    assert len(calls) == 1, "昇格は1文（登録と印付けを分けない）"
-    sql, params = calls[0]
-    assert "INSERT INTO eval_questions" in sql
+    sql, params = _promote_sql(calls)
     assert "UPDATE feedback" in sql and "promoted_eval_question_id" in sql
+    # 登録と印付けが同じ1文に入っていること（分かれていれば別のSQLになる）
+    assert sum("INSERT INTO eval_questions" in c[0] for c in calls) == 1
+    assert sum("UPDATE feedback" in c[0] for c in calls) == 1
     # 印を付ける相手は「未昇格の行」だけ。ここが抜けると二重に昇格できる。
     assert "promoted_eval_question_id IS NULL" in sql
     assert params[0] == 3  # 昇格元のフィードバックID
@@ -120,7 +143,7 @@ def test_promote_stores_the_scope_as_master_ids(client):
     """区分は名前ではなくマスタの id で入ること（他の書き込み側と同じ）。"""
     _, calls = _promote(client, {**BODY, "project": "社内規程", "topic": "労務"})
 
-    _, params = calls[0]
+    _, params = _promote_sql(calls)
     assert params[1] == 7 and params[2] == 8
 
 
@@ -136,7 +159,7 @@ def test_promote_keeps_chunk_level_labels(client):
         {**BODY, "expected_kind": "image", "expected_text": "1日2時間を超える場合"},
     )
 
-    _, params = calls[0]
+    _, params = _promote_sql(calls)
     assert "image" in params and "1日2時間を超える場合" in params
     assert res.json()["expected_kind"] == "image"
 
@@ -188,21 +211,63 @@ def test_second_promotion_is_refused_and_points_at_the_existing_question(client)
       2度押ししただけの人が、存在するIDを疑うことになる。同じ👎から2件作ると、
       その1問だけが評価データセットで二重に数えられる。
     """
-    # 1回目（昇格SQL）は0件、2回目（引き直し）で昇格済みのIDが返る
-    res, calls = _promote(client, BODY, rows=(None, (55,)))
+    res, calls = _promote(client, BODY, rows=((55,),))
 
     assert res.status_code == 409
     assert res.json()["error"] == "already_promoted"
     assert "55" in res.json()["detail"]
-    assert len(calls) == 2
+    # 状態を見た時点で分かるので、書き込みには進まない
+    assert len(calls) == 1
 
 
 def test_promoting_a_missing_feedback_is_404(client):
     """行が無いときは404（昇格済みと区別する）。"""
-    res, _ = _promote(client, BODY, rows=(None, None))
+    res, calls = _promote(client, BODY, rows=(None,))
 
     assert res.status_code == 404
     assert res.json()["error"] == "feedback_not_found"
+    assert len(calls) == 1
+
+
+def test_a_promotion_that_loses_a_race_is_still_refused(client):
+    """状態を見た後に他から昇格されても、二重にはならず 409 になること。
+
+    ★事前の確認は書き込みを止める役ではない★
+      1回に抑えているのは昇格SQLの条件（未昇格の行だけ）。事前の確認は、
+      書くものが無い呼び出しでマスタを触らせないためのもので、見てから書くまでの
+      間に状態が変わる余地は残る。そこを通り抜けても結論が変わらないことを固定する。
+    """
+    # 見たときは未昇格 → 昇格SQLは0件（他が先に入れた）→ 引き直すと昇格済み
+    res, calls = _promote(client, BODY, rows=((None,), None, (55,)))
+
+    assert res.status_code == 409
+    assert "55" in res.json()["detail"]
+    assert len(calls) == 3
+
+
+def test_a_failed_promotion_does_not_create_scopes(client):
+    """昇格できない呼び出しで区分マスタを増やさないこと。
+
+    ★scopes.register は渡された名前を作る★
+      順番を逆にすると、存在しないIDを叩かれただけで区分が増える（昇格は失敗
+      するのに、選択肢にだけ知らない名前が残る）。
+    """
+    res, _ = _promote(
+        client,
+        {**BODY, "project": "打ち間違えた区分", "topic": "労務"},
+        rows=(None,),
+    )
+
+    assert res.status_code == 404
+    assert res.registered == [], "書くものが無い呼び出しではマスタを触らない"
+
+
+def test_a_successful_promotion_registers_the_scope(client):
+    """通る呼び出しでは今までどおりマスタへ写すこと（確認を足して壊していない）。"""
+    res, _ = _promote(client, {**BODY, "project": "社内規程", "topic": "労務"})
+
+    assert res.status_code == 200
+    assert res.registered == [("社内規程", "労務")]
 
 
 def test_promotion_does_not_reuse_the_feedbacks_own_sources(client):
@@ -214,7 +279,7 @@ def test_promotion_does_not_reuse_the_feedbacks_own_sources(client):
     """
     _, calls = _promote(client, {**BODY, "expected_source": "有給休暇.txt"})
 
-    sql, params = calls[0]
+    sql, params = _promote_sql(calls)
     assert "有給休暇.txt" in params
     # 元の行から値を読み出すSELECTは撃たない（1文に閉じている）
     assert "SELECT f.sources" not in sql

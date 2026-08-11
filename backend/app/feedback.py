@@ -290,7 +290,7 @@ def promote(
     """この👎を評価用質問(eval_questions)として登録し、昇格済みの印を付ける。
 
     作った質問のIDを返す。既に昇格済み、または行が無ければ None
-    （どちらだったかは promoted_of で分ける。呼ぶのは失敗した後だけ）。
+    （どちらだったかは promotion_state で分ける）。
 
     ★機械的に流し込む口ではない★
       ここに渡す正解(expected_source)は人が選び直したもの。eval_questions は
@@ -336,19 +336,27 @@ def promote(
     return None if row is None else row[0]
 
 
-def promoted_of(feedback_id: int) -> int | None:
-    """昇格済みなら、その評価用質問のID。未昇格・行なしは None。
+def promotion_state(feedback_id: int) -> tuple[bool, int | None]:
+    """(行があるか, 昇格先の評価用質問ID)。行なしは (False, None)、未昇格は (True, None)。
 
-    promote が0件だったときに「もう昇格されている」のか「そんな行は無い」のかを
-    分けるために使う（rating_of と同じ役回りで、呼ぶのは失敗した後だけ）。
-    既に作られている質問のIDを返せると、画面が「どれになったか」を指せる。
+    昇格の前後どちらでも使う:
+
+    ★前★ 書き込みに入る前に弾くため
+      昇格は先に区分をマスタへ登録する（scopes.register は渡された名前を作る）。
+      存在しないIDを叩かれたときに順番が逆だと、昇格は失敗するのに区分だけが
+      増える。ここで見ておけば、書くものが何も無い呼び出しは何も触らずに終わる。
+
+    ★後★ promote が0件だった理由を言い分けるため
+      「行が無い」のか「もう昇格済み」なのかで返すべき答えが違う。まとめて
+      404 にすると、2度押ししただけの人が存在するIDを疑うことになる。
+      既にある質問のIDを返せると、画面が「どれになったか」を指せる。
     """
     with get_conn() as conn:
         row = conn.execute(
             "SELECT promoted_eval_question_id FROM feedback WHERE id = %s",
             (feedback_id,),
         ).fetchone()
-    return None if row is None else row[0]
+    return (False, None) if row is None else (True, row[0])
 
 
 def rating_of(feedback_id: int) -> int | None:

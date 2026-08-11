@@ -1383,6 +1383,31 @@ def _unknown_reason(reason: str) -> tuple[str, str, str, str]:
     )
 
 
+def _feedback_not_found(feedback_id: int) -> tuple[str, str, str, str]:
+    """記録済みの評価を指せなかったときのエラー本文（理由の追記・昇格で共通）。"""
+    return (
+        "feedback_not_found",
+        f"フィードバックが見つかりません: {feedback_id}",
+        "👍/👎 を記録したときに返ったIDを指定してください。",
+        "",
+    )
+
+
+def _already_promoted(eval_question_id: int) -> tuple[str, str, str, str]:
+    """既に評価用質問になっている行を、もう一度昇格しようとしたときのエラー本文。
+
+    ★404 で片付けない★
+      2度押ししただけの人が、存在するIDを疑うことになる。出来ている質問のIDを
+      添えるのは、画面が「もう入っている」とその質問を指して言えるようにするため。
+    """
+    return (
+        "already_promoted",
+        "このフィードバックは既に評価用質問になっています。",
+        "同じ質問を2件登録すると、その1問だけが評価で二重に数えられます。",
+        f"eval_question_id={eval_question_id}",
+    )
+
+
 def _reason_needs_thumbs_down() -> tuple[str, str, str, str]:
     """👍に理由を付けようとしたときのエラー本文。
 
@@ -1614,13 +1639,7 @@ def update_feedback_reason(feedback_id: int, req: FeedbackReasonRequest):
         # 「見つかりません」で片付けると、後者のとき存在するIDを疑うことになる。
         if feedback.rating_of(feedback_id) is not None:
             return _error(400, *_reason_needs_thumbs_down())
-        return _error(
-            404,
-            "feedback_not_found",
-            f"フィードバックが見つかりません: {feedback_id}",
-            "👍/👎 を記録したときに返ったIDを指定してください。",
-            "",
-        )
+        return _error(404, *_feedback_not_found(feedback_id))
     return updated
 
 
@@ -1781,6 +1800,15 @@ def promote_feedback(feedback_id: int, req: FeedbackPromoteRequest):
     invalid = _invalid_eval_question(req)
     if invalid is not None:
         return _error(400, *invalid)
+    # ★区分をマスタに書く前に、昇格できる行かを見る★
+    #   この後の scopes.register は渡された名前をマスタに作る。順番が逆だと、
+    #   存在しないIDを叩かれたときに昇格は失敗するのに区分だけが増える。
+    #   ここで弾けば、書くものが何も無い呼び出しは何も触らずに終わる。
+    exists, promoted = feedback.promotion_state(feedback_id)
+    if not exists:
+        return _error(404, *_feedback_not_found(feedback_id))
+    if promoted is not None:
+        return _error(409, *_already_promoted(promoted))
     project = _blank_to_none(req.project)
     topic = _blank_to_none(req.topic)
     # 空欄は NULL に倒す（add_eval_question と同じ。空文字はどのチャンクにも
@@ -1798,24 +1826,14 @@ def promote_feedback(feedback_id: int, req: FeedbackPromoteRequest):
         note=req.note,
     )
     if new_id is None:
-        # 0件の理由は2つ。行が無いのか、既に昇格済みなのか。同じ404で片付けると、
-        # 2度押ししただけの人が存在するIDを疑うことになる。
-        promoted = feedback.promoted_of(feedback_id)
+        # ★上で見た状態は、書くまでの間に変わりうる★
+        #   同時に2回押された・その間に行が消えた、が該当する。実際に昇格を
+        #   1回に抑えているのは promote 側の条件（未昇格の行だけ）なので、
+        #   ここでは0件になった理由をもう一度見て言い分けるだけ。
+        _, promoted = feedback.promotion_state(feedback_id)
         if promoted is not None:
-            return _error(
-                409,
-                "already_promoted",
-                "このフィードバックは既に評価用質問になっています。",
-                "同じ質問を2件登録すると、その1問だけが評価で二重に数えられます。",
-                f"eval_question_id={promoted}",
-            )
-        return _error(
-            404,
-            "feedback_not_found",
-            f"フィードバックが見つかりません: {feedback_id}",
-            "👍/👎 を記録したときに返ったIDを指定してください。",
-            "",
-        )
+            return _error(409, *_already_promoted(promoted))
+        return _error(404, *_feedback_not_found(feedback_id))
     return {
         "id": new_id,
         "feedback_id": feedback_id,

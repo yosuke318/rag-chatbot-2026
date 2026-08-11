@@ -1245,54 +1245,47 @@ function PromoteModal({
   onClose,
   onPromoted,
 }: {
-  /** 昇格しようとしている👎（null=閉じている）。 */
-  row: FeedbackRow | null;
+  /** 昇格しようとしている👎。★開いている間だけマウントされる★
+   *
+   * 閉じている間も置いておくと、その状態の区分（空＝すべて）で GET /documents を
+   * 引きに行く。誰も見ていない候補のために撃つことになるので、呼び出し側で
+   * 出し分ける。開くたびに作り直されるので、前に開いた行の入力も残らない
+   * （残ると、別の👎に前の質問文を正解付きで登録してしまう）。 */
+  row: FeedbackRow;
   scopeVersion: number;
   onClose: () => void;
   onPromoted: (feedbackId: number, evalQuestionId: number) => void;
 }) {
-  const [question, setQuestion] = useState("");
+  const [question, setQuestion] = useState(row.question);
+  // ★正解は初期選択しない★
+  //   出典に挙がった文書が正しければ👎は付いていない可能性が高い。既定で
+  //   選んでおくと、そのまま押されて「間違った文書」が正解ラベルとして固定される。
   const [expected, setExpected] = useState("");
   const [kind, setKind] = useState<string>("any");
   const [expectedText, setExpectedText] = useState("");
-  const [note, setNote] = useState("");
+  // 何を見て作った質問かを残す。後から eval_questions を読むとき、この1行が
+  // 無いと「なぜこの質問が入っているのか」を辿れない。
+  const [note, setNote] = useState(() =>
+    [
+      "👎から昇格",
+      row.reason ? `理由: ${row.reason}` : "",
+      row.comment ? `補足: ${row.comment}` : "",
+    ]
+      .filter(Boolean)
+      .join(" / "),
+  );
   const [status, setStatus] = useState("");
   const [saving, setSaving] = useState(false);
 
   // 正解の候補は★その👎を聞いた区分★で絞る。評価は同じ区分の文書だけを検索
   // するので、区分をまたいだ組み合わせを正解にすると永久に不正解になる
   //（③「質問を追加」の候補と同じ規則）。
-  const docs = useDocuments(row?.project ?? "", row?.topic ?? "", scopeVersion);
-
-  // 開くたびにフィードバックの内容で埋め直す。前に開いた行の入力が残ると、
-  // 別の👎に前の質問文を正解付きで登録してしまう。
-  useEffect(() => {
-    if (!row) return;
-    setQuestion(row.question);
-    // ★正解は初期選択しない★
-    //   出典に挙がった文書が正しければ👎は付いていない可能性が高い。既定で
-    //   選んでおくと、そのまま押されて「間違った文書」が正解ラベルとして固定される。
-    setExpected("");
-    setKind("any");
-    setExpectedText("");
-    // 何を見て作った質問かを残す。後から eval_questions を読むとき、この1行が
-    // 無いと「なぜこの質問が入っているのか」を辿れない。
-    setNote(
-      [
-        "👎から昇格",
-        row.reason ? `理由: ${row.reason}` : "",
-        row.comment ? `補足: ${row.comment}` : "",
-      ]
-        .filter(Boolean)
-        .join(" / "),
-    );
-    setStatus("");
-  }, [row]);
+  const docs = useDocuments(row.project ?? "", row.topic ?? "", scopeVersion);
 
   // そのとき出典に挙がった文書のうち、今も引けるものだけを候補にする。
   // 消された文書を正解に指定できると、その設問は何をやっても不正解になる。
-  const cited = (docs ?? []).filter((d) => row?.sources.includes(d));
-  const gone = (row?.sources ?? []).filter((s) => docs !== null && !docs.includes(s));
+  const cited = (docs ?? []).filter((d) => row.sources.includes(d));
+  const gone = row.sources.filter((s) => docs !== null && !docs.includes(s));
   const others = (docs ?? []).filter((d) => !cited.includes(d));
   const options: { label: string; options: { value: string; label: string }[] }[] = [];
   if (cited.length > 0) {
@@ -1303,7 +1296,7 @@ function PromoteModal({
   }
 
   async function submit() {
-    if (!row || saving) return;
+    if (saving) return;
     setSaving(true);
     setStatus("");
     try {
@@ -1339,7 +1332,7 @@ function PromoteModal({
 
   return (
     <Modal
-      open={row !== null}
+      open
       onCancel={onClose}
       onOk={submit}
       okText="評価用質問として登録"
@@ -1395,7 +1388,7 @@ function PromoteModal({
         ★出典に挙がった文書が正解とは限らない★
         違う文書を引くべきだったことこそ👎の中身なので、
         <strong>選び直す前提</strong>で候補として並べてある。 区分（
-        {row?.project ?? "なし"} / {row?.topic ?? "なし"}）は聞いたときのまま。
+        {row.project ?? "なし"} / {row.topic ?? "なし"}）は聞いたときのまま。
         {gone.length > 0 && (
           <>
             <br />
@@ -1753,31 +1746,40 @@ function FeedbackPanel({
                     {/* ★調べた結果を残す唯一の出口★
                         ここを通さない限り、👎は読んで終わり＝次の変更で同じ
                         質問が壊れても誰も気づけない。入れた質問は以後の
-                        Hit@k / MRR に毎回乗る。 */}
-                    <div className="fb-promote">
-                      {row.promoted_eval_question_id === null ? (
-                        <>
-                          <button
-                            type="button"
-                            className="fb-promote-button"
-                            onClick={() => setPromoting(row)}
-                          >
-                            評価用質問として登録
-                          </button>
+                        Hit@k / MRR に毎回乗る。
+
+                        ★昇格の入口を出すのは👎の行だけ★
+                          この一覧は👍にも切り替えられる。ダイアログもここの
+                          説明も「何が駄目だったか」を前提にした文言なので、
+                          👍の行に出すと、押した先で言っていることと対象が
+                          食い違う。既に昇格済みの行の印は評価によらず出す。 */}
+                    {(row.rating === -1 ||
+                      row.promoted_eval_question_id !== null) && (
+                      <div className="fb-promote">
+                        {row.promoted_eval_question_id === null ? (
+                          <>
+                            <button
+                              type="button"
+                              className="fb-promote-button"
+                              onClick={() => setPromoting(row)}
+                            >
+                              評価用質問として登録
+                            </button>
+                            <span className="hint">
+                              下の根拠を見て
+                              <strong>「文書に答えはあるのに引けていない／答えが違う」</strong>
+                              なら、評価データセットに入れて以後の回帰テストに乗せる。
+                              <strong>そもそも文書に答えが無い</strong>ものは入れない。
+                            </span>
+                          </>
+                        ) : (
                           <span className="hint">
-                            下の根拠を見て
-                            <strong>「文書に答えはあるのに引けていない／答えが違う」</strong>
-                            なら、評価データセットに入れて以後の回帰テストに乗せる。
-                            <strong>そもそも文書に答えが無い</strong>ものは入れない。
+                            評価用質問 #{row.promoted_eval_question_id}{" "}
+                            として登録済み（③「質問集を評価」の採点対象に入っている）。
                           </span>
-                        </>
-                      ) : (
-                        <span className="hint">
-                          評価用質問 #{row.promoted_eval_question_id}{" "}
-                          として登録済み（③「質問集を評価」の採点対象に入っている）。
-                        </span>
-                      )}
-                    </div>
+                        )}
+                      </div>
+                    )}
                     <FeedbackDetail row={row} />
                   </div>
                 )}
@@ -1787,12 +1789,17 @@ function FeedbackPanel({
         </>
       )}
 
-      <PromoteModal
-        row={promoting}
-        scopeVersion={scopeVersion}
-        onClose={() => setPromoting(null)}
-        onPromoted={markPromoted}
-      />
+      {/* ★開くときに初めてマウントする★
+          置きっぱなしにすると、閉じている間も候補の文書を取りに行く。
+          開くたびに作り直されるので、前に開いた行の入力も持ち越さない。 */}
+      {promoting && (
+        <PromoteModal
+          row={promoting}
+          scopeVersion={scopeVersion}
+          onClose={() => setPromoting(null)}
+          onPromoted={markPromoted}
+        />
+      )}
     </div>
   );
 }
