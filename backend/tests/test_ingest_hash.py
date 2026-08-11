@@ -303,7 +303,7 @@ def test_skip_respects_store_original_false(monkeypatch, calls):
     assert calls["save_text"] == 0
 
 
-# --- 文書内画像（5-1）の受け渡し ---------------------------------------
+# --- 文書内画像の受け渡し ---------------------------------------
 
 
 def _record_store_images(monkeypatch):

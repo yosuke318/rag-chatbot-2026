@@ -59,13 +59,59 @@ class PublicChatRequest(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    """回答への 👍/👎。評価(eval)のQA候補として貯める。"""
+    """回答への 👍/👎。評価(eval)のQA候補として貯める。
+
+    ★文脈（下半分）はすべて任意★
+      送らなくても 200 で通り、DBには NULL（chunk_ids は空配列）が入る。
+      この機能より前のクライアントからのリクエストを壊さないため。
+      値は /chat・/chat/stream が返した meta / done をそのまま返せばよい
+      （利用者に見えない設定値なので、クライアント側で組み立てるものではない）。
+    """
 
     question: str = Field(description="評価対象の質問")
     answer: str = Field(description="評価対象の回答")
     rating: int = Field(description="+1 = 👍 / -1 = 👎")
     sources: List[str] = Field(default_factory=list, description="回答の根拠に使った出典")
-    comment: Optional[str] = Field(default=None, description="自由記述（任意）")
+    reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "👎の理由（GET /feedback/reasons の選択肢から1つ。任意）。"
+            "★rating=-1 のときだけ★ 👍に付けると400"
+        ),
+    )
+    comment: Optional[str] = Field(
+        default=None, description="自由記述（任意）。👍/👎 どちらにも付けられる"
+    )
+    conversation_id: Optional[int] = Field(
+        default=None, description="この回答が属する会話のID（任意）"
+    )
+    message_id: Optional[int] = Field(
+        default=None, description="評価対象の回答そのもののID（任意）"
+    )
+    retriever: Optional[str] = Field(
+        default=None, description='使った検索手法。複数はカンマ区切り（例 "vector,trgm"）'
+    )
+    top_k: Optional[int] = Field(
+        default=None, description="回答生成に渡したチャンク数（任意）"
+    )
+    reranked: Optional[bool] = Field(
+        default=None, description="リランカーを通したか（任意）"
+    )
+    chunk_ids: List[int] = Field(
+        default_factory=list,
+        description="回答生成に渡したチャンクID。★並びがそのまま順位★（先頭が1位）",
+    )
+    latency_ms: Optional[int] = Field(
+        default=None, description="検索から回答完成までにかかった時間（ミリ秒・任意）"
+    )
+    # 区分は他の文脈と違い★クライアントが知っている値★（利用者が選んで質問した）。
+    # サーバは /chat の応答に区分を載せないので、ここは送り返しではなく指定になる。
+    project: Optional[str] = Field(
+        default=None, description="評価時に選んでいたプロジェクト（任意）"
+    )
+    topic: Optional[str] = Field(
+        default=None, description="評価時に選んでいたトピック（任意）"
+    )
 
 
 class SavedQuestionRequest(BaseModel):
@@ -387,7 +433,7 @@ class Citation(BaseModel):
     )
     # 以下2つは画像チャンクのときだけ値が入る（テキストチャンクは null）。
     # 回答生成に渡したのと同じ1枚を利用者にも見せ、図表を根拠にした回答を
-    # 自分の目で検証できるようにするためのもの（5-3）。
+    # 自分の目で検証できるようにするためのもの。
     image_url: Optional[str] = Field(
         default=None,
         description="根拠が文書内の図表のとき、その画像を開くURL。null=画像ではない",
@@ -398,6 +444,23 @@ class Citation(BaseModel):
     )
 
 
+class RetrievalMeta(BaseModel):
+    """この回答を作るのに実際に使った検索の条件。
+
+    ★利用者が選べない値なので、サーバが返す★
+      /chat は検索手法・top_k・リランカーをリクエストで受け取らず、設定の既定で
+      動く（②の検索パネルと違うところ）。つまりクライアントはこの値を知らない。
+      フィードバックに条件を残すには、使った側＝サーバが返すしかない。
+
+    チャンクIDはここに持たない。citations[] が同じ並び（＝順位）で chunk_id を
+    持っており、二重に載せると片方だけ直したときに食い違うため。
+    """
+
+    retriever: str = Field(description='使った検索手法。カンマ区切り（例 "vector,trgm"）')
+    top_k: int = Field(description="回答生成に渡したチャンク数の上限")
+    reranked: bool = Field(description="リランカーを通したか")
+
+
 class ChatResponse(BaseModel):
     answer: str = Field(
         description="回答本文。各文の末尾に根拠を指す引用マーカー [n] が付く"
@@ -405,16 +468,208 @@ class ChatResponse(BaseModel):
     conversation_id: int = Field(
         description="この発言が属する会話のID。次の質問にこれを渡すと履歴が効く"
     )
+    message_id: int = Field(
+        description="この回答そのもののID（messages.id）。フィードバックの宛先になる"
+    )
     sources: List[str] = Field(description="根拠に使ったチャンクの出典（重複排除済み）")
     citations: List[Citation] = Field(
         default_factory=list,
         description="回答の根拠に使ったチャンク（[n] の n はこの並びの1始まりの位置）",
+    )
+    retrieval: RetrievalMeta = Field(
+        description="この回答を作った検索の条件（フィードバックにそのまま添えられる）"
+    )
+    latency_ms: int = Field(
+        description="検索から回答完成までにかかった時間（ミリ秒）"
     )
 
 
 class FeedbackResponse(BaseModel):
     id: int = Field(description="保存したフィードバックのID")
     rating: int = Field(description="記録した評価（+1 / -1）")
+
+
+class FeedbackItem(BaseModel):
+    """記録済みの 👍/👎 1件。
+
+    ★文脈（conversation_id 以降）は null がありうる★
+      条件を記録する前に付いた評価と、条件を送らないクライアントからの評価が
+      該当する。「記録していなかった」を 0 や "" で埋めると「そう記録された」と
+      読めてしまうので、そのまま null で返す。
+    """
+
+    id: int
+    question: str
+    answer: str
+    sources: List[str] = Field(description="回答の根拠に使った出典")
+    rating: int = Field(description="+1 = 👍 / -1 = 👎")
+    reason: Optional[str] = Field(
+        default=None,
+        description="👎の理由（null=選ばなかった。👍の行では常に null）",
+    )
+    comment: Optional[str] = Field(default=None, description="自由記述（null=未入力）")
+    # feedback.created_at は NOT NULL ではない（DEFAULT now() だけ）ので、
+    # 直接 INSERT された行では null がありうる。
+    created_at: Optional[datetime] = Field(default=None, description="登録日時")
+    project: Optional[str] = Field(
+        default=None, description="評価時に選んでいたプロジェクト（null=区分なし）"
+    )
+    topic: Optional[str] = Field(
+        default=None, description="評価時に選んでいたトピック（null=区分なし）"
+    )
+    conversation_id: Optional[int] = Field(
+        default=None, description="この回答が属する会話のID（null=未記録）"
+    )
+    message_id: Optional[int] = Field(
+        default=None, description="評価対象の回答そのもののID（null=未記録）"
+    )
+    retriever: Optional[str] = Field(
+        default=None, description="使った検索手法。カンマ区切り（null=未記録）"
+    )
+    top_k: Optional[int] = Field(
+        default=None, description="回答生成に渡したチャンク数（null=未記録）"
+    )
+    reranked: Optional[bool] = Field(
+        default=None, description="リランカーを通したか（null=未記録）"
+    )
+    chunk_ids: List[int] = Field(
+        default_factory=list,
+        description="回答生成に渡したチャンクID。★並びがそのまま順位★（先頭が1位）",
+    )
+    latency_ms: Optional[int] = Field(
+        default=None, description="回答までにかかった時間（ミリ秒・null=未記録）"
+    )
+
+
+class FeedbackListResponse(BaseModel):
+    """フィードバック一覧。ページ送りは offset で行う。
+
+    total は★絞り込んだ後の総件数★（返した件数ではない）。これが無いと
+    「次のページがあるか」も「今どこを見ているか」も画面に出せない。
+    """
+
+    total: int = Field(description="条件に合う総件数（このページの件数ではない）")
+    limit: int = Field(description="実際に使われた取得件数の上限（上限超過は丸められる）")
+    offset: int = Field(description="読み飛ばした件数")
+    feedback: List[FeedbackItem] = Field(description="新しい順")
+
+
+class FeedbackRate(BaseModel):
+    """ある切り口での👎率。件数を一緒に持つのは、分母が小さいと率が跳ねるため。"""
+
+    total: int = Field(description="評価の総数（👍＋👎）")
+    down: int = Field(description="👎の数")
+    down_rate: Optional[float] = Field(
+        default=None,
+        description="👎率（0〜1）。null=まだ評価が1件も無い（0.0 とは別）",
+    )
+
+
+class FeedbackScopeRate(FeedbackRate):
+    """区分ごとの👎率。★見るのは全体ではなくここの偏り★"""
+
+    project: Optional[str] = Field(default=None, description="null=区分なし")
+    topic: Optional[str] = Field(default=None, description="null=区分なし")
+
+
+class FeedbackPeriodRate(FeedbackRate):
+    """時系列の1点。刻み(bucket)の開始時刻を period に入れる。"""
+
+    period: datetime = Field(description="この刻みの開始時刻")
+
+
+class FeedbackReasonCount(BaseModel):
+    """👎の理由の内訳。理由を選ばなかった👎は reason=null の行になる。"""
+
+    reason: Optional[str] = Field(default=None, description="null=理由を選ばなかった")
+    count: int
+
+
+class FeedbackStatsResponse(FeedbackRate):
+    """👎率の集計。全体の値より、区分別・時系列の偏りを見るためのもの。"""
+
+    bucket: str = Field(description="時系列の刻み（day / week / month）")
+    by_scope: List[FeedbackScopeRate] = Field(description="👎率の高い順")
+    by_period: List[FeedbackPeriodRate] = Field(
+        description="古い順。登録日時を持たない古い行は含まない"
+    )
+    by_reason: List[FeedbackReasonCount] = Field(description="多い順")
+
+
+class ChunkDetail(BaseModel):
+    """チャンク1件の中身。👎のときに渡していたものを後から読むためのもの。"""
+
+    id: int
+    source: str = Field(description="この文書から切り出したチャンク")
+    chunk_index: int = Field(description="文書内の連番")
+    content: str
+    context: Optional[str] = Field(
+        default=None, description="文書内での位置づけ（null=付けていない）"
+    )
+    image_path: Optional[str] = Field(
+        default=None, description="画像チャンクの保管キー（null=本文チャンク）"
+    )
+
+
+class ChunksResponse(BaseModel):
+    """指定したIDのチャンク。★渡した並びのまま★返す（見つからないIDは含まない）。"""
+
+    chunks: List[ChunkDetail]
+
+
+class ConversationMessage(BaseModel):
+    """会話の発言1件。"""
+
+    id: int
+    role: str = Field(description="user / assistant")
+    content: str
+    sources: List[str] = Field(description="回答の根拠に使った出典（質問側は空）")
+    created_at: Optional[datetime] = Field(default=None, description="発言日時")
+
+
+class ConversationResponse(BaseModel):
+    """会話1件の全文（古い順）。生成に載せる直近N件とは別で、人が読むためのもの。"""
+
+    conversation_id: int
+    messages: List[ConversationMessage]
+
+
+class FeedbackReasonRequest(BaseModel):
+    """記録済みの👎に後から足す理由。どちらも任意だが、両方 null なら 400。
+
+    ★評価そのものは書き換えられない★
+      👍/👎 を後から反転できると、同じ行が「いつの時点の評価か」を失う。
+      評価を変えたいときは押し直し（新しい行）で表現する。
+    """
+
+    reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "GET /feedback/reasons の選択肢から1つ（null=変更しない）。"
+            "★足せるのは👎の行だけ★ 👍の行に付けると400"
+        ),
+    )
+    comment: Optional[str] = Field(
+        default=None,
+        description=(
+            "自由記述（null=変更しない。空文字で消せる）。👍の行にも足せる"
+        ),
+    )
+
+
+class FeedbackReasonResponse(BaseModel):
+    """理由を足した後のフィードバック。触らなかった項目も含めて今の値を返す。"""
+
+    id: int = Field(description="更新したフィードバックのID")
+    rating: int = Field(description="記録済みの評価（+1 / -1。ここでは変わらない）")
+    reason: Optional[str] = Field(default=None, description="👎の理由（null=未選択）")
+    comment: Optional[str] = Field(default=None, description="自由記述（null=未入力）")
+
+
+class FeedbackReasonsResponse(BaseModel):
+    """👎の理由の選択肢。UIのボタンはこれを並べる（画面に文言を焼かない）。"""
+
+    reasons: List[str] = Field(description="選べる理由。この並びで表示する想定")
 
 
 class EvalQuestion(BaseModel):
@@ -513,7 +768,7 @@ class EvalResult(BaseModel):
 
 
 class ChartReadRequest(BaseModel):
-    """チャート読解のリクエスト（5-4）。売買判断は返さない。"""
+    """チャート読解のリクエスト。売買判断は返さない。"""
 
     question: str = Field(description="チャートについて知りたいこと")
     project: Optional[str] = Field(default=None, description="プロジェクト（未指定は全体）")

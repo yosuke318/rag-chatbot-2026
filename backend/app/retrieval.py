@@ -6,7 +6,7 @@
   3. RRF で 2つのランキングを融合 → 上位 TOP_K 件 -> reciprocal_rank_fusion と _rrf_scores
   4. リランク で最終並べ替え -> rerank_candidates（USE_RERANK 有効時のみ）
 
-文書内の図表（5-2）は取り込み方で当たり方が変わる:
+文書内の図表は取り込み方で当たり方が変わる:
   - 案A（自動キャプション）… 画像の説明文が普通のチャンクとして入るので、上の
     1〜3 がそのまま効く。専用の手法は要らない。
   - 案B（マルチモーダル埋め込み）… 画像は別の空間のベクトルなので、専用の
@@ -132,6 +132,36 @@ def vector_search(
         }
         for r in rows
     ]
+
+
+def by_ids(ids: list[int]) -> list[dict]:
+    """チャンクをIDで引く。★渡した並びのまま★返す（見つからないIDは飛ばす）。
+
+    フィードバックに残した chunk_ids は「回答生成に渡した順＝順位」なので、
+    DBが返す順（＝ id 順）に並べ替えてしまうと、記録した意味が消える。
+    並べ直しはSQLに任せず、ここで元の並びに戻す。
+    """
+    if not ids:
+        return []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.content, d.source, c.chunk_index, c.image_path, c.context "
+            "FROM chunks c JOIN documents d ON d.id = c.document_id "
+            "WHERE c.id = ANY(%s)",
+            (ids,),
+        ).fetchall()
+    found = {
+        r[0]: {
+            "id": r[0],
+            "content": r[1],
+            "source": r[2],
+            "chunk_index": r[3],
+            "image_path": r[4],
+            "context": r[5],
+        }
+        for r in rows
+    }
+    return [found[i] for i in ids if i in found]
 
 
 def image_search(

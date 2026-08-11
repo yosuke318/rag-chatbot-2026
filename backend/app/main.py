@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import time
 import urllib.parse
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
 import anthropic
@@ -13,14 +15,25 @@ import voyageai.error
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from app import apikeys, charts, conversations, saved_questions, scopes, storage
+from app import (
+    apikeys,
+    charts,
+    conversations,
+    feedback,
+    retrieval,
+    saved_questions,
+    scopes,
+    storage,
+)
 from app.config import (
     ADMIN_TOKEN,
     ANSWER_IMAGE_MAX_BYTES,
     ANSWER_MAX_IMAGES,
     IMAGE_INDEX_METHOD,
     RETRIEVERS_DEFAULT,
+    TOP_K,
     UPLOAD_MAX_BYTES,
+    USE_RERANK,
 )
 from app.conversations import UnknownConversation
 from app.db import get_conn, init_db
@@ -46,6 +59,7 @@ from app.retrieval import (
     UnknownRetriever,
     hybrid_search,
     preview,
+    resolve_retrievers,
     retriever_infos,
     search_stages,
 )
@@ -55,6 +69,8 @@ from app.schemas import (
     ChartReadResponse,
     ChatRequest,
     ChatResponse,
+    ChunksResponse,
+    ConversationResponse,
     DocumentsResponse,
     DocumentSummariesResponse,
     ErrorResponse,
@@ -62,8 +78,13 @@ from app.schemas import (
     EvalQuestionRequest,
     EvalQuestionsResponse,
     EvalReport,
+    FeedbackListResponse,
+    FeedbackReasonRequest,
+    FeedbackReasonResponse,
+    FeedbackReasonsResponse,
     FeedbackRequest,
     FeedbackResponse,
+    FeedbackStatsResponse,
     HealthResponse,
     IngestRequest,
     IngestResponse,
@@ -554,7 +575,7 @@ async def ingest_file(
     保存すると原本ダウンロードが壊れるため、取り込みは store_original=False にし、
     原本の保存はここで明示的に行う。
 
-    加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する（5-1）。
+    加えて文書内の画像も抽出して S3 に保存し、画像チャンクとして登録する。
     画像を持つのは原本バイナリがあるこの経路だけなので、/ingest（テキスト貼り付け）
     には無い処理になる。
     """
@@ -993,7 +1014,7 @@ def backfill_files():
     dependencies=[Depends(require_admin)],
 )
 def reindex_images_endpoint(method: Optional[str] = None):
-    """S3の原本画像から、画像チャンクの索引だけを作り直す（5-2の索引方式の比較評価用）。
+    """S3の原本画像から、画像チャンクの索引だけを作り直す（画像の索引方式の比較評価用）。
 
     画像の索引方式（自動キャプション / マルチモーダル埋め込み）は取り込み時に
     決まるため、方式を変えて比べるには索引を作り直す必要がある。原本画像はS3に
@@ -1021,9 +1042,9 @@ def reindex_images_endpoint(method: Optional[str] = None):
 
 @app.post("/chart-read", response_model=ChartReadResponse, responses=_ERRORS)
 def chart_read(req: ChartReadRequest):
-    """文書内のチャート画像を読解する（5-4）。★売買判断は返さない★
+    """文書内のチャート画像を読解する。★売買判断は返さない★
 
-    5-3（原本画像を根拠にした回答）をチャートに向けたもの。検索でヒットした
+    原本画像を根拠にした回答の仕組みを、チャートに向けたもの。検索でヒットした
     画像チャンクだけを根拠にし、「今どういう状態か」を言葉にする。
     複数レポートの図表を集めて要約する用途もここに乗る。
 
@@ -1085,7 +1106,7 @@ def _citations(hits: list[dict]) -> list[dict]:
     原本URLは出典ごとに1回だけ引く（S3のhead_objectを同じ文書で何度も叩かない）。
 
     画像チャンクには image_url も付ける。回答生成に渡したのと同じ1枚を利用者にも
-    見せるため ＝ 「この図のここが根拠」を自分の目で確かめられる（5-3）。
+    見せるため ＝ 「この図のここが根拠」を自分の目で確かめられる。
     """
     urls: dict[str, str | None] = {}
     citations = []
@@ -1115,7 +1136,7 @@ def _image_context(hit: dict) -> Optional[ImageContext]:
 
     None を返した場合、呼び出し側は言語化テキスト（キャプション等）で代替する。
     ★画像が取れないことを理由に回答を失敗させない★のが方針で、S3障害でも
-    5-2 までの品質（言語化テキストで答える）には落ちるだけで済ませる。
+    言語化テキストで答える品質に落ちるだけで済ませる。
 
     大きすぎる画像を弾くのは、Claude の画像1枚の上限(5MB)を超えると
     リクエストごと失敗し、回答が1文字も返らなくなるため。
@@ -1151,7 +1172,7 @@ def _image_context(hit: dict) -> Optional[ImageContext]:
 def _answer_contexts(hits: list[dict]) -> list:
     """回答生成に渡すコンテキストを組み立てる。並びは hits と1対1（引用番号の根拠）。
 
-    ★画像チャンクは言語化テキストではなく原本画像を渡す（5-3）★
+    ★画像チャンクは言語化テキストではなく原本画像を渡す★
       キャプションは検索で見つけるための索引に格下げし、判断は毎回原本に
       対して行わせる。こうしないと「言語化した時点で書かれなかったこと」を
       後から問えない（それが2023年方式の弱点だった）。
@@ -1171,6 +1192,15 @@ def _answer_contexts(hits: list[dict]) -> list:
     return contexts
 
 
+def _elapsed_ms(started: float) -> int:
+    """started（time.monotonic の値）からの経過ミリ秒。
+
+    monotonic を使うのは、途中でシステム時刻が変わっても負の値や飛びが出ないため
+    （time.time だとNTP同期で「所要0ms」や負の所要時間が記録され得る）。
+    """
+    return int((time.monotonic() - started) * 1000)
+
+
 def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
     """回答生成の手前まで（会話の確定・検索・引用の組み立て・履歴の読み出し）。
 
@@ -1187,8 +1217,17 @@ def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
         req.conversation_id, title=req.question, api_key_id=api_key_id
     )
     history = conversations.load_history(conversation_id)
+    # ★既定を hybrid_search に任せず、ここで確定させてから渡す★
+    #   同じ既定を「検索に使う」「meta として返す」の2か所で読むと、片方だけ
+    #   変わったときに『実際に使っていない条件』をフィードバックに記録してしまう。
+    #   確定した値を渡して、返す値と検索に使う値を同一にする。
+    retrievers = resolve_retrievers(None)
+    reranked = USE_RERANK
     hits = hybrid_search(
         req.question,
+        top_n=TOP_K,
+        rerank=reranked,
+        retrievers=retrievers,
         project=_blank_to_none(req.project),
         topic=_blank_to_none(req.topic),
     )
@@ -1196,11 +1235,17 @@ def _prepare_answer(req: ChatRequest, api_key_id: Optional[int] = None) -> dict:
     return {
         "conversation_id": conversation_id,
         "history": history,
-        # 画像チャンクは原本画像そのものが入る（テキストと混在する。5-3）
+        # 画像チャンクは原本画像そのものが入る（テキストと混在する）
         "contexts": _answer_contexts(hits),
         # 根拠として使ったチャンクの出典も返す（重複排除）
         "sources": list(dict.fromkeys(h["source"] for h in hits)),
         "citations": _citations(hits),
+        # 設定 RETRIEVERS と同じカンマ区切りにしておく（そのまま再現に使える）
+        "retrieval": {
+            "retriever": ",".join(retrievers),
+            "top_k": TOP_K,
+            "reranked": reranked,
+        },
     }
 
 
@@ -1226,9 +1271,12 @@ def _answer(req: ChatRequest, api_key_id: Optional[int] = None):
     """
     if (invalid := _reject_empty_question(req)) is not None:
         return invalid
+    # 計測は検索の手前から。利用者が待つのは「質問を送ってから答えが出るまで」で、
+    # 生成だけを測ると体感と噛み合わない（検索が遅い日を取りこぼす）。
+    started = time.monotonic()
     prepared = _prepare_answer(req, api_key_id=api_key_id)
     answer = generate_answer(req.question, prepared["contexts"], prepared["history"])
-    conversations.add_message(
+    message_id = conversations.add_message(
         prepared["conversation_id"],
         conversations.ASSISTANT,
         answer,
@@ -1237,8 +1285,11 @@ def _answer(req: ChatRequest, api_key_id: Optional[int] = None):
     return {
         "answer": answer,
         "conversation_id": prepared["conversation_id"],
+        "message_id": message_id,
         "sources": prepared["sources"],
         "citations": prepared["citations"],
+        "retrieval": prepared["retrieval"],
+        "latency_ms": _elapsed_ms(started),
     }
 
 
@@ -1252,10 +1303,12 @@ def chat_stream(req: ChatRequest):
     """/chat のストリーミング版。Server-Sent Events で回答を逐次返す。
 
     イベントの順序と意味:
-      meta  … 会話ID・出典・引用（★生成より先に確定する★ので最初に送る。
+      meta  … 会話ID・出典・引用・検索条件（★生成より先に確定する★ので最初に送る。
               受け取り側は本文が届く前に根拠を出せる）
       delta … 回答本文の断片。届いた順に連結すると完成した回答になる
-      done  … 生成完了（ここで初めて履歴に回答を保存する）
+      done  … 生成完了（ここで初めて履歴に回答を保存する）。回答のID(message_id)と
+              所要時間は★ここでしか出せない★ので meta ではなく done に載せる
+              （回答を保存して初めてIDが決まり、時間も終わって初めて分かる）
       error … 生成中の失敗。HTTPステータスは200のまま流れているので、
               エラーは本文の中で伝えるしかない（形は通常のエラー応答と同じ）
 
@@ -1265,6 +1318,7 @@ def chat_stream(req: ChatRequest):
     """
     if (invalid := _reject_empty_question(req)) is not None:
         return invalid
+    started = time.monotonic()
     prepared = _prepare_answer(req)
 
     def events():
@@ -1274,6 +1328,7 @@ def chat_stream(req: ChatRequest):
                 "conversation_id": prepared["conversation_id"],
                 "sources": prepared["sources"],
                 "citations": prepared["citations"],
+                "retrieval": prepared["retrieval"],
             },
         )
         chunks: list[str] = []
@@ -1288,13 +1343,20 @@ def chat_stream(req: ChatRequest):
             yield _sse("error", _error_payload(*_stream_error(exc)))
             return
         answer = "".join(chunks)
-        conversations.add_message(
+        message_id = conversations.add_message(
             prepared["conversation_id"],
             conversations.ASSISTANT,
             answer,
             prepared["sources"],
         )
-        yield _sse("done", {"conversation_id": prepared["conversation_id"]})
+        yield _sse(
+            "done",
+            {
+                "conversation_id": prepared["conversation_id"],
+                "message_id": message_id,
+                "latency_ms": _elapsed_ms(started),
+            },
+        )
 
     return StreamingResponse(
         events(),
@@ -1304,18 +1366,163 @@ def chat_stream(req: ChatRequest):
     )
 
 
+def _unknown_reason(reason: str) -> tuple[str, str, str, str]:
+    """選択肢に無い理由を弾くときのエラー本文。
+
+    自由な文字列を受け付けないのは、理由を★数えるため★に持っているから。
+    表記ゆれが混ざると「情報が古い が増えている」を出せなくなる（選択肢に
+    無いことを伝えたいときは自由記述 comment を使う）。
+    """
+    return (
+        "unknown_reason",
+        f"未知の理由: {reason}",
+        f"利用可能: {' / '.join(feedback.REASONS)}",
+        "",
+    )
+
+
+def _reason_needs_thumbs_down() -> tuple[str, str, str, str]:
+    """👍に理由を付けようとしたときのエラー本文。
+
+    ★黙って無視せず弾く★
+      選択肢は「👎の理由」で、/feedback/stats の by_reason も👎だけを数える。
+      👍に理由が入ると、👎の件数と理由の合計が合わなくなり、読んだ人が
+      「理由なしの👎が何件か」を数え違える。NULLに倒して受け付けると、
+      送った側は記録できたつもりのまま値だけ消えるので、その場で気づける方がいい。
+      自由記述(comment)は「👍だが一言ある」があり得るので制限していない。
+    """
+    return (
+        "reason_needs_thumbs_down",
+        "理由を付けられるのは👎（rating=-1）だけです。",
+        "👍に一言添えたいときは comment（自由記述）を使ってください。",
+        "",
+    )
+
+
+@app.get(
+    "/chunks",
+    response_model=ChunksResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def list_chunks(ids: str):
+    """指定したIDのチャンクを、★渡した並びのまま★返す。
+
+    👎の行が持つ chunk_ids（回答生成に渡した順＝順位）をそのまま渡して、
+    「そのとき何を根拠にしていたか」を後から読むための口。ID順に並べ替えて
+    返すと順位が消えるので、並びは呼び出し側の指定を保つ。
+
+    存在しないIDは黙って飛ばす（404にしない）。文書を消しても評価は残る作りなので、
+    「一部のチャンクだけ消えている」は起こりうる正常な状態で、残りは読めた方がいい。
+    """
+    try:
+        chunk_ids = [int(v) for v in ids.split(",") if v.strip()]
+    except ValueError:
+        return _error(
+            400,
+            "invalid_chunk_ids",
+            "ids はカンマ区切りの数値で指定してください。",
+            f"受け取った値: {ids}",
+            "",
+        )
+    return {"chunks": retrieval.by_ids(chunk_ids)}
+
+
+@app.get(
+    "/conversations/{conversation_id}",
+    response_model=ConversationResponse,
+    responses={404: {"model": ErrorResponse, "description": "該当なし"}},
+)
+def get_conversation(conversation_id: int):
+    """会話の全文を古い順で返す。
+
+    👎の行から「どういう流れでその質問が出たのか」を辿るための口。回答生成に
+    載せる直近N件（app.conversations.load_history）とは別物で、こちらは途中を
+    切らない: 流れを読むのが目的なので、切ると用を成さない。
+    """
+    messages = conversations.load_all(conversation_id)
+    if messages is None:
+        return _error(
+            404,
+            "conversation_not_found",
+            f"会話が見つかりません: {conversation_id}",
+            "フィードバックに記録された会話IDを指定してください。",
+            "",
+        )
+    return {"conversation_id": conversation_id, "messages": messages}
+
+
+@app.get(
+    "/feedback/stats",
+    response_model=FeedbackStatsResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def feedback_stats(
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    bucket: str = feedback.DEFAULT_BUCKET,
+):
+    """👎率を、全体・区分別・時系列・理由別に返す。
+
+    ★rating で絞る口を置いていない★
+      率には分母（その区分・その日の全評価）が要る。👎だけを数えても「3件」までしか
+      言えず、多いのか少ないのかが出せない。👎そのものを読むのは GET /feedback。
+
+    ★この画面で探すのは全体の数値ではなく偏り★
+      全体の👎率はまず動かない。「この区分だけ突出している」「この日から上がった」が
+      調べに行く先を絞ってくれる。分母が小さいと率は跳ねるので、件数も一緒に返す。
+    """
+    if bucket not in feedback.BUCKETS:
+        return _error(
+            400,
+            "unknown_bucket",
+            f"未知の刻み: {bucket}",
+            f"利用可能: {' / '.join(feedback.BUCKETS)}",
+            "",
+        )
+    return feedback.stats(
+        project=_blank_to_none(project),
+        topic=_blank_to_none(topic),
+        since=since,
+        until=until,
+        bucket=bucket,
+    )
+
+
+@app.get("/feedback/reasons", response_model=FeedbackReasonsResponse)
+def list_feedback_reasons():
+    """👎の理由の選択肢を返す。UIのボタンはこれを並べる。
+
+    画面に文言を焼かずここから取るのは、選択肢を足したときに片方だけ古くなるのを
+    防ぐため（記録される値と表示される文言が同じものであることを保証する）。
+    """
+    return {"reasons": feedback.REASONS}
+
+
 @app.post(
     "/feedback",
     response_model=FeedbackResponse,
     responses={400: {"model": ErrorResponse, "description": "入力不正"}},
 )
-def feedback(req: FeedbackRequest):
+def add_feedback(req: FeedbackRequest):
     """回答への 👍/👎 を記録する。
 
     貯めたフィードバック（特に👎）は eval のQA候補に回す運用を想定。
     外部APIを呼ばないので ANTHROPIC/VOYAGE キーは不要。
     rating は +1(👍) / -1(👎) のみ。0 や欠損は「どちらでもない」を意味してしまい
     👎として誤記録されるため、符号で丸めず 400 で弾く。
+
+    ★文脈（会話・検索条件・チャンク）は任意★
+      /chat が返した meta / done をそのまま添えてもらう想定だが、無くても記録する。
+      「条件が分からない👎」でも、質問と回答が残るだけで評価の素材にはなる。
+      ここを必須にすると、条件を持たない古いクライアントの👎が丸ごと消える。
+
+    ★理由(reason)は任意、ただし👎のときだけ★
+      画面は「👎を記録してから理由を聞く」（PATCH /feedback/{id}）ので、ここに
+      理由が入るのは最初から分かっている場合だけ。理由を必須にすると、押しただけで
+      去った人の👎が消える＝一番多い操作を一番落としやすい作りになる。
+      👍に理由を付けさせないのは _reason_needs_thumbs_down を参照。
     """
     if req.rating not in (1, -1):
         return _error(
@@ -1326,13 +1533,139 @@ def feedback(req: FeedbackRequest):
             "",
         )
     rating = req.rating
+    reason = _blank_to_none(req.reason)
+    if reason is not None and reason not in feedback.REASONS:
+        return _error(400, *_unknown_reason(reason))
+    if reason is not None and rating != -1:
+        return _error(400, *_reason_needs_thumbs_down())
+    # 区分をマスタへ写して id を得る（他の書き込み側と同じ。名前のまま行に
+    # 持たせない）。未指定の軸は id も NULL＝「区分を選ばずに聞いた」。
+    project_id, topic_id = scopes.register(
+        _blank_to_none(req.project), _blank_to_none(req.topic)
+    )
     with get_conn() as conn:
         new_id = conn.execute(
-            "INSERT INTO feedback (question, answer, sources, rating, comment) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (req.question, req.answer, req.sources, rating, req.comment),
+            "INSERT INTO feedback ("
+            "question, answer, sources, rating, reason, comment, "
+            "conversation_id, message_id, retriever, top_k, reranked, "
+            "chunk_ids, latency_ms, project_id, topic_id"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "RETURNING id",
+            (
+                req.question,
+                req.answer,
+                req.sources,
+                rating,
+                reason,
+                req.comment,
+                req.conversation_id,
+                req.message_id,
+                req.retriever,
+                req.top_k,
+                req.reranked,
+                req.chunk_ids,
+                req.latency_ms,
+                project_id,
+                topic_id,
+            ),
         ).fetchone()[0]
     return {"id": new_id, "rating": rating}
+
+
+@app.patch(
+    "/feedback/{feedback_id}",
+    response_model=FeedbackReasonResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "入力不正"},
+        404: {"model": ErrorResponse, "description": "該当なし"},
+    },
+)
+def update_feedback_reason(feedback_id: int, req: FeedbackReasonRequest):
+    """記録済みの評価に、後から理由と自由記述を足す。
+
+    ★👎を押す操作と理由を選ぶ操作を分けてある★
+      理由を選ぶまで送信を待つと、押しただけで画面を離れた人の👎が消える。
+      先に👎を記録し、返ったIDに対してここで理由を足す。理由を選ばなければ
+      「理由なしの👎」がそのまま残る（従来どおり）。
+
+    渡さなかった項目は書き換えない。自由記述を消したいときは空文字を送る
+    （null は「変更しない」の意味なので、消すのに使えない）。
+
+    理由を足せるのは👎だけ（_reason_needs_thumbs_down 参照）。判定はSQLの条件で
+    行うので、記録側の検査と同じ結論になる。
+    """
+    reason = _blank_to_none(req.reason)
+    if reason is not None and reason not in feedback.REASONS:
+        return _error(400, *_unknown_reason(reason))
+    if reason is None and req.comment is None:
+        return _error(
+            400,
+            "empty_feedback_update",
+            "理由か自由記述のどちらかを指定してください。",
+            "どちらも未指定だと書き換える先がありません。",
+            "",
+        )
+    updated = feedback.add_reason(feedback_id, reason, req.comment)
+    if updated is None:
+        # 0件の理由は2つある。行が無いのか、👍に理由を付けようとしたのか。
+        # 「見つかりません」で片付けると、後者のとき存在するIDを疑うことになる。
+        if feedback.rating_of(feedback_id) is not None:
+            return _error(400, *_reason_needs_thumbs_down())
+        return _error(
+            404,
+            "feedback_not_found",
+            f"フィードバックが見つかりません: {feedback_id}",
+            "👍/👎 を記録したときに返ったIDを指定してください。",
+            "",
+        )
+    return updated
+
+
+@app.get(
+    "/feedback",
+    response_model=FeedbackListResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+)
+def list_feedback(
+    rating: Optional[int] = None,
+    project: Optional[str] = None,
+    topic: Optional[str] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    limit: int = feedback.DEFAULT_LIMIT,
+    offset: int = 0,
+):
+    """記録した 👍/👎 を新しい順で返す。指定しなかった軸は絞り込まない。
+
+    ★この一覧の役割は「👎を読んで直す」ではなく「調べる場所を絞る」★
+      👎 1件では、検索が外したのか・生成が外したのか・そもそも文書に答えが
+      無かったのかを区別できない。区分や期間で絞って👎を並べ、1件ずつ元の会話と
+      渡したチャンクへ辿るための入口として使う。
+
+    期間は since 以上 until 未満（半開区間）。両端を含めると、月ごとに区切って
+    眺めたときに境界の1件が両方に出て二重に数えられる。
+
+    rating だけは 400 で弾く: +1/-1 以外を渡すと必ず0件になり、「まだ👎が無い」と
+    「指定を間違えた」が画面上で見分けられない。件数の上限超過（limit）は
+    表示件数の話なので黙って丸める（/documents/summary と同じ）。
+    """
+    if rating is not None and rating not in (1, -1):
+        return _error(
+            400,
+            "invalid_rating",
+            "rating は +1（👍）か -1（👎）のいずれかにしてください。",
+            f"受け取った値: {rating}",
+            "",
+        )
+    return feedback.load(
+        rating=rating,
+        project=_blank_to_none(project),
+        topic=_blank_to_none(topic),
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.post(

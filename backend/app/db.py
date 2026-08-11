@@ -192,8 +192,8 @@ def init_db() -> None:
         conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS context TEXT;")
         # 文書内画像の原本のS3キー（app.storage.image_key）。
         # NULL = テキストチャンク。値あり = 画像チャンク（その1枚が根拠になる）。
-        # 画像チャンクは 5-1 の時点では embedding も content_nouns も持たないため
-        # 検索にはヒットしない（検索対象化は 5-2）。回答生成で原本画像を渡す（5-3）
+        # 画像チャンクは登録した時点では embedding も content_nouns も持たないため
+        # 検索にはヒットしない（検索対象化は索引作成で別途行う）。回答生成で原本画像を渡す
         # ときに、ヒットしたチャンクからこのキーで原本を引く。
         conn.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS image_path TEXT;")
         # 画像チャンクは「その文書の分を丸ごと入れ替える」形で書くので、
@@ -282,6 +282,75 @@ def init_db() -> None:
             );
             """
         )
+        # 👍/👎 が「どういう条件で出た回答への評価か」を残す列。
+        # 本文コピー（question/answer/sources）はそのまま残し、ここは
+        # ★あれば辿れる補助★として足す。これが無いと「この設定変更で👎が
+        # 減った」「👎のとき正解は何位に居たのか」が後から一切追えない。
+        #
+        # ★すべて任意（NULL可）★
+        #   既存行は NULL のまま＝「記録していなかった頃のもの」。埋められない値を
+        #   NOT NULL にすると過去分を捨てるか嘘の既定値を入れるかになる。
+        #
+        # ★参照は ON DELETE SET NULL（CASCADE にしない）★
+        #   上の「会話が消えてもフィードバックは残す」を維持するため。会話を消したら
+        #   評価の素材まで道連れになる、が一番避けたい壊れ方。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS conversation_id BIGINT "
+            "REFERENCES conversations(id) ON DELETE SET NULL;"
+        )
+        # どの発言への評価か。conversation_id だけだと「会話のどの回答か」が
+        # 定まらない（1つの会話に回答は何度も入る）。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS message_id BIGINT "
+            "REFERENCES messages(id) ON DELETE SET NULL;"
+        )
+        # 使った検索手法。RRFで複数を融合するので "vector,trgm" のように連結して
+        # 持つ（設定 RETRIEVERS と同じ書式にしておくと、そのまま再現に使える）。
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS retriever TEXT;")
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS top_k SMALLINT;")
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reranked BOOLEAN;")
+        # 回答生成に渡したチャンクを★順位どおり★に並べた配列（先頭が1位）。
+        # 空配列を既定にするのは sources と同じ理由（「根拠なし」と「未記録」を
+        # 区別する必要が無く、NULLと空配列の二重の空を作りたくない）。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS "
+            "chunk_ids BIGINT[] NOT NULL DEFAULT '{}';"
+        )
+        # 質問を受けてから回答が出来上がるまで（検索＋生成）。体感の遅さと
+        # 👎の相関を見るため。
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS latency_ms INTEGER;")
+        # 評価した時点で選ばれていた区分。NULL=区分を選ばずに聞いた（documents や
+        # saved_questions の project_id/topic_id と同じ約束）。
+        #
+        # ★後から復元できないのでここに残す★
+        #   conversations は区分を持たず、sources（文書名）から逆に辿ると
+        #   「区分を選ばずに聞いたら偶然その文書が出た」のか「その区分に絞って
+        #   聞いた」のかが混ざる。区分別の👎率は「絞って聞いた結果」を数えたいので、
+        #   評価と同時に残すしかない。
+        #
+        # 区分別に数えるのは、全体の👎率がほとんど動かないから。意味があるのは
+        # 「特定の区分だけ👎率が突出している」で、それが調べる場所を絞ってくれる。
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS project_id BIGINT "
+            "REFERENCES projects(id);"
+        )
+        conn.execute(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS topic_id BIGINT "
+            "REFERENCES topics(id);"
+        )
+        # 👎を押した人が選んだ理由（決まった選択肢から1つ。NULL=選ばなかった）。
+        # ★入るのは rating=-1 の行だけ★ 👍にも理由が入ると、👎の件数と理由の
+        # 合計が合わなくなり「理由なしの👎が何件か」を数え違える（APIで弾く）。
+        #
+        # ★comment（自由記述）と分けてある★
+        #   自由記述に混ぜると「情報が古い が先月から倍に増えた」のような数え方が
+        #   できなくなる（表記ゆれで数えられない）。選択肢は数えるため、自由記述は
+        #   選択肢に無いことを書いてもらうため、と役割が違う。
+        #
+        # ★入れるのは選択肢の文言そのもの（コードではない）★
+        #   区分(project/topic)をAPIの境界で名前のまま扱うのと同じ理由で、DBを
+        #   直接覗いたときに意味が読めることを優先する。許す値は app.feedback.REASONS。
+        conn.execute("ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reason TEXT;")
         # ②で検索した質問の保管庫。正解ラベルを持たない「実際に聞かれた質問」を
         # 区分ごとに貯め、④でまとめてRRFを検証するのに使う。
         # eval_questions と分けるのは、あちらが expected_source NOT NULL（正解必須）で
@@ -384,7 +453,7 @@ def init_db() -> None:
             "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
             "topic_id BIGINT REFERENCES topics(id);"
         )
-        # 正解を「どの種類のチャンクで引けたら正解か」まで下ろす軸（5-2の索引方式の比較評価用）。
+        # 正解を「どの種類のチャンクで引けたら正解か」まで下ろす軸（画像の索引方式の比較評価用）。
         #   'any'（既定） … 文書が上位に来れば正解（従来どおり）
         #   'text'        … 本文チャンクで引けたときだけ正解
         #   'image'       … ★画像チャンクで引けたときだけ正解★
@@ -396,7 +465,7 @@ def init_db() -> None:
             "ALTER TABLE eval_questions ADD COLUMN IF NOT EXISTS "
             "expected_kind TEXT NOT NULL DEFAULT 'any';"
         )
-        # 正解ラベルを「その文書のどこか」から「このチャンク」へ下ろす軸（6-1）。
+        # 正解ラベルを「その文書のどこか」から「このチャンク」へ下ろす軸。
         #   NULL   … 従来どおり文書名だけで判定する（既存の質問の意味を変えない）
         #   値あり … その語句を含むチャンクを引けたときだけ正解
         # これが無いと、分割・文脈付与・リランクといった★チャンク単位の改良★が
