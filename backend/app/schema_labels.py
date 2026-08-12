@@ -158,6 +158,17 @@ SCHEMA_LABELS: dict[str, dict] = {
             "expected_text": "正解チャンクに含まれる語句（NULL=文書単位で判定）",
         },
     },
+    "synonyms": {
+        "label": "同義語辞書（クエリ拡張）",
+        "columns": {
+            "id": "同義語ID",
+            "project_id": "プロジェクトID（NULL=全プロジェクト共通）",
+            "term": "質問に出る語（社内用語・略語・表記ゆれ）",
+            "expansion": "文書側で使われている語",
+            "note": "メモ",
+            "created_at": "登録日時",
+        },
+    },
 }
 
 

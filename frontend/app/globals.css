@@ -421,6 +421,30 @@ button:disabled {
   border-radius: 8px;
 }
 
+/* 見出しと開閉ボタンを1行に並べるパネルの頭（①の登録フォーム）。
+   h2 の下マージンはこの行が持つので、h2 側は打ち消す。 */
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.panel-head h2 {
+  margin: 0;
+}
+
+/* 開閉は見た目の切り替えでしかないので、主要操作のボタンより弱く見せる */
+.panel-toggle {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--subtle);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
 /* 取り込み結果は複数ファイルぶんを改行で並べるので改行を活かす */
 .ingest-status {
   white-space: pre-line;

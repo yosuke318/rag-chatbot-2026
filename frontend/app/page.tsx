@@ -583,6 +583,116 @@ function ScopeInput({
   );
 }
 
+/** 区分（プロジェクト / トピック）だけを作るパネル。
+ *
+ * ★文書登録フォームから切り離してある★
+ *   以前は文書登録フォームの区分入力欄を流用し、その横に「区分だけ登録する」
+ *   ボタンを置いていた。同じ入力欄が「これから入れる文書に付ける区分」と
+ *   「新しく作る区分」の両方を兼ねていたので、打った名前がどちらの意味になるかが
+ *   押すボタンでしか決まらず、画面からは読めなかった。作る操作は作る専用の
+ *   入力欄を持たせて、独立した区分として置く。
+ *
+ * ★入力値をこのコンポーネントの中で持つ理由★
+ *   絞り込み（どの区分を見ているか）と違い、ここは送ったら用済みの入力。
+ *   タブを離れて消えても困らないので、上に持ち上げない。
+ */
+function ScopeCreatePanel({
+  projects,
+  scopeVersion,
+  onCreated,
+}: {
+  projects: string[];
+  scopeVersion: number;
+  /** 作れたら呼ぶ。各パネルのセレクタを引き直させる。 */
+  onCreated: () => void;
+}) {
+  const [project, setProject] = useState("");
+  const [topic, setTopic] = useState("");
+  const [status, setStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+  const topics = useTopics(project, scopeVersion);
+
+  /** 入力欄の区分をマスタに登録する（文書は入れない）。
+   *
+   * トピックを打っていればトピックを作る。その親としてプロジェクトも一緒に送るので、
+   * プロジェクト単独の登録が要るのは「プロジェクトだけ打った」ときだけ。
+   */
+  async function createScope() {
+    const p = project.trim();
+    const t = topic.trim();
+    if ((!p && !t) || saving) return;
+    setSaving(true);
+    setStatus("登録中…");
+    try {
+      const res = t
+        ? await fetch("/api/backend/topics", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: t, project: p || null }),
+          })
+        : await fetch("/api/backend/projects", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: p }),
+          });
+      const err = await errorMessage(res);
+      if (err) {
+        setStatus(err);
+        return;
+      }
+      const data = await res.json();
+      const label = t ? `${p || "（プロジェクトなし）"} / ${t}` : p;
+      // created=false は「既にあった」＝エラーではない
+      setStatus(
+        data.created ? `区分「${label}」を作りました` : `区分「${label}」は既にあります`,
+      );
+      // 作れたときだけ入力を空にする。既にあった場合に消すと、
+      // 何を打って既存扱いになったのかが画面から消えてしまう。
+      if (data.created) {
+        setProject("");
+        setTopic("");
+      }
+      onCreated();
+    } catch (e) {
+      setStatus(`エラー: ${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <h2>① 区分を追加（/projects・/topics・APIキー不要）</h2>
+      <p className="hint panel-note">
+        文書が無くても区分だけ先に作れます。作った区分は各パネルのセレクタに出るので、
+        「先に部署を作っておいて、資料は後から入れる」という順で使えます。
+        トピックだけ打つと、上のプロジェクト（空ならプロジェクトなし）の配下に作ります。
+      </p>
+      <ScopeInput
+        idPrefix="newscope"
+        project={project}
+        topic={topic}
+        projects={projects}
+        topics={topics}
+        onProject={setProject}
+        onTopic={setTopic}
+      />
+      <div className="verify-controls">
+        <button
+          onClick={createScope}
+          disabled={saving || (!project.trim() && !topic.trim())}
+        >
+          {saving ? "登録中…" : "この区分を作る"}
+        </button>
+        <span className="hint">
+          マスタにだけ登録します。文書やファイルは登録しません。
+        </span>
+      </div>
+      {status && <p className="hint ingest-status">{status}</p>}
+    </section>
+  );
+}
+
 /** 並び替えボタン付きの表の見出しセル（①「入っている文書」用）。
  *
  * ★DocumentListPanel の中で定義しない★ 描画のたびに別のコンポーネントとして
@@ -667,7 +777,7 @@ function DocumentListPanel({
   sortKey: DocSortKey;
   sortDesc: boolean;
   onSort: (key: DocSortKey, desc: boolean) => void;
-  /** 0件のときに ①「登録する」へ送るための遷移。 */
+  /** 0件のときに、同じ画面の上にある登録フォームへ送る（畳んでいれば開く）。 */
   onAddDocuments: () => void;
 }) {
   const topics = useTopics(project, scopeVersion);
@@ -743,7 +853,7 @@ function DocumentListPanel({
               {" "}
               区分の指定を外すと全文書が見えます。この区分に入れたい場合は{" "}
               <button className="linklike" onClick={onAddDocuments}>
-                ①「登録する」
+                上の「文書を登録」
               </button>{" "}
               で同じ区分を付けて登録してください。
             </>
@@ -751,7 +861,7 @@ function DocumentListPanel({
             <>
               {" "}
               <button className="linklike" onClick={onAddDocuments}>
-                ①「登録する」
+                上の「文書を登録」
               </button>{" "}
               からファイルを登録してください。
             </>
@@ -876,7 +986,7 @@ const TABS = [
     desc:
       "検索・回答の対象になる文書を入れる。\n" +
       "ここに入っていない文書は、②③④で何をしても出てこない。\n" +
-      "配下の「入っている文書」で、今なにが入っているかを一覧できる。",
+      "同じ画面で区分を作り、今なにが入っているかも一覧できる。",
   },
   {
     id: "search",
@@ -927,20 +1037,6 @@ const EVAL_SUBTABS = [
 
 type EvalSubTab = (typeof EVAL_SUBTABS)[number]["id"];
 
-/** ① の配下タブ。
- *
- * 「入れる」と「何が入っているか見る」は、③ の「質問を追加/評価」と同じ関係
- * （同じ対象を扱う一続きの作業だが、見たいものが違う）。登録フォームの下に
- * 表を縦積みすると、一覧を見るたびにドロップゾーンを読み飛ばすことになるので、
- * ③ と同じ形で配下に割る。
- */
-const INGEST_SUBTABS = [
-  { id: "add", label: "登録する", hint: "/ingest-file" },
-  { id: "list", label: "入っている文書", hint: "/documents/summary" },
-] as const;
-
-type IngestSubTab = (typeof INGEST_SUBTABS)[number]["id"];
-
 /** ② の配下タブ。
  *
  * ★保管質問の検証(/verify)をここに入れてある★
@@ -956,11 +1052,16 @@ const SEARCH_SUBTABS = [
 
 type SearchSubTab = (typeof SEARCH_SUBTABS)[number]["id"];
 
-/** 配下タブを持つタブと、その中身。ここに足せばサイドバーに出る。 */
+/** 配下タブを持つタブと、その中身。ここに足せばサイドバーに出る。
+ *
+ * ★① は配下を持たない★
+ *   「入れる」「区分を作る」「何が入っているか見る」は一続きの作業で、
+ *   配下タブに割ると入れるたびに往復することになる。1画面に縦に並べ、
+ *   登録フォームは畳めるようにして「一覧を見るたびに読み飛ばす」のを避ける。
+ */
 const SUBTABS: Partial<
   Record<TabId, readonly { id: string; label: string; hint: string }[]>
 > = {
-  ingest: INGEST_SUBTABS,
   search: SEARCH_SUBTABS,
   eval: EVAL_SUBTABS,
 };
@@ -1944,8 +2045,6 @@ function ThemeToggle() {
 function Sidebar({
   tab,
   onTab,
-  ingestSubTab,
-  onIngestSubTab,
   searchSubTab,
   onSearchSubTab,
   evalSubTab,
@@ -1953,8 +2052,6 @@ function Sidebar({
 }: {
   tab: TabId;
   onTab: (id: TabId) => void;
-  ingestSubTab: IngestSubTab;
-  onIngestSubTab: (id: IngestSubTab) => void;
   searchSubTab: SearchSubTab;
   onSearchSubTab: (id: SearchSubTab) => void;
   evalSubTab: EvalSubTab;
@@ -1964,7 +2061,6 @@ function Sidebar({
   // ここに置く（Sidebar は常に描画されているので、タブを移動しても開閉は保たれる）。
   // 初期値 true: 配下タブがあること自体に気づけないと、そこにたどり着けない。
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
-    ingest: true,
     search: true,
     eval: true,
   });
@@ -1978,10 +2074,6 @@ function Sidebar({
     string,
     { current: string; onPick: (id: string) => void }
   > = {
-    ingest: {
-      current: ingestSubTab,
-      onPick: (id) => onIngestSubTab(id as IngestSubTab),
-    },
     search: {
       current: searchSubTab,
       onPick: (id) => onSearchSubTab(id as SearchSubTab),
@@ -2015,7 +2107,7 @@ function Sidebar({
       <BenchmarkModal open={benchOpen} onClose={() => setBenchOpen(false)} />
       <ul className="sidebar-tabs">
         {TABS.map((t) => {
-          // 配下タブを持つのは ①②③。開閉ボタンもそのタブにだけ付く。
+          // 配下タブを持つのは ②③。開閉ボタンもそのタブにだけ付く。
           const subtabs = SUBTABS[t.id];
           const hasSubtabs = subtabs !== undefined;
           const open = openGroups[t.id] ?? true;
@@ -2125,8 +2217,6 @@ export default function Home() {
   // タブ切り替えで消えるのは描画だけなので、検索結果・チャット履歴・評価
   // レポートは戻ってきたときにそのまま残る。
   const [tab, setTab] = useState<TabId>("ingest");
-  // ① の中で見ている面。既定は「登録する」＝ ① の本題（最初にやること）。
-  const [ingestSubTab, setIngestSubTab] = useState<IngestSubTab>("add");
   // ② の中で見ている面。既定は「質問で資料を検索」＝ ② の本題。
   // 保管質問の検証は、②で質問を投げて貯まってから使うもの。
   const [searchSubTab, setSearchSubTab] = useState<SearchSubTab>("stages");
@@ -2155,8 +2245,12 @@ export default function Home() {
   const [docTopic, setDocTopic] = useState("");
   const docTopics = useTopics(docProject, scopeVersion);
   const [ingestStatus, setIngestStatus] = useState("");
-  // 「区分だけ登録」の結果表示（文書の取り込み結果とは別に出す）
-  const [scopeStatus, setScopeStatus] = useState("");
+  // 登録フォームを開いているか。①は登録・区分追加・一覧を縦に並べるので、
+  // 一覧だけを見たいときにドロップゾーンを畳めるようにする。
+  // ★state はここ（Home）★ 畳んだままタブを移動して戻っても畳んだままにする。
+  const [ingestFormOpen, setIngestFormOpen] = useState(true);
+  // 一覧の「上の登録フォームへ」から戻ってくる先。
+  const ingestFormRef = useRef<HTMLElement>(null);
   // --- 文書一覧パネル（①「入っている文書」= /documents/summary）---
   // 見るだけの画面だが、絞り込みと並び順は他パネルと同じくここに置く
   // （タブを移動して戻ったときに「すべて・新しい順」へ戻らないように）。
@@ -2419,47 +2513,13 @@ export default function Home() {
     }
   }
 
-  /** 入力欄の区分だけをマスタに登録する（文書は入れない）。
-   *
-   * ★文書が無くても区分を作れるようにするための入口★
-   * 以前は選択肢が「文書か質問に実在する値」だったので、先に区分だけ用意して
-   * おくことができなかった。トピックだけ打った場合は、その上のプロジェクト
-   * （空ならプロジェクトなし）の配下に作る。
-   */
-  async function createScope() {
-    const project = docProject.trim();
-    const topic = docTopic.trim();
-    if (!project && !topic) return;
-    setScopeStatus("登録中…");
-    try {
-      // トピックを作るときは親のプロジェクトも一緒に送るので、
-      // プロジェクト単独の登録が要るのは「プロジェクトだけ打った」ときだけ。
-      const res = topic
-        ? await fetch("/api/backend/topics", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: topic, project: project || null }),
-          })
-        : await fetch("/api/backend/projects", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: project }),
-          });
-      const err = await errorMessage(res);
-      if (err) {
-        setScopeStatus(err);
-        return;
-      }
-      const data = await res.json();
-      const label = topic ? `${project || "（プロジェクトなし）"} / ${topic}` : project;
-      // created=false は「既にあった」＝エラーではない
-      setScopeStatus(
-        data.created ? `区分「${label}」を作りました` : `区分「${label}」は既にあります`,
-      );
-      setScopeVersion((v) => v + 1); // 各パネルのセレクタに出す
-    } catch (e) {
-      setScopeStatus(`エラー: ${String(e)}`);
-    }
+  /** 一覧の「上の登録フォームへ」から呼ぶ。畳んでいたら開いてから送る。 */
+  function focusIngestForm() {
+    setIngestFormOpen(true);
+    // 開くのは次の描画なので、要素が出てからスクロールする
+    requestAnimationFrame(() =>
+      ingestFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
   }
 
   /** D&D/選択したファイルをステージに追加する（即アップロードはしない）。
@@ -2741,8 +2801,6 @@ export default function Home() {
       <Sidebar
         tab={tab}
         onTab={setTab}
-        ingestSubTab={ingestSubTab}
-        onIngestSubTab={setIngestSubTab}
         searchSubTab={searchSubTab}
         onSearchSubTab={setSearchSubTab}
         evalSubTab={evalSubTab}
@@ -2774,10 +2832,37 @@ export default function Home() {
         </div>
 
       {/* 書き込みフロー: text → chunk → embed → pgvector */}
-      {tab === "ingest" && ingestSubTab === "add" && (
-      <section className="panel">
-        <h2>① 文書を登録（/ingest-file・Voyageキー必要）</h2>
+      {tab === "ingest" && (
+      <section className="panel" ref={ingestFormRef}>
+        {/* ★畳めるようにしてある★
+            ①は「登録 → 区分を作る → 何が入ったか見る」を1画面に縦に並べる。
+            一覧だけを見たい回にドロップゾーンを読み飛ばさずに済むよう、
+            登録フォームは畳んで下を引き上げられるようにする。 */}
+        <div className="panel-head">
+          <h2>① 文書を登録（/ingest-file・Voyageキー必要）</h2>
+          <button
+            type="button"
+            className="panel-toggle"
+            aria-expanded={ingestFormOpen}
+            onClick={() => setIngestFormOpen((o) => !o)}
+            title={
+              ingestFormOpen
+                ? "登録フォームを畳んで、下の一覧を引き上げる"
+                : "登録フォームを開く"
+            }
+          >
+            {ingestFormOpen ? "畳む" : "開く"}
+          </button>
+        </div>
 
+        {!ingestFormOpen && (
+          <p className="hint">
+            登録フォームは畳んでいます。文書を入れるときは「開く」を押してください。
+          </p>
+        )}
+
+        {ingestFormOpen && (
+        <>
         {/* 文書の区分。登録するファイルすべてに付くので、
             ドロップゾーンの中ではなくパネルの先頭に置く。 */}
         <ScopeInput
@@ -2792,25 +2877,8 @@ export default function Home() {
         <p className="hint">
           区分は下で<strong>登録するファイルすべて</strong>に付きます（空欄なら区分なし）。
           既存の区分は入力欄から選べます。新しい名前を打てばその区分が作られます。
+          文書を入れずに区分だけ作るときは、下の「区分を追加」を使います。
         </p>
-        {/* 文書を入れずに区分だけ用意する入口。
-            「まず部署を作ってから資料を集める」という順で使えるようにするため。 */}
-        <div className="verify-controls">
-          <button
-            onClick={createScope}
-            disabled={!docProject.trim() && !docTopic.trim()}
-          >
-            区分だけ登録する
-          </button>
-          <span className="hint">
-            <Tip label="文書が無くても区分を作れます">
-              上の入力欄に打った区分を<strong>マスタにだけ</strong>登録します。
-              文書やファイルは登録しません。作った区分は各パネルのセレクタに出るので、
-              「先に部署を作っておいて、資料は後から入れる」という順で使えます。
-            </Tip>
-          </span>
-        </div>
-        {scopeStatus && <p className="hint ingest-status">{scopeStatus}</p>}
 
         {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
             D&D/クリックでファイルをステージに追加し、「登録する」で確定する。
@@ -2905,11 +2973,25 @@ export default function Home() {
           </div>
         )}
         {ingestStatus && <p className="hint ingest-status">{ingestStatus}</p>}
+        </>
+        )}
       </section>
       )}
 
-      {/* 読み出し側の確認: 今そのプロジェクトに何がどう入っているか */}
-      {tab === "ingest" && ingestSubTab === "list" && (
+      {/* 区分を作る入口。文書登録とは別のコンポーネントにして、
+          「これから入れる文書に付ける区分」との違いを画面で分ける。 */}
+      {tab === "ingest" && (
+        <ScopeCreatePanel
+          projects={projects}
+          scopeVersion={scopeVersion}
+          onCreated={() => setScopeVersion((v) => v + 1)}
+        />
+      )}
+
+      {/* 読み出し側の確認: 今そのプロジェクトに何がどう入っているか。
+          scopeVersion は取り込みが終わると増えるので、上で登録すればここも
+          自動で引き直される（＝入ったことがその場で見える）。 */}
+      {tab === "ingest" && (
         <DocumentListPanel
           projects={projects}
           scopeVersion={scopeVersion}
@@ -2923,7 +3005,7 @@ export default function Home() {
             setListSortKey(key);
             setListSortDesc(desc);
           }}
-          onAddDocuments={() => setIngestSubTab("add")}
+          onAddDocuments={focusIngestForm}
         />
       )}
 

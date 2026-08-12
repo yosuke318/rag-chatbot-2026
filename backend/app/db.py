@@ -518,6 +518,39 @@ def init_db() -> None:
             END $$;
             """
         )
+        # 質問の語を、文書側で実際に使われている語に言い換える辞書（クエリ拡張）。
+        # 詳しい理由と適用範囲は app.synonyms を参照。
+        #
+        # ★向きのある2列（term → expansion）にしてある★
+        #   「同義語グループ」ではなく一方向。解きたいのは「質問に出るが文書に
+        #   無い語」なので、逆向き（文書語→質問語）を足しても、その語で聞かれた
+        #   質問は既に当たっている。双方向にすると当たっている質問にまで
+        #   無関係な語が増える。
+        #
+        # ★project_id は NULL 可（NULL = 全プロジェクト共通の言い換え）★
+        #   社内用語はプロジェクト（＝テナント）ごとに違い、同じ略語が別の意味を
+        #   持ちうる。共通にしか置けないと、あるテナントの辞書が他テナントの検索に
+        #   無関係な語を足すことになる。topic まで割らないのは、語彙がトピックを
+        #   またいで使われるため（「リモワ」は労務でも総務でもリモワ）。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS synonyms (
+                id         BIGSERIAL PRIMARY KEY,
+                project_id BIGINT REFERENCES projects(id),
+                term       TEXT NOT NULL,   -- 質問に出る語（社内用語・略語・表記ゆれ）
+                expansion  TEXT NOT NULL,   -- 文書側で使われている語
+                note       TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        # 同じ言い換えを二重に登録しない。★NULLS NOT DISTINCT★ が要るのは
+        # topics / saved_questions と同じ理由（既定では NULL 同士が「別の値」に
+        # なり、共通(project_id IS NULL)の同じ言い換えが何行でも入る）。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS synonyms_unique_idx "
+            "ON synonyms (project_id, term, expansion) NULLS NOT DISTINCT;"
+        )
         # --- 区分の正規化マイグレーション（TEXT → id 参照）--------------------
         # かつて documents / eval_questions / saved_questions は区分を生の TEXT
         # （project / topic カラム）で重複保持していた。マスタ(projects/topics)を
