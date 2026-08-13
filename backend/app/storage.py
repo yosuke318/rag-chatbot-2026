@@ -149,6 +149,32 @@ def file_url(source: str) -> str | None:
         return None
 
 
+def delete_objects(keys: list[str]) -> int:
+    """S3のオブジェクトを消す（best-effort）。消せた件数を返す。
+
+    文書を削除したときに、原本と文書内画像をS3に残さないための入口。
+    DBから行が消えているのにS3にだけ原本が残っていても、それを指す経路
+    （/files/<出典名>）がもう無いので取り出せず、容量だけを使い続ける。
+
+    ★DBの削除とは別トランザクション★ S3にはトランザクションが無いので、
+    DBの削除を確定させてからここを呼ぶ。順序を逆にすると「S3は消えたのに
+    DBの削除が失敗した」＝原本の無い文書、という直しにくい状態になる。
+    こちらの失敗は消し残し（次の削除や後始末で回収できる）にとどまる。
+
+    S3未設定なら何もせず0。個別の失敗は警告ログにとどめ、残りの削除は続ける。
+    """
+    if not is_enabled() or not keys:
+        return 0
+    deleted = 0
+    for key in keys:
+        try:
+            _client().delete_object(Bucket=S3_BUCKET, Key=key)
+            deleted += 1
+        except Exception:
+            logger.warning("S3オブジェクトの削除に失敗しました: %s", key, exc_info=True)
+    return deleted
+
+
 def backfill_from_texts(items: list[tuple[str, str]]) -> int:
     """(source, text) の一覧を、まだS3に無いものだけ保存する。保存した件数を返す。
 

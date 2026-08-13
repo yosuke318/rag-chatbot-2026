@@ -50,3 +50,9 @@ export async function POST(req: NextRequest, { params }: { params: { path: strin
 export async function PATCH(req: NextRequest, { params }: { params: { path: string[] } }) {
   return proxy(req, params.path);
 }
+
+// 文書の削除（DELETE /documents）。消す対象は本文（ids）で送るので、
+// GET/HEAD と違って本文を落とさずに中継する（proxy の hasBody がそう分岐している）。
+export async function DELETE(req: NextRequest, { params }: { params: { path: string[] } }) {
+  return proxy(req, params.path);
+}

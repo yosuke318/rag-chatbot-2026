@@ -382,6 +382,35 @@ class DocumentSummariesResponse(BaseModel):
     )
 
 
+class DeleteDocumentsRequest(BaseModel):
+    """削除する文書の指定。"""
+
+    # ★source ではなく id★ documents.source は UNIQUE ではないので、
+    # source で受けると「同名の二重登録の片方だけ消す」ができない。
+    ids: List[int] = Field(description="削除する documents.id。1件以上")
+
+
+class DeleteDocumentsResponse(BaseModel):
+    """削除の結果。何が消えて、何が宙に浮いたかを返す。"""
+
+    deleted: int = Field(description="実際に消した documents の行数")
+    sources: List[str] = Field(description="消した文書の名前（重複を除く）")
+    # 消す前に一覧を取り直していない画面から呼ぶと起きる（他の端末が先に消した等）。
+    # エラーにはしない（結果として「その文書が無い」状態は達成されている）。
+    missing_ids: List[int] = Field(
+        description="指定されたが存在しなかった id。エラーではない"
+    )
+    # ★黙って消さない★ eval_questions.expected_source は documents への外部キー
+    # ではないので、文書を消しても正解ラベルは残る。残った質問は以後どう検索しても
+    # 正解に辿り着けず、Hit@k / MRR が黙って下がる。必ず件数を返して画面に出す。
+    orphaned_questions: int = Field(
+        description="正解ラベルの指す文書が無くなった評価質問の件数"
+    )
+    orphaned_sources: List[str] = Field(
+        description="そのラベルに使われていた文書名。評価質問の直し先を示す"
+    )
+
+
 class SchemaColumn(BaseModel):
     """カラム1つの物理名と論理名。"""
 

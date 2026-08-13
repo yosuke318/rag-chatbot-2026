@@ -19,6 +19,7 @@ from app import (
     apikeys,
     charts,
     conversations,
+    documents,
     feedback,
     retrieval,
     saved_questions,
@@ -71,6 +72,8 @@ from app.schemas import (
     ChatResponse,
     ChunksResponse,
     ConversationResponse,
+    DeleteDocumentsRequest,
+    DeleteDocumentsResponse,
     DocumentsResponse,
     DocumentSummariesResponse,
     ErrorResponse,
@@ -869,6 +872,39 @@ def list_document_summaries(
         ],
         "truncated": truncated,
     }
+
+
+@app.delete(
+    "/documents",
+    response_model=DeleteDocumentsResponse,
+    responses={400: {"model": ErrorResponse, "description": "入力不正"}},
+    dependencies=[Depends(require_admin)],
+)
+def delete_documents(req: DeleteDocumentsRequest):
+    """登録済みの文書を消す（紐づくチャンク・画像・原本ごと）。
+
+    ★認可は /admin/* と同じ opt-in★
+      ADMIN_TOKEN を設定した構成でだけトークンを要求する（require_admin 参照）。
+      閉域前提のローカルでは今までどおり素通りし、閉域を出す構成では
+      「文書を消す」という取り消せない操作に鍵をかけられる。
+
+    ★取り消せない操作なので、確認は呼び出し側（UI）の責任★
+      APIは黙って実行する。何をどれだけ消すかを見せてから呼ぶのはUI側。
+
+    正解ラベル（eval_questions.expected_source）が指す文書を消した場合、
+    質問自体は残す。宙に浮いた件数を戻り値に入れるので、呼び出し側はそれを
+    必ず利用者に見せること（黙って消えると評価の数字だけが静かに下がる）。
+    """
+    # 0件はエラー。押し間違いを 200 で返すと「消えたつもり」になる。
+    if not req.ids:
+        return _error(
+            400,
+            "invalid_ids",
+            "削除する文書が選ばれていません。",
+            "ids に documents.id を1件以上入れてください。",
+            "",
+        )
+    return documents.delete(req.ids)
 
 
 @app.post(

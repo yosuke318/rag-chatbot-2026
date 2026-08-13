@@ -608,7 +608,15 @@ function ScopeCreatePanel({
 }) {
   const [project, setProject] = useState("");
   const [topic, setTopic] = useState("");
-  const [status, setStatus] = useState("");
+  // ★結果は3種類あり、色を分ける★
+  //   作れた / 既にあった / 失敗した、の3つ。「既にあった」は失敗ではない
+  //   （API も 200 で created=false を返す）ので、赤いエラーにはしない。
+  //   かといって成功と同じ見た目だと「作られた」と読めてしまうため、
+  //   注意の色で「重ねなかった」と分かるようにする。
+  const [status, setStatus] = useState<{
+    kind: "ok" | "exists" | "error";
+    text: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const topics = useTopics(project, scopeVersion);
 
@@ -622,7 +630,7 @@ function ScopeCreatePanel({
     const t = topic.trim();
     if ((!p && !t) || saving) return;
     setSaving(true);
-    setStatus("登録中…");
+    setStatus(null);
     try {
       const res = t
         ? await fetch("/api/backend/topics", {
@@ -637,14 +645,22 @@ function ScopeCreatePanel({
           });
       const err = await errorMessage(res);
       if (err) {
-        setStatus(err);
+        setStatus({ kind: "error", text: err });
         return;
       }
       const data = await res.json();
+      const what = t ? "トピック" : "プロジェクト";
       const label = t ? `${p || "（プロジェクトなし）"} / ${t}` : p;
-      // created=false は「既にあった」＝エラーではない
+      // created=false は「既にあった」＝エラーではない。作らずに済ませただけ。
       setStatus(
-        data.created ? `区分「${label}」を作りました` : `区分「${label}」は既にあります`,
+        data.created
+          ? { kind: "ok", text: `${what}「${label}」を作りました。` }
+          : {
+              kind: "exists",
+              text:
+                `${what}「${label}」はすでに存在します。` +
+                "同じ名前は重ねて作られないので、そのまま各パネルのセレクタから選べます。",
+            },
       );
       // 作れたときだけ入力を空にする。既にあった場合に消すと、
       // 何を打って既存扱いになったのかが画面から消えてしまう。
@@ -654,7 +670,7 @@ function ScopeCreatePanel({
       }
       onCreated();
     } catch (e) {
-      setStatus(`エラー: ${String(e)}`);
+      setStatus({ kind: "error", text: `エラー: ${String(e)}` });
     } finally {
       setSaving(false);
     }
@@ -688,7 +704,12 @@ function ScopeCreatePanel({
           マスタにだけ登録します。文書やファイルは登録しません。
         </span>
       </div>
-      {status && <p className="hint ingest-status">{status}</p>}
+      {status && (
+        // 読み上げにも届くようにする（押した結果が視覚の色だけで伝わる状態にしない）
+        <p className={`result-note result-${status.kind}`} role="status">
+          {status.text}
+        </p>
+      )}
     </section>
   );
 }
@@ -750,7 +771,8 @@ function DocSortHeader({
  *     - 評価コーパスとデモ用文書が混ざって見分けが付かない
  *   表の各列がそのままこの4つに対応している。
  *
- * ここは見るだけ。削除や区分の付け替えは扱わない（APIと権限の設計が別の話）。
+ * 気づいた次にやることが「消す」なので、削除もここに置く（気づく場所と直す場所を
+ * 分けない）。区分の付け替えはまだ扱わない。
  */
 function DocumentListPanel({
   projects,
@@ -792,6 +814,75 @@ function DocumentListPanel({
     scopeVersion + reload,
   );
 
+  // 削除の選択状態。★行IDで持つ★ 文書名は一意ではない（同名の二重登録が
+  // あり得る）ので、名前で持つと「片方だけ消す」ができない。
+  const [selected, setSelected] = useState<number[]>([]);
+  // 確認ダイアログを開いているか。取り消せない操作なので、押した直後には消さず
+  // 「何を消すか」を見せてから確定させる。
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteNote, setDeleteNote] = useState<{
+    kind: "ok" | "exists" | "error";
+    text: string;
+  } | null>(null);
+
+  const shown = rows ?? [];
+  // 絞り込みや再読み込みで表から消えた行の選択は落とす。残しておくと、
+  // 見えていない文書を消してしまう。
+  const selectable = shown.map((d) => d.id);
+  const picked = selected.filter((id) => selectable.includes(id));
+  const pickedRows = shown.filter((d) => picked.includes(d.id));
+  const allPicked = selectable.length > 0 && picked.length === selectable.length;
+
+  function togglePick(id: number) {
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id],
+    );
+  }
+
+  function togglePickAll() {
+    setSelected(allPicked ? [] : selectable);
+  }
+
+  /** 選択した文書を消す（確認ダイアログの「削除する」から呼ぶ）。 */
+  async function runDelete() {
+    if (deleting || picked.length === 0) return;
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/backend/documents", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: picked }),
+      });
+      const err = await errorMessage(res);
+      if (err) {
+        setDeleteNote({ kind: "error", text: err });
+        return;
+      }
+      const data = await res.json();
+      // ★宙に浮いた評価質問は必ず出す★
+      //   正解ラベル(expected_source)は文書名を指すだけなので、文書を消しても
+      //   質問は残る。残った質問は以後どう検索しても当たらず、Hit@k / MRR が
+      //   黙って下がる。数字だけが下がって理由が分からない、を防ぐ。
+      const orphaned =
+        data.orphaned_questions > 0
+          ? `　※ ${data.orphaned_questions}件の評価用質問が、消えた文書（${data.orphaned_sources.join("・")}）を正解に指したままです。` +
+            "③「質問を追加」で正解を付け替えるか、その質問を消してください。"
+          : "";
+      setDeleteNote({
+        kind: data.orphaned_questions > 0 ? "exists" : "ok",
+        text: `${data.deleted}件の文書を削除しました。${orphaned}`,
+      });
+      setSelected([]);
+      setConfirming(false);
+      setReload((v) => v + 1);
+    } catch (e) {
+      setDeleteNote({ kind: "error", text: `エラー: ${String(e)}` });
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   function toggleSort(key: DocSortKey) {
     if (key === sortKey) {
       onSort(key, !sortDesc);
@@ -830,12 +921,65 @@ function DocumentListPanel({
 
       <div className="verify-controls">
         <button onClick={() => setReload((v) => v + 1)}>再読み込み</button>
+        {/* 削除は取り消せないので、選んでいないときは押せないままにする
+            （0件で押せて「何も起きない」より、押せない理由が見えるほうがよい）。 */}
+        <button
+          className="danger-button"
+          onClick={() => setConfirming(true)}
+          disabled={picked.length === 0}
+          title={
+            picked.length === 0
+              ? "消す文書を左のチェックボックスで選んでください"
+              : `選んだ${picked.length}件を削除する`
+          }
+        >
+          選んだ文書を削除（{picked.length}件）
+        </button>
         <span className="hint">
           {sorted === null
             ? "読み込み中…"
             : `${sorted.length}件${truncated ? "（上限まで）" : ""}`}
         </span>
       </div>
+
+      {deleteNote && (
+        <p className={`result-note result-${deleteNote.kind}`} role="status">
+          {deleteNote.text}
+        </p>
+      )}
+
+      {/* 確認ダイアログ。★何件・どれを消すかを名前で出す★
+          チェックボックスは押し間違えても見た目がほとんど変わらないので、
+          「今から消えるもの」を一覧にして最後にもう一度目で確かめさせる。 */}
+      <Modal
+        open={confirming}
+        onCancel={() => setConfirming(false)}
+        title="この文書を削除しますか？"
+        okText={deleting ? "削除中…" : `削除する（${picked.length}件）`}
+        cancelText="やめる"
+        okButtonProps={{ danger: true, disabled: deleting }}
+        cancelButtonProps={{ disabled: deleting }}
+        onOk={runDelete}
+      >
+        <p className="hint">
+          <strong>この操作は取り消せません。</strong>
+          文書本体・チャンク・図表・S3の原本ファイルが消えます。
+          評価用質問がこの文書を正解に指していた場合、質問は残るので
+          削除後に付け替えてください。
+        </p>
+        <ul className="doc-delete-list">
+          {pickedRows.map((d) => (
+            <li key={d.id}>
+              {d.source}
+              <span className="doc-null">
+                {" "}
+                （{d.project ?? "共通"} / {d.topic ?? "共通"}・
+                {d.chunk_count}チャンク）
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Modal>
 
       {/* 上限で切れたことは黙らせない。続きがあるのに全部だと読まれると、
           「入っていない文書に気づく」というこの画面の役目が壊れる。 */}
@@ -874,6 +1018,18 @@ function DocumentListPanel({
           <table className="doc-table">
             <thead>
               <tr>
+                <th className="doc-select">
+                  {/* 表に出ている行の全選択。絞り込みで見えていない行は含めない
+                      （見えないものを消さない）。 */}
+                  <label title="表示中の文書をすべて選ぶ">
+                    <input
+                      type="checkbox"
+                      checked={allPicked}
+                      onChange={togglePickAll}
+                      aria-label="表示中の文書をすべて選ぶ"
+                    />
+                  </label>
+                </th>
                 <DocSortHeader
                   label="文書名"
                   state={sortState("source")}
@@ -915,7 +1071,17 @@ function DocumentListPanel({
             <tbody>
               {sorted.map((d) => (
                 // key は id。source は一意ではない（同名の二重登録があり得る）
-                <tr key={d.id}>
+                <tr key={d.id} className={picked.includes(d.id) ? "doc-picked" : undefined}>
+                  <td className="doc-select">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={picked.includes(d.id)}
+                        onChange={() => togglePick(d.id)}
+                        aria-label={`${d.source} を選ぶ`}
+                      />
+                    </label>
+                  </td>
                   <td>
                     <SourceLink source={d.source} />
                   </td>

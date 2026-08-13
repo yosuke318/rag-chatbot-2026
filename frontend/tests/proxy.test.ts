@@ -10,7 +10,7 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GET, PATCH, POST } from "../app/api/backend/[...path]/route";
+import { DELETE, GET, PATCH, POST } from "../app/api/backend/[...path]/route";
 
 type Captured = { url: string; init: RequestInit };
 
@@ -59,6 +59,20 @@ describe("バックエンドへの中継", () => {
     expect(calls[0].url).toBe("http://backend:8000/feedback/7");
     // メソッドを POST に丸めないこと（丸めると新しい👎が作られてしまう）
     expect(calls[0].init.method).toBe("PATCH");
+    expect(calls[0].init.body).toBeDefined();
+  });
+
+  it("DELETE を中継し、本文（消す対象のid）を落とさない", async () => {
+    const calls = stubFetch();
+    const res = await DELETE(
+      request("DELETE", "documents", '{"ids":[1,2]}'),
+      params("documents"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(calls[0].url).toBe("http://backend:8000/documents");
+    expect(calls[0].init.method).toBe("DELETE");
+    // 本文が落ちると「1件も指定されていない」扱いになり、消えずに 400 になる
     expect(calls[0].init.body).toBeDefined();
   });
 
