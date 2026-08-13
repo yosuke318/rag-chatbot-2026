@@ -345,7 +345,7 @@ function useDocuments(
   return sources;
 }
 
-/** 文書一覧（GET /documents/summary）。①「入っている文書」パネル用。
+/** 文書一覧（GET /documents/summary）。「入っている文書」の表用。
  *
  * ★useDocuments とは別のAPI★ あちらは ③ のセレクタを埋めるためのもので、
  * 同じ source を1件に潰す。こちらは「今どうなっているか」を見る画面なので
@@ -677,8 +677,10 @@ function ScopeCreatePanel({
   }
 
   return (
-    <section className="panel">
-      <h2>① 区分を追加（/projects・/topics・APIキー不要）</h2>
+    <div className="panel-section">
+      <h3 className="panel-section-title">
+        2. 区分を追加（/projects・/topics・APIキー不要）
+      </h3>
       <p className="hint panel-note">
         文書が無くても区分だけ先に作れます。作った区分は各パネルのセレクタに出るので、
         「先に部署を作っておいて、資料は後から入れる」という順で使えます。
@@ -710,11 +712,11 @@ function ScopeCreatePanel({
           {status.text}
         </p>
       )}
-    </section>
+    </div>
   );
 }
 
-/** 並び替えボタン付きの表の見出しセル（①「入っている文書」用）。
+/** 並び替えボタン付きの表の見出しセル（「入っている文書」の表用）。
  *
  * ★DocumentListPanel の中で定義しない★ 描画のたびに別のコンポーネントとして
  * 扱われ、Reactが中身を作り直す（＝押した直後にフォーカスが外れる）ため。
@@ -759,7 +761,7 @@ function DocSortHeader({
   );
 }
 
-/** ①「入っている文書」パネル。登録済みの文書を区分で絞って表で見る。
+/** 「入っている文書」の面。登録済みの文書を区分で絞って表で見る。
  *
  * ★何のために要るか★
  *   これまで文書名が画面に出るのは検索結果（②）と評価結果（③）の中だけで、
@@ -900,8 +902,10 @@ function DocumentListPanel({
     sortKey === key ? (sortDesc ? "desc" : "asc") : "off";
 
   return (
-    <section className="panel">
-      <h2>① 入っている文書（/documents/summary・APIキー不要）</h2>
+    <div className="panel-section">
+      <h3 className="panel-section-title">
+        3. 入っている文書（/documents/summary・APIキー不要）
+      </h3>
       <p className="hint panel-note">
         登録済みの文書を区分で絞って一覧します。
         <strong>チャンク数が0の行は索引に載っていません</strong>
@@ -1122,7 +1126,7 @@ function DocumentListPanel({
           </table>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -2411,13 +2415,13 @@ export default function Home() {
   const [docTopic, setDocTopic] = useState("");
   const docTopics = useTopics(docProject, scopeVersion);
   const [ingestStatus, setIngestStatus] = useState("");
-  // 登録フォームを開いているか。①は登録・区分追加・一覧を縦に並べるので、
+  // 登録フォームを開いているか。文書タブは登録・区分追加・一覧を縦に並べるので、
   // 一覧だけを見たいときにドロップゾーンを畳めるようにする。
   // ★state はここ（Home）★ 畳んだままタブを移動して戻っても畳んだままにする。
   const [ingestFormOpen, setIngestFormOpen] = useState(true);
   // 一覧の「上の登録フォームへ」から戻ってくる先。
-  const ingestFormRef = useRef<HTMLElement>(null);
-  // --- 文書一覧パネル（①「入っている文書」= /documents/summary）---
+  const ingestFormRef = useRef<HTMLDivElement>(null);
+  // --- 文書一覧（「入っている文書」= /documents/summary）---
   // 見るだけの画面だが、絞り込みと並び順は他パネルと同じくここに置く
   // （タブを移動して戻ったときに「すべて・新しい順」へ戻らないように）。
   // トピックの候補はパネル側で引く（選択中のプロジェクト配下だけ・他パネルと同じ）
@@ -2997,15 +3001,22 @@ export default function Home() {
           </ul>
         </div>
 
-      {/* 書き込みフロー: text → chunk → embed → pgvector */}
+      {/* 書き込みフロー: text → chunk → embed → pgvector
+
+          ★「登録 → 区分を作る → 何が入ったか見る」は1枚のパネルに収める★
+          この3つは同じ作業の続きなので、箱を分けると箱の間の余白ぶんだけ
+          縦に伸び、登録してから一覧を見るまでに余計なスクロールが要る。
+          仕切りは箱ではなく小見出しと罫線で表す。 */}
       {tab === "ingest" && (
-      <section className="panel" ref={ingestFormRef}>
+      <section className="panel">
+      <div className="panel-section" ref={ingestFormRef}>
         {/* ★畳めるようにしてある★
-            ①は「登録 → 区分を作る → 何が入ったか見る」を1画面に縦に並べる。
             一覧だけを見たい回にドロップゾーンを読み飛ばさずに済むよう、
             登録フォームは畳んで下を引き上げられるようにする。 */}
         <div className="panel-head">
-          <h2>① 文書を登録（/ingest-file・Voyageキー必要）</h2>
+          <h3 className="panel-section-title">
+            1. 文書を登録（/ingest-file・Voyageキー必要）
+          </h3>
           <button
             type="button"
             className="panel-toggle"
@@ -3141,38 +3152,35 @@ export default function Home() {
         {ingestStatus && <p className="hint ingest-status">{ingestStatus}</p>}
         </>
         )}
-      </section>
-      )}
+      </div>
 
       {/* 区分を作る入口。文書登録とは別のコンポーネントにして、
           「これから入れる文書に付ける区分」との違いを画面で分ける。 */}
-      {tab === "ingest" && (
-        <ScopeCreatePanel
-          projects={projects}
-          scopeVersion={scopeVersion}
-          onCreated={() => setScopeVersion((v) => v + 1)}
-        />
-      )}
+      <ScopeCreatePanel
+        projects={projects}
+        scopeVersion={scopeVersion}
+        onCreated={() => setScopeVersion((v) => v + 1)}
+      />
 
       {/* 読み出し側の確認: 今そのプロジェクトに何がどう入っているか。
           scopeVersion は取り込みが終わると増えるので、上で登録すればここも
           自動で引き直される（＝入ったことがその場で見える）。 */}
-      {tab === "ingest" && (
-        <DocumentListPanel
-          projects={projects}
-          scopeVersion={scopeVersion}
-          project={listProject}
-          topic={listTopic}
-          onProject={setListProject}
-          onTopic={setListTopic}
-          sortKey={listSortKey}
-          sortDesc={listSortDesc}
-          onSort={(key, desc) => {
-            setListSortKey(key);
-            setListSortDesc(desc);
-          }}
-          onAddDocuments={focusIngestForm}
-        />
+      <DocumentListPanel
+        projects={projects}
+        scopeVersion={scopeVersion}
+        project={listProject}
+        topic={listTopic}
+        onProject={setListProject}
+        onTopic={setListTopic}
+        sortKey={listSortKey}
+        sortDesc={listSortDesc}
+        onSort={(key, desc) => {
+          setListSortKey(key);
+          setListSortDesc(desc);
+        }}
+        onAddDocuments={focusIngestForm}
+      />
+      </section>
       )}
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}

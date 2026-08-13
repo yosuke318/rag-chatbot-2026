@@ -421,8 +421,24 @@ button:disabled {
   border-radius: 8px;
 }
 
-/* 見出しと開閉ボタンを1行に並べるパネルの頭（①の登録フォーム）。
-   h2 の下マージンはこの行が持つので、h2 側は打ち消す。 */
+/* 1枚のパネルの中を小見出しで区切る単位（文書タブの 登録 / 区分を追加 /
+   入っている文書）。同じ作業の続きを別々の箱にすると、箱の間の余白ぶんだけ
+   縦に伸びてスクロールが増えるので、仕切りは箱ではなく罫線で表す。 */
+.panel-section + .panel-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* パネル直下の h2 と同じ見え方にする（階層が下がっても字面は揃える） */
+.panel-section-title {
+  font-size: 14px;
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+/* 見出しと開閉ボタンを1行に並べるパネルの頭（文書タブの登録フォーム）。
+   見出しの下マージンはこの行が持つので、見出し側は打ち消す。 */
 .panel-head {
   display: flex;
   align-items: baseline;
@@ -431,7 +447,8 @@ button:disabled {
   margin: 0 0 12px;
 }
 
-.panel-head h2 {
+.panel-head h2,
+.panel-head .panel-section-title {
   margin: 0;
 }
 
@@ -502,7 +519,7 @@ button:disabled {
   color: var(--on-accent);
 }
 
-/* --- ①「入っている文書」の表 --- */
+/* --- 「入っている文書」の表 --- */
 /* 選択のチェックボックス列。幅は中身ぶんだけ取り、素の input の
    width:100% / margin を打ち消す（.retriever-option と同じ扱い）。 */
 .doc-select {
