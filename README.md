@@ -87,8 +87,8 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 
 | パネル | 対応するAPI | 必要なAPIキー |
 |---|---|---|
-| ① 文書を登録 | `POST /ingest` | Voyage（埋め込み） |
 | ① 区分を追加 | `POST /projects`・`POST /topics` | 不要 |
+| ① 文書を登録 | `POST /ingest` | Voyage（埋め込み） |
 | ① 入っている文書（削除も） | `GET /documents/summary`・`DELETE /documents` | 不要 |
 | ② 質問で資料を検索 | `GET /search` | Voyage のみ |
 | ② 保管質問をまとめて再検索 | `GET /verify` | Voyage のみ |

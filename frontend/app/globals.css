@@ -421,9 +421,9 @@ button:disabled {
   border-radius: 8px;
 }
 
-/* 1枚のパネルの中を小見出しで区切る単位（文書タブの 登録 / 区分を追加 /
-   入っている文書）。同じ作業の続きを別々の箱にすると、箱の間の余白ぶんだけ
-   縦に伸びてスクロールが増えるので、仕切りは箱ではなく罫線で表す。 */
+/* 1枚のパネルの中を小見出しで区切る単位（文書タブの 登録 / 入っている文書）。
+   同じ作業の続きを別々の箱にすると、箱の間の余白ぶんだけ縦に伸びて
+   スクロールが増えるので、仕切りは箱ではなく罫線で表す。 */
 .panel-section + .panel-section {
   margin-top: 20px;
   padding-top: 16px;
@@ -1318,6 +1318,12 @@ button:disabled {
 .scope-label {
   font-size: 12px;
   color: var(--muted);
+}
+
+/* 候補を出さない素の入力欄（区分を追加）。素の input が持つ下マージンは
+   .scope-row 側が持っているので、ここで打ち消して antd の欄と高さを揃える。 */
+.scope-text {
+  margin-bottom: 0;
 }
 
 .eval-controls {

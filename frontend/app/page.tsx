@@ -592,17 +592,18 @@ function ScopeInput({
  *   押すボタンでしか決まらず、画面からは読めなかった。作る操作は作る専用の
  *   入力欄を持たせて、独立した区分として置く。
  *
+ * ★文書のパネルとは別の箱にして、その上に置く★
+ *   文書タブの他の面（登録する / 何が入っているか見る）は文書を扱うが、
+ *   ここが触るのは区分マスタだけで文書には触らない。同じ箱に並べると
+ *   文書の作業の一部に見えるので、箱を分けて別の機能だと分かるようにする。
+ *
  * ★入力値をこのコンポーネントの中で持つ理由★
  *   絞り込み（どの区分を見ているか）と違い、ここは送ったら用済みの入力。
  *   タブを離れて消えても困らないので、上に持ち上げない。
  */
 function ScopeCreatePanel({
-  projects,
-  scopeVersion,
   onCreated,
 }: {
-  projects: string[];
-  scopeVersion: number;
   /** 作れたら呼ぶ。各パネルのセレクタを引き直させる。 */
   onCreated: () => void;
 }) {
@@ -618,7 +619,6 @@ function ScopeCreatePanel({
     text: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
-  const topics = useTopics(project, scopeVersion);
 
   /** 入力欄の区分をマスタに登録する（文書は入れない）。
    *
@@ -677,24 +677,44 @@ function ScopeCreatePanel({
   }
 
   return (
-    <div className="panel-section">
-      <h3 className="panel-section-title">
-        2. 区分を追加（/projects・/topics・APIキー不要）
-      </h3>
+    <section className="panel">
+      <h2>区分を追加（/projects・/topics・APIキー不要）</h2>
       <p className="hint panel-note">
         文書が無くても区分だけ先に作れます。作った区分は各パネルのセレクタに出るので、
         「先に部署を作っておいて、資料は後から入れる」という順で使えます。
         トピックだけ打つと、上のプロジェクト（空ならプロジェクトなし）の配下に作ります。
       </p>
-      <ScopeInput
-        idPrefix="newscope"
-        project={project}
-        topic={topic}
-        projects={projects}
-        topics={topics}
-        onProject={setProject}
-        onTopic={setTopic}
-      />
+      {/* ★ここだけ候補の一覧を出さない★
+          他の区分入力欄は「すでにある区分を選ぶ」ための候補を出すが、ここは
+          新しい名前を作るための欄。既存の名前を選べても作れるものは無い
+          （同じ名前は重ねて作られず「すでに存在します」で終わる）ので、
+          選択肢を出すと押せて何も起きない操作が増えるだけになる。 */}
+      <div className="scope-row">
+        <div className="scope-field">
+          <label className="scope-label" htmlFor="newscope-project">
+            プロジェクト
+          </label>
+          <input
+            id="newscope-project"
+            className="scope-text"
+            value={project}
+            placeholder="作るプロジェクト名"
+            onChange={(e) => setProject(e.target.value)}
+          />
+        </div>
+        <div className="scope-field">
+          <label className="scope-label" htmlFor="newscope-topic">
+            トピック
+          </label>
+          <input
+            id="newscope-topic"
+            className="scope-text"
+            value={topic}
+            placeholder="作るトピック名"
+            onChange={(e) => setTopic(e.target.value)}
+          />
+        </div>
+      </div>
       <div className="verify-controls">
         <button
           onClick={createScope}
@@ -712,7 +732,7 @@ function ScopeCreatePanel({
           {status.text}
         </p>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -904,7 +924,7 @@ function DocumentListPanel({
   return (
     <div className="panel-section">
       <h3 className="panel-section-title">
-        3. 入っている文書（/documents/summary・APIキー不要）
+        2. 入っている文書（/documents/summary・APIキー不要）
       </h3>
       <p className="hint panel-note">
         登録済みの文書を区分で絞って一覧します。
@@ -3001,10 +3021,16 @@ export default function Home() {
           </ul>
         </div>
 
+      {/* 区分を作る入口。文書には触らない（マスタだけを増やす）ので、
+          下の文書のパネルとは別の箱にして、文書の作業に入る前に置く。 */}
+      {tab === "ingest" && (
+        <ScopeCreatePanel onCreated={() => setScopeVersion((v) => v + 1)} />
+      )}
+
       {/* 書き込みフロー: text → chunk → embed → pgvector
 
-          ★「登録 → 区分を作る → 何が入ったか見る」は1枚のパネルに収める★
-          この3つは同じ作業の続きなので、箱を分けると箱の間の余白ぶんだけ
+          ★「登録する」と「何が入ったか見る」は1枚のパネルに収める★
+          この2つは同じ作業の続きなので、箱を分けると箱の間の余白ぶんだけ
           縦に伸び、登録してから一覧を見るまでに余計なスクロールが要る。
           仕切りは箱ではなく小見出しと罫線で表す。 */}
       {tab === "ingest" && (
@@ -3054,7 +3080,7 @@ export default function Home() {
         <p className="hint">
           区分は下で<strong>登録するファイルすべて</strong>に付きます（空欄なら区分なし）。
           既存の区分は入力欄から選べます。新しい名前を打てばその区分が作られます。
-          文書を入れずに区分だけ作るときは、下の「区分を追加」を使います。
+          文書を入れずに区分だけ作るときは、上の「区分を追加」を使います。
         </p>
 
         {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
@@ -3153,14 +3179,6 @@ export default function Home() {
         </>
         )}
       </div>
-
-      {/* 区分を作る入口。文書登録とは別のコンポーネントにして、
-          「これから入れる文書に付ける区分」との違いを画面で分ける。 */}
-      <ScopeCreatePanel
-        projects={projects}
-        scopeVersion={scopeVersion}
-        onCreated={() => setScopeVersion((v) => v + 1)}
-      />
 
       {/* 読み出し側の確認: 今そのプロジェクトに何がどう入っているか。
           scopeVersion は取り込みが終わると増えるので、上で登録すればここも
