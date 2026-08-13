@@ -849,9 +849,26 @@ function DocumentListPanel({
   } | null>(null);
 
   const shown = rows ?? [];
-  // 絞り込みや再読み込みで表から消えた行の選択は落とす。残しておくと、
-  // 見えていない文書を消してしまう。
   const selectable = shown.map((d) => d.id);
+
+  // ★表から消えた行の選択は落とす★
+  //   残したままにすると、区分を絞って選ぶ → 別の区分を見る → 元に戻す、で
+  //   前の選択が復活する。押す直前に画面で見ていた選択と、実際に消える文書が
+  //   食い違うので、表に無くなった時点で選択も捨てる。
+  useEffect(() => {
+    // 取得中（null）は「0件になった」ではないので触らない。ここで落とすと
+    // 再読み込みのたびに選択が消える。
+    if (!rows) return;
+    const visible = new Set(rows.map((d) => d.id));
+    setSelected((prev) => {
+      const next = prev.filter((id) => visible.has(id));
+      // 中身が同じなら前の配列を返す（毎回新しい配列にすると再描画が止まらない）
+      return next.length === prev.length ? prev : next;
+    });
+  }, [rows]);
+
+  // 上の effect が走るまでの1描画ぶん、選択に表から消えた行が残りうる。
+  // 消す対象は必ず今表に出ている行だけにする。
   const picked = selected.filter((id) => selectable.includes(id));
   const pickedRows = shown.filter((d) => picked.includes(d.id));
   const allPicked = selectable.length > 0 && picked.length === selectable.length;
@@ -1106,7 +1123,7 @@ function DocumentListPanel({
                       />
                     </label>
                   </td>
-                  <td>
+                  <td className="doc-source">
                     <SourceLink source={d.source} />
                   </td>
                   {/* ★区分なしは空欄にしない★

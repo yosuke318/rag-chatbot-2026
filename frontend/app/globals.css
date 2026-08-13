@@ -547,8 +547,10 @@ button:disabled {
   overflow-y: auto;
 }
 
-/* 文書名は長くなるので、この列だけ幅を許して他を詰める */
-.doc-table td:first-child {
+/* 文書名は長くなるので、この列だけ幅を許して他を詰める。
+   ★列の位置ではなくクラスで指す★ 先頭には選択用のチェックボックス列がいるので、
+   td:first-child だと文書名ではなくその列に当たり、省略が効かなくなる。 */
+.doc-table .doc-source {
   max-width: 420px;
   overflow: hidden;
   text-overflow: ellipsis;
