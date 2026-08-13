@@ -421,6 +421,47 @@ button:disabled {
   border-radius: 8px;
 }
 
+/* 1枚のパネルの中を小見出しで区切る単位（文書タブの 登録 / 入っている文書）。
+   同じ作業の続きを別々の箱にすると、箱の間の余白ぶんだけ縦に伸びて
+   スクロールが増えるので、仕切りは箱ではなく罫線で表す。 */
+.panel-section + .panel-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* パネル直下の h2 と同じ見え方にする（階層が下がっても字面は揃える） */
+.panel-section-title {
+  font-size: 14px;
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+/* 見出しと開閉ボタンを1行に並べるパネルの頭（文書タブの登録フォーム）。
+   見出しの下マージンはこの行が持つので、見出し側は打ち消す。 */
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.panel-head h2,
+.panel-head .panel-section-title {
+  margin: 0;
+}
+
+/* 開閉は見た目の切り替えでしかないので、主要操作のボタンより弱く見せる */
+.panel-toggle {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--subtle);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
 /* 取り込み結果は複数ファイルぶんを改行で並べるので改行を活かす */
 .ingest-status {
   white-space: pre-line;
@@ -438,9 +479,78 @@ button:disabled {
   cursor: pointer;
 }
 
-/* --- ①「入っている文書」の表 --- */
-/* 文書名は長くなるので、この列だけ幅を許して他を詰める */
-.doc-table td:first-child {
+/* 操作の結果を1行で返す表示（区分の追加、文書の削除）。
+   ★成功・注意・失敗を色で分ける★
+   「すでに存在します」「評価質問が宙に浮いた」は失敗ではないので赤くしない。
+   かといって成功と同じ見た目だと、思ったとおりに済んだと読めてしまう。 */
+.result-note {
+  font-size: 12px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  white-space: pre-line;
+}
+
+.result-ok {
+  color: var(--muted);
+  background: var(--subtle);
+}
+
+.result-exists {
+  color: var(--warn);
+  background: var(--subtle);
+  border-color: var(--warn);
+}
+
+.result-error {
+  color: var(--danger-text);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+/* 取り消せない操作のボタン（文書の削除）。既定のアクセント色と並ぶので、
+   押す前に「これは他と違う」と分かる色にする。
+   文字色を白で固定しないのは、--danger がテーマで明暗どちらにも振れるため
+   （ダークでは淡い赤なので、白字だと読めない）。--on-accent は
+   「アクセント面に載せる文字色」＝面が明るいテーマでは暗い色になる。 */
+.danger-button {
+  background: var(--danger);
+  color: var(--on-accent);
+}
+
+/* --- 「入っている文書」の表 --- */
+/* 選択のチェックボックス列。幅は中身ぶんだけ取り、素の input の
+   width:100% / margin を打ち消す（.retriever-option と同じ扱い）。 */
+.doc-select {
+  width: 1%;
+  text-align: center;
+}
+
+.doc-select input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* 選んだ行。消す対象が表の中でひと目で分かるようにする */
+.doc-picked {
+  background: var(--accent-soft);
+}
+
+/* 確認ダイアログに出す「今から消えるもの」の一覧 */
+.doc-delete-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* 文書名は長くなるので、この列だけ幅を許して他を詰める。
+   ★列の位置ではなくクラスで指す★ 先頭には選択用のチェックボックス列がいるので、
+   td:first-child だと文書名ではなくその列に当たり、省略が効かなくなる。 */
+.doc-table .doc-source {
   max-width: 420px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1210,6 +1320,12 @@ button:disabled {
 .scope-label {
   font-size: 12px;
   color: var(--muted);
+}
+
+/* 候補を出さない素の入力欄（区分を追加）。素の input が持つ下マージンは
+   .scope-row 側が持っているので、ここで打ち消して antd の欄と高さを揃える。 */
+.scope-text {
+  margin-bottom: 0;
 }
 
 .eval-controls {

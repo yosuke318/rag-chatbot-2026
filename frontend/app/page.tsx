@@ -345,7 +345,7 @@ function useDocuments(
   return sources;
 }
 
-/** 文書一覧（GET /documents/summary）。①「入っている文書」パネル用。
+/** 文書一覧（GET /documents/summary）。「入っている文書」の表用。
  *
  * ★useDocuments とは別のAPI★ あちらは ③ のセレクタを埋めるためのもので、
  * 同じ source を1件に潰す。こちらは「今どうなっているか」を見る画面なので
@@ -583,7 +583,160 @@ function ScopeInput({
   );
 }
 
-/** 並び替えボタン付きの表の見出しセル（①「入っている文書」用）。
+/** 区分（プロジェクト / トピック）だけを作るパネル。
+ *
+ * ★文書登録フォームから切り離してある★
+ *   以前は文書登録フォームの区分入力欄を流用し、その横に「区分だけ登録する」
+ *   ボタンを置いていた。同じ入力欄が「これから入れる文書に付ける区分」と
+ *   「新しく作る区分」の両方を兼ねていたので、打った名前がどちらの意味になるかが
+ *   押すボタンでしか決まらず、画面からは読めなかった。作る操作は作る専用の
+ *   入力欄を持たせて、独立した区分として置く。
+ *
+ * ★文書のパネルとは別の箱にして、その上に置く★
+ *   文書タブの他の面（登録する / 何が入っているか見る）は文書を扱うが、
+ *   ここが触るのは区分マスタだけで文書には触らない。同じ箱に並べると
+ *   文書の作業の一部に見えるので、箱を分けて別の機能だと分かるようにする。
+ *
+ * ★入力値をこのコンポーネントの中で持つ理由★
+ *   絞り込み（どの区分を見ているか）と違い、ここは送ったら用済みの入力。
+ *   タブを離れて消えても困らないので、上に持ち上げない。
+ */
+function ScopeCreatePanel({
+  onCreated,
+}: {
+  /** 作れたら呼ぶ。各パネルのセレクタを引き直させる。 */
+  onCreated: () => void;
+}) {
+  const [project, setProject] = useState("");
+  const [topic, setTopic] = useState("");
+  // ★結果は3種類あり、色を分ける★
+  //   作れた / 既にあった / 失敗した、の3つ。「既にあった」は失敗ではない
+  //   （API も 200 で created=false を返す）ので、赤いエラーにはしない。
+  //   かといって成功と同じ見た目だと「作られた」と読めてしまうため、
+  //   注意の色で「重ねなかった」と分かるようにする。
+  const [status, setStatus] = useState<{
+    kind: "ok" | "exists" | "error";
+    text: string;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  /** 入力欄の区分をマスタに登録する（文書は入れない）。
+   *
+   * トピックを打っていればトピックを作る。その親としてプロジェクトも一緒に送るので、
+   * プロジェクト単独の登録が要るのは「プロジェクトだけ打った」ときだけ。
+   */
+  async function createScope() {
+    const p = project.trim();
+    const t = topic.trim();
+    if ((!p && !t) || saving) return;
+    setSaving(true);
+    setStatus(null);
+    try {
+      const res = t
+        ? await fetch("/api/backend/topics", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: t, project: p || null }),
+          })
+        : await fetch("/api/backend/projects", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: p }),
+          });
+      const err = await errorMessage(res);
+      if (err) {
+        setStatus({ kind: "error", text: err });
+        return;
+      }
+      const data = await res.json();
+      const what = t ? "トピック" : "プロジェクト";
+      const label = t ? `${p || "（プロジェクトなし）"} / ${t}` : p;
+      // created=false は「既にあった」＝エラーではない。作らずに済ませただけ。
+      setStatus(
+        data.created
+          ? { kind: "ok", text: `${what}「${label}」を作りました。` }
+          : {
+              kind: "exists",
+              text:
+                `${what}「${label}」はすでに存在します。` +
+                "同じ名前は重ねて作られないので、そのまま各パネルのセレクタから選べます。",
+            },
+      );
+      // 作れたときだけ入力を空にする。既にあった場合に消すと、
+      // 何を打って既存扱いになったのかが画面から消えてしまう。
+      if (data.created) {
+        setProject("");
+        setTopic("");
+      }
+      onCreated();
+    } catch (e) {
+      setStatus({ kind: "error", text: `エラー: ${String(e)}` });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <h2>区分を追加（/projects・/topics・APIキー不要）</h2>
+      <p className="hint panel-note">
+        文書が無くても区分だけ先に作れます。作った区分は各パネルのセレクタに出るので、
+        「先に部署を作っておいて、資料は後から入れる」という順で使えます。
+        トピックだけ打つと、上のプロジェクト（空ならプロジェクトなし）の配下に作ります。
+      </p>
+      {/* ★ここだけ候補の一覧を出さない★
+          他の区分入力欄は「すでにある区分を選ぶ」ための候補を出すが、ここは
+          新しい名前を作るための欄。既存の名前を選べても作れるものは無い
+          （同じ名前は重ねて作られず「すでに存在します」で終わる）ので、
+          選択肢を出すと押せて何も起きない操作が増えるだけになる。 */}
+      <div className="scope-row">
+        <div className="scope-field">
+          <label className="scope-label" htmlFor="newscope-project">
+            プロジェクト
+          </label>
+          <input
+            id="newscope-project"
+            className="scope-text"
+            value={project}
+            placeholder="作るプロジェクト名"
+            onChange={(e) => setProject(e.target.value)}
+          />
+        </div>
+        <div className="scope-field">
+          <label className="scope-label" htmlFor="newscope-topic">
+            トピック
+          </label>
+          <input
+            id="newscope-topic"
+            className="scope-text"
+            value={topic}
+            placeholder="作るトピック名"
+            onChange={(e) => setTopic(e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="verify-controls">
+        <button
+          onClick={createScope}
+          disabled={saving || (!project.trim() && !topic.trim())}
+        >
+          {saving ? "登録中…" : "この区分を作る"}
+        </button>
+        <span className="hint">
+          マスタにだけ登録します。文書やファイルは登録しません。
+        </span>
+      </div>
+      {status && (
+        // 読み上げにも届くようにする（押した結果が視覚の色だけで伝わる状態にしない）
+        <p className={`result-note result-${status.kind}`} role="status">
+          {status.text}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** 並び替えボタン付きの表の見出しセル（「入っている文書」の表用）。
  *
  * ★DocumentListPanel の中で定義しない★ 描画のたびに別のコンポーネントとして
  * 扱われ、Reactが中身を作り直す（＝押した直後にフォーカスが外れる）ため。
@@ -628,7 +781,7 @@ function DocSortHeader({
   );
 }
 
-/** ①「入っている文書」パネル。登録済みの文書を区分で絞って表で見る。
+/** 「入っている文書」の面。登録済みの文書を区分で絞って表で見る。
  *
  * ★何のために要るか★
  *   これまで文書名が画面に出るのは検索結果（②）と評価結果（③）の中だけで、
@@ -640,7 +793,8 @@ function DocSortHeader({
  *     - 評価コーパスとデモ用文書が混ざって見分けが付かない
  *   表の各列がそのままこの4つに対応している。
  *
- * ここは見るだけ。削除や区分の付け替えは扱わない（APIと権限の設計が別の話）。
+ * 気づいた次にやることが「消す」なので、削除もここに置く（気づく場所と直す場所を
+ * 分けない）。区分の付け替えはまだ扱わない。
  */
 function DocumentListPanel({
   projects,
@@ -667,7 +821,7 @@ function DocumentListPanel({
   sortKey: DocSortKey;
   sortDesc: boolean;
   onSort: (key: DocSortKey, desc: boolean) => void;
-  /** 0件のときに ①「登録する」へ送るための遷移。 */
+  /** 0件のときに、同じ画面の上にある登録フォームへ送る（畳んでいれば開く）。 */
   onAddDocuments: () => void;
 }) {
   const topics = useTopics(project, scopeVersion);
@@ -681,6 +835,92 @@ function DocumentListPanel({
     topic,
     scopeVersion + reload,
   );
+
+  // 削除の選択状態。★行IDで持つ★ 文書名は一意ではない（同名の二重登録が
+  // あり得る）ので、名前で持つと「片方だけ消す」ができない。
+  const [selected, setSelected] = useState<number[]>([]);
+  // 確認ダイアログを開いているか。取り消せない操作なので、押した直後には消さず
+  // 「何を消すか」を見せてから確定させる。
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteNote, setDeleteNote] = useState<{
+    kind: "ok" | "exists" | "error";
+    text: string;
+  } | null>(null);
+
+  const shown = rows ?? [];
+  const selectable = shown.map((d) => d.id);
+
+  // ★表から消えた行の選択は落とす★
+  //   残したままにすると、区分を絞って選ぶ → 別の区分を見る → 元に戻す、で
+  //   前の選択が復活する。押す直前に画面で見ていた選択と、実際に消える文書が
+  //   食い違うので、表に無くなった時点で選択も捨てる。
+  useEffect(() => {
+    // 取得中（null）は「0件になった」ではないので触らない。ここで落とすと
+    // 再読み込みのたびに選択が消える。
+    if (!rows) return;
+    const visible = new Set(rows.map((d) => d.id));
+    setSelected((prev) => {
+      const next = prev.filter((id) => visible.has(id));
+      // 中身が同じなら前の配列を返す（毎回新しい配列にすると再描画が止まらない）
+      return next.length === prev.length ? prev : next;
+    });
+  }, [rows]);
+
+  // 上の effect が走るまでの1描画ぶん、選択に表から消えた行が残りうる。
+  // 消す対象は必ず今表に出ている行だけにする。
+  const picked = selected.filter((id) => selectable.includes(id));
+  const pickedRows = shown.filter((d) => picked.includes(d.id));
+  const allPicked = selectable.length > 0 && picked.length === selectable.length;
+
+  function togglePick(id: number) {
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id],
+    );
+  }
+
+  function togglePickAll() {
+    setSelected(allPicked ? [] : selectable);
+  }
+
+  /** 選択した文書を消す（確認ダイアログの「削除する」から呼ぶ）。 */
+  async function runDelete() {
+    if (deleting || picked.length === 0) return;
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/backend/documents", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: picked }),
+      });
+      const err = await errorMessage(res);
+      if (err) {
+        setDeleteNote({ kind: "error", text: err });
+        return;
+      }
+      const data = await res.json();
+      // ★宙に浮いた評価質問は必ず出す★
+      //   正解ラベル(expected_source)は文書名を指すだけなので、文書を消しても
+      //   質問は残る。残った質問は以後どう検索しても当たらず、Hit@k / MRR が
+      //   黙って下がる。数字だけが下がって理由が分からない、を防ぐ。
+      const orphaned =
+        data.orphaned_questions > 0
+          ? `　※ ${data.orphaned_questions}件の評価用質問が、消えた文書（${data.orphaned_sources.join("・")}）を正解に指したままです。` +
+            "③「質問を追加」で正解を付け替えるか、その質問を消してください。"
+          : "";
+      setDeleteNote({
+        kind: data.orphaned_questions > 0 ? "exists" : "ok",
+        text: `${data.deleted}件の文書を削除しました。${orphaned}`,
+      });
+      setSelected([]);
+      setConfirming(false);
+      setReload((v) => v + 1);
+    } catch (e) {
+      setDeleteNote({ kind: "error", text: `エラー: ${String(e)}` });
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   function toggleSort(key: DocSortKey) {
     if (key === sortKey) {
@@ -699,8 +939,10 @@ function DocumentListPanel({
     sortKey === key ? (sortDesc ? "desc" : "asc") : "off";
 
   return (
-    <section className="panel">
-      <h2>① 入っている文書（/documents/summary・APIキー不要）</h2>
+    <div className="panel-section">
+      <h3 className="panel-section-title">
+        2. 入っている文書（/documents/summary・APIキー不要）
+      </h3>
       <p className="hint panel-note">
         登録済みの文書を区分で絞って一覧します。
         <strong>チャンク数が0の行は索引に載っていません</strong>
@@ -720,12 +962,65 @@ function DocumentListPanel({
 
       <div className="verify-controls">
         <button onClick={() => setReload((v) => v + 1)}>再読み込み</button>
+        {/* 削除は取り消せないので、選んでいないときは押せないままにする
+            （0件で押せて「何も起きない」より、押せない理由が見えるほうがよい）。 */}
+        <button
+          className="danger-button"
+          onClick={() => setConfirming(true)}
+          disabled={picked.length === 0}
+          title={
+            picked.length === 0
+              ? "消す文書を左のチェックボックスで選んでください"
+              : `選んだ${picked.length}件を削除する`
+          }
+        >
+          選んだ文書を削除（{picked.length}件）
+        </button>
         <span className="hint">
           {sorted === null
             ? "読み込み中…"
             : `${sorted.length}件${truncated ? "（上限まで）" : ""}`}
         </span>
       </div>
+
+      {deleteNote && (
+        <p className={`result-note result-${deleteNote.kind}`} role="status">
+          {deleteNote.text}
+        </p>
+      )}
+
+      {/* 確認ダイアログ。★何件・どれを消すかを名前で出す★
+          チェックボックスは押し間違えても見た目がほとんど変わらないので、
+          「今から消えるもの」を一覧にして最後にもう一度目で確かめさせる。 */}
+      <Modal
+        open={confirming}
+        onCancel={() => setConfirming(false)}
+        title="この文書を削除しますか？"
+        okText={deleting ? "削除中…" : `削除する（${picked.length}件）`}
+        cancelText="やめる"
+        okButtonProps={{ danger: true, disabled: deleting }}
+        cancelButtonProps={{ disabled: deleting }}
+        onOk={runDelete}
+      >
+        <p className="hint">
+          <strong>この操作は取り消せません。</strong>
+          文書本体・チャンク・図表・S3の原本ファイルが消えます。
+          評価用質問がこの文書を正解に指していた場合、質問は残るので
+          削除後に付け替えてください。
+        </p>
+        <ul className="doc-delete-list">
+          {pickedRows.map((d) => (
+            <li key={d.id}>
+              {d.source}
+              <span className="doc-null">
+                {" "}
+                （{d.project ?? "共通"} / {d.topic ?? "共通"}・
+                {d.chunk_count}チャンク）
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Modal>
 
       {/* 上限で切れたことは黙らせない。続きがあるのに全部だと読まれると、
           「入っていない文書に気づく」というこの画面の役目が壊れる。 */}
@@ -743,7 +1038,7 @@ function DocumentListPanel({
               {" "}
               区分の指定を外すと全文書が見えます。この区分に入れたい場合は{" "}
               <button className="linklike" onClick={onAddDocuments}>
-                ①「登録する」
+                上の「文書を登録」
               </button>{" "}
               で同じ区分を付けて登録してください。
             </>
@@ -751,7 +1046,7 @@ function DocumentListPanel({
             <>
               {" "}
               <button className="linklike" onClick={onAddDocuments}>
-                ①「登録する」
+                上の「文書を登録」
               </button>{" "}
               からファイルを登録してください。
             </>
@@ -764,6 +1059,18 @@ function DocumentListPanel({
           <table className="doc-table">
             <thead>
               <tr>
+                <th className="doc-select">
+                  {/* 表に出ている行の全選択。絞り込みで見えていない行は含めない
+                      （見えないものを消さない）。 */}
+                  <label title="表示中の文書をすべて選ぶ">
+                    <input
+                      type="checkbox"
+                      checked={allPicked}
+                      onChange={togglePickAll}
+                      aria-label="表示中の文書をすべて選ぶ"
+                    />
+                  </label>
+                </th>
                 <DocSortHeader
                   label="文書名"
                   state={sortState("source")}
@@ -805,8 +1112,18 @@ function DocumentListPanel({
             <tbody>
               {sorted.map((d) => (
                 // key は id。source は一意ではない（同名の二重登録があり得る）
-                <tr key={d.id}>
-                  <td>
+                <tr key={d.id} className={picked.includes(d.id) ? "doc-picked" : undefined}>
+                  <td className="doc-select">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={picked.includes(d.id)}
+                        onChange={() => togglePick(d.id)}
+                        aria-label={`${d.source} を選ぶ`}
+                      />
+                    </label>
+                  </td>
+                  <td className="doc-source">
                     <SourceLink source={d.source} />
                   </td>
                   {/* ★区分なしは空欄にしない★
@@ -846,7 +1163,7 @@ function DocumentListPanel({
           </table>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -876,7 +1193,7 @@ const TABS = [
     desc:
       "検索・回答の対象になる文書を入れる。\n" +
       "ここに入っていない文書は、②③④で何をしても出てこない。\n" +
-      "配下の「入っている文書」で、今なにが入っているかを一覧できる。",
+      "同じ画面で区分を作り、今なにが入っているかも一覧できる。",
   },
   {
     id: "search",
@@ -927,20 +1244,6 @@ const EVAL_SUBTABS = [
 
 type EvalSubTab = (typeof EVAL_SUBTABS)[number]["id"];
 
-/** ① の配下タブ。
- *
- * 「入れる」と「何が入っているか見る」は、③ の「質問を追加/評価」と同じ関係
- * （同じ対象を扱う一続きの作業だが、見たいものが違う）。登録フォームの下に
- * 表を縦積みすると、一覧を見るたびにドロップゾーンを読み飛ばすことになるので、
- * ③ と同じ形で配下に割る。
- */
-const INGEST_SUBTABS = [
-  { id: "add", label: "登録する", hint: "/ingest-file" },
-  { id: "list", label: "入っている文書", hint: "/documents/summary" },
-] as const;
-
-type IngestSubTab = (typeof INGEST_SUBTABS)[number]["id"];
-
 /** ② の配下タブ。
  *
  * ★保管質問の検証(/verify)をここに入れてある★
@@ -956,11 +1259,16 @@ const SEARCH_SUBTABS = [
 
 type SearchSubTab = (typeof SEARCH_SUBTABS)[number]["id"];
 
-/** 配下タブを持つタブと、その中身。ここに足せばサイドバーに出る。 */
+/** 配下タブを持つタブと、その中身。ここに足せばサイドバーに出る。
+ *
+ * ★① は配下を持たない★
+ *   「入れる」「区分を作る」「何が入っているか見る」は一続きの作業で、
+ *   配下タブに割ると入れるたびに往復することになる。1画面に縦に並べ、
+ *   登録フォームは畳めるようにして「一覧を見るたびに読み飛ばす」のを避ける。
+ */
 const SUBTABS: Partial<
   Record<TabId, readonly { id: string; label: string; hint: string }[]>
 > = {
-  ingest: INGEST_SUBTABS,
   search: SEARCH_SUBTABS,
   eval: EVAL_SUBTABS,
 };
@@ -1944,8 +2252,6 @@ function ThemeToggle() {
 function Sidebar({
   tab,
   onTab,
-  ingestSubTab,
-  onIngestSubTab,
   searchSubTab,
   onSearchSubTab,
   evalSubTab,
@@ -1953,8 +2259,6 @@ function Sidebar({
 }: {
   tab: TabId;
   onTab: (id: TabId) => void;
-  ingestSubTab: IngestSubTab;
-  onIngestSubTab: (id: IngestSubTab) => void;
   searchSubTab: SearchSubTab;
   onSearchSubTab: (id: SearchSubTab) => void;
   evalSubTab: EvalSubTab;
@@ -1964,7 +2268,6 @@ function Sidebar({
   // ここに置く（Sidebar は常に描画されているので、タブを移動しても開閉は保たれる）。
   // 初期値 true: 配下タブがあること自体に気づけないと、そこにたどり着けない。
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
-    ingest: true,
     search: true,
     eval: true,
   });
@@ -1978,10 +2281,6 @@ function Sidebar({
     string,
     { current: string; onPick: (id: string) => void }
   > = {
-    ingest: {
-      current: ingestSubTab,
-      onPick: (id) => onIngestSubTab(id as IngestSubTab),
-    },
     search: {
       current: searchSubTab,
       onPick: (id) => onSearchSubTab(id as SearchSubTab),
@@ -2015,7 +2314,7 @@ function Sidebar({
       <BenchmarkModal open={benchOpen} onClose={() => setBenchOpen(false)} />
       <ul className="sidebar-tabs">
         {TABS.map((t) => {
-          // 配下タブを持つのは ①②③。開閉ボタンもそのタブにだけ付く。
+          // 配下タブを持つのは ②③。開閉ボタンもそのタブにだけ付く。
           const subtabs = SUBTABS[t.id];
           const hasSubtabs = subtabs !== undefined;
           const open = openGroups[t.id] ?? true;
@@ -2125,8 +2424,6 @@ export default function Home() {
   // タブ切り替えで消えるのは描画だけなので、検索結果・チャット履歴・評価
   // レポートは戻ってきたときにそのまま残る。
   const [tab, setTab] = useState<TabId>("ingest");
-  // ① の中で見ている面。既定は「登録する」＝ ① の本題（最初にやること）。
-  const [ingestSubTab, setIngestSubTab] = useState<IngestSubTab>("add");
   // ② の中で見ている面。既定は「質問で資料を検索」＝ ② の本題。
   // 保管質問の検証は、②で質問を投げて貯まってから使うもの。
   const [searchSubTab, setSearchSubTab] = useState<SearchSubTab>("stages");
@@ -2155,9 +2452,13 @@ export default function Home() {
   const [docTopic, setDocTopic] = useState("");
   const docTopics = useTopics(docProject, scopeVersion);
   const [ingestStatus, setIngestStatus] = useState("");
-  // 「区分だけ登録」の結果表示（文書の取り込み結果とは別に出す）
-  const [scopeStatus, setScopeStatus] = useState("");
-  // --- 文書一覧パネル（①「入っている文書」= /documents/summary）---
+  // 登録フォームを開いているか。文書タブは登録・区分追加・一覧を縦に並べるので、
+  // 一覧だけを見たいときにドロップゾーンを畳めるようにする。
+  // ★state はここ（Home）★ 畳んだままタブを移動して戻っても畳んだままにする。
+  const [ingestFormOpen, setIngestFormOpen] = useState(true);
+  // 一覧の「上の登録フォームへ」から戻ってくる先。
+  const ingestFormRef = useRef<HTMLDivElement>(null);
+  // --- 文書一覧（「入っている文書」= /documents/summary）---
   // 見るだけの画面だが、絞り込みと並び順は他パネルと同じくここに置く
   // （タブを移動して戻ったときに「すべて・新しい順」へ戻らないように）。
   // トピックの候補はパネル側で引く（選択中のプロジェクト配下だけ・他パネルと同じ）
@@ -2419,47 +2720,13 @@ export default function Home() {
     }
   }
 
-  /** 入力欄の区分だけをマスタに登録する（文書は入れない）。
-   *
-   * ★文書が無くても区分を作れるようにするための入口★
-   * 以前は選択肢が「文書か質問に実在する値」だったので、先に区分だけ用意して
-   * おくことができなかった。トピックだけ打った場合は、その上のプロジェクト
-   * （空ならプロジェクトなし）の配下に作る。
-   */
-  async function createScope() {
-    const project = docProject.trim();
-    const topic = docTopic.trim();
-    if (!project && !topic) return;
-    setScopeStatus("登録中…");
-    try {
-      // トピックを作るときは親のプロジェクトも一緒に送るので、
-      // プロジェクト単独の登録が要るのは「プロジェクトだけ打った」ときだけ。
-      const res = topic
-        ? await fetch("/api/backend/topics", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: topic, project: project || null }),
-          })
-        : await fetch("/api/backend/projects", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: project }),
-          });
-      const err = await errorMessage(res);
-      if (err) {
-        setScopeStatus(err);
-        return;
-      }
-      const data = await res.json();
-      const label = topic ? `${project || "（プロジェクトなし）"} / ${topic}` : project;
-      // created=false は「既にあった」＝エラーではない
-      setScopeStatus(
-        data.created ? `区分「${label}」を作りました` : `区分「${label}」は既にあります`,
-      );
-      setScopeVersion((v) => v + 1); // 各パネルのセレクタに出す
-    } catch (e) {
-      setScopeStatus(`エラー: ${String(e)}`);
-    }
+  /** 一覧の「上の登録フォームへ」から呼ぶ。畳んでいたら開いてから送る。 */
+  function focusIngestForm() {
+    setIngestFormOpen(true);
+    // 開くのは次の描画なので、要素が出てからスクロールする
+    requestAnimationFrame(() =>
+      ingestFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
   }
 
   /** D&D/選択したファイルをステージに追加する（即アップロードはしない）。
@@ -2741,8 +3008,6 @@ export default function Home() {
       <Sidebar
         tab={tab}
         onTab={setTab}
-        ingestSubTab={ingestSubTab}
-        onIngestSubTab={setIngestSubTab}
         searchSubTab={searchSubTab}
         onSearchSubTab={setSearchSubTab}
         evalSubTab={evalSubTab}
@@ -2773,11 +3038,51 @@ export default function Home() {
           </ul>
         </div>
 
-      {/* 書き込みフロー: text → chunk → embed → pgvector */}
-      {tab === "ingest" && ingestSubTab === "add" && (
-      <section className="panel">
-        <h2>① 文書を登録（/ingest-file・Voyageキー必要）</h2>
+      {/* 区分を作る入口。文書には触らない（マスタだけを増やす）ので、
+          下の文書のパネルとは別の箱にして、文書の作業に入る前に置く。 */}
+      {tab === "ingest" && (
+        <ScopeCreatePanel onCreated={() => setScopeVersion((v) => v + 1)} />
+      )}
 
+      {/* 書き込みフロー: text → chunk → embed → pgvector
+
+          ★「登録する」と「何が入ったか見る」は1枚のパネルに収める★
+          この2つは同じ作業の続きなので、箱を分けると箱の間の余白ぶんだけ
+          縦に伸び、登録してから一覧を見るまでに余計なスクロールが要る。
+          仕切りは箱ではなく小見出しと罫線で表す。 */}
+      {tab === "ingest" && (
+      <section className="panel">
+      <div className="panel-section" ref={ingestFormRef}>
+        {/* ★畳めるようにしてある★
+            一覧だけを見たい回にドロップゾーンを読み飛ばさずに済むよう、
+            登録フォームは畳んで下を引き上げられるようにする。 */}
+        <div className="panel-head">
+          <h3 className="panel-section-title">
+            1. 文書を登録（/ingest-file・Voyageキー必要）
+          </h3>
+          <button
+            type="button"
+            className="panel-toggle"
+            aria-expanded={ingestFormOpen}
+            onClick={() => setIngestFormOpen((o) => !o)}
+            title={
+              ingestFormOpen
+                ? "登録フォームを畳んで、下の一覧を引き上げる"
+                : "登録フォームを開く"
+            }
+          >
+            {ingestFormOpen ? "畳む" : "開く"}
+          </button>
+        </div>
+
+        {!ingestFormOpen && (
+          <p className="hint">
+            登録フォームは畳んでいます。文書を入れるときは「開く」を押してください。
+          </p>
+        )}
+
+        {ingestFormOpen && (
+        <>
         {/* 文書の区分。登録するファイルすべてに付くので、
             ドロップゾーンの中ではなくパネルの先頭に置く。 */}
         <ScopeInput
@@ -2792,25 +3097,8 @@ export default function Home() {
         <p className="hint">
           区分は下で<strong>登録するファイルすべて</strong>に付きます（空欄なら区分なし）。
           既存の区分は入力欄から選べます。新しい名前を打てばその区分が作られます。
+          文書を入れずに区分だけ作るときは、上の「区分を追加」を使います。
         </p>
-        {/* 文書を入れずに区分だけ用意する入口。
-            「まず部署を作ってから資料を集める」という順で使えるようにするため。 */}
-        <div className="verify-controls">
-          <button
-            onClick={createScope}
-            disabled={!docProject.trim() && !docTopic.trim()}
-          >
-            区分だけ登録する
-          </button>
-          <span className="hint">
-            <Tip label="文書が無くても区分を作れます">
-              上の入力欄に打った区分を<strong>マスタにだけ</strong>登録します。
-              文書やファイルは登録しません。作った区分は各パネルのセレクタに出るので、
-              「先に部署を作っておいて、資料は後から入れる」という順で使えます。
-            </Tip>
-          </span>
-        </div>
-        {scopeStatus && <p className="hint ingest-status">{scopeStatus}</p>}
 
         {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
             D&D/クリックでファイルをステージに追加し、「登録する」で確定する。
@@ -2905,26 +3193,29 @@ export default function Home() {
           </div>
         )}
         {ingestStatus && <p className="hint ingest-status">{ingestStatus}</p>}
-      </section>
-      )}
+        </>
+        )}
+      </div>
 
-      {/* 読み出し側の確認: 今そのプロジェクトに何がどう入っているか */}
-      {tab === "ingest" && ingestSubTab === "list" && (
-        <DocumentListPanel
-          projects={projects}
-          scopeVersion={scopeVersion}
-          project={listProject}
-          topic={listTopic}
-          onProject={setListProject}
-          onTopic={setListTopic}
-          sortKey={listSortKey}
-          sortDesc={listSortDesc}
-          onSort={(key, desc) => {
-            setListSortKey(key);
-            setListSortDesc(desc);
-          }}
-          onAddDocuments={() => setIngestSubTab("add")}
-        />
+      {/* 読み出し側の確認: 今そのプロジェクトに何がどう入っているか。
+          scopeVersion は取り込みが終わると増えるので、上で登録すればここも
+          自動で引き直される（＝入ったことがその場で見える）。 */}
+      <DocumentListPanel
+        projects={projects}
+        scopeVersion={scopeVersion}
+        project={listProject}
+        topic={listTopic}
+        onProject={setListProject}
+        onTopic={setListTopic}
+        sortKey={listSortKey}
+        sortDesc={listSortDesc}
+        onSort={(key, desc) => {
+          setListSortKey(key);
+          setListSortDesc(desc);
+        }}
+        onAddDocuments={focusIngestForm}
+      />
+      </section>
       )}
 
       {/* 検索の内訳: Claudeを呼ばないのでAnthropicキー不要 */}

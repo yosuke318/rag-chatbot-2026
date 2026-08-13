@@ -254,7 +254,23 @@ export interface paths {
         get: operations["list_documents_documents_get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Documents
+         * @description 登録済みの文書を消す（紐づくチャンク・画像・原本ごと）。
+         *
+         *     ★認可は /admin/* と同じ opt-in★
+         *       ADMIN_TOKEN を設定した構成でだけトークンを要求する（require_admin 参照）。
+         *       閉域前提のローカルでは今までどおり素通りし、閉域を出す構成では
+         *       「文書を消す」という取り消せない操作に鍵をかけられる。
+         *
+         *     ★取り消せない操作なので、確認は呼び出し側（UI）の責任★
+         *       APIは黙って実行する。何をどれだけ消すかを見せてから呼ぶのはUI側。
+         *
+         *     正解ラベル（eval_questions.expected_source）が指す文書を消した場合、
+         *     質問自体は残す。宙に浮いた件数を戻り値に入れるので、呼び出し側はそれを
+         *     必ず利用者に見せること（黙って消えると評価の数字だけが静かに下がる）。
+         */
+        delete: operations["delete_documents_documents_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -638,7 +654,8 @@ export interface paths {
          * Add Feedback
          * @description 回答への 👍/👎 を記録する。
          *
-         *     貯めたフィードバック（特に👎）は eval のQA候補に回す運用を想定。
+         *     貯めたフィードバック（特に👎）は、人が1件ずつ見て評価用質問に昇格させる
+         *     （POST /feedback/{id}/promote）。ここはその素材を残すだけ。
          *     外部APIを呼ばないので ANTHROPIC/VOYAGE キーは不要。
          *     rating は +1(👍) / -1(👎) のみ。0 や欠損は「どちらでもない」を意味してしまい
          *     👎として誤記録されるため、符号で丸めず 400 で弾く。
@@ -714,11 +731,47 @@ export interface paths {
          *     正解ラベル(expected_source)付きでDBに貯め、`python -m app.eval` がここから
          *     読んで Hit@k / MRR を測る。コードの定数を編集せずに質問を足せるようにするため
          *     のエンドポイント。外部APIは呼ばないのでキーは不要。
-         *
-         *     質問と正解の文書名は評価の必須要素なので、空文字なら400で弾く（Pydanticは
-         *     空文字を str として通してしまうため、ここで明示的に検査する）。
          */
         post: operations["add_eval_question_eval_questions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/feedback/{feedback_id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Promote Feedback
+         * @description この評価を評価用質問(eval_questions)に昇格し、昇格済みの印を付ける。
+         *
+         *     ★👎を貯める意味はここで完結する★
+         *       貯めた👎は、評価データセットに入って初めて「次に同じことが起きたら気づける」
+         *       に変わる。入れなければ、読んで終わり＝次の変更で同じ質問が壊れても分からない。
+         *       入った質問はそのまま `python -m app.eval` の対象になり、Hit@k / MRR に乗る。
+         *
+         *     ★人が1件ずつ通す口で、👎をまとめて流し込む口ではない★
+         *       eval_questions は expected_source NOT NULL（正解必須）の設計。そもそも文書に
+         *       答えが無い質問を混ぜると、引けなくて当然のものを不正解として数え続けることに
+         *       なり、指標そのものが読めなくなる。だから一括で昇格するAPIは用意しない。
+         *
+         *     ★中身は POST /eval-questions と同じものを受け取る★
+         *       画面はフィードバックの内容を初期値にするが、送られてくるのは人が直した後の値。
+         *       特に正解(expected_source)は「そのとき出典に挙がった文書」ではなく
+         *       「本当はどれを引くべきだったか」で、その2つが違うことこそ👎の中身なので、
+         *       サーバが元の行から埋めることはしない。
+         *
+         *     昇格済みの行にもう一度送ると 409。既に出来ている質問のIDを一緒に返すので、
+         *     画面はそれを指して「もう入っている」と言える（作り直しにはならない）。
+         */
+        post: operations["promote_feedback_feedback__feedback_id__promote_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1116,6 +1169,48 @@ export interface components {
             conversation_id: number;
             /** Messages */
             messages: components["schemas"]["ConversationMessage"][];
+        };
+        /**
+         * DeleteDocumentsRequest
+         * @description 削除する文書の指定。
+         */
+        DeleteDocumentsRequest: {
+            /**
+             * Ids
+             * @description 削除する documents.id。1件以上
+             */
+            ids: number[];
+        };
+        /**
+         * DeleteDocumentsResponse
+         * @description 削除の結果。何が消えて、何が宙に浮いたかを返す。
+         */
+        DeleteDocumentsResponse: {
+            /**
+             * Deleted
+             * @description 実際に消した documents の行数
+             */
+            deleted: number;
+            /**
+             * Sources
+             * @description 消した文書の名前（重複を除く）
+             */
+            sources: string[];
+            /**
+             * Missing Ids
+             * @description 指定されたが存在しなかった id。エラーではない
+             */
+            missing_ids: number[];
+            /**
+             * Orphaned Questions
+             * @description 正解ラベルの指す文書が無くなった評価質問の件数
+             */
+            orphaned_questions: number;
+            /**
+             * Orphaned Sources
+             * @description そのラベルに使われていた文書名。評価質問の直し先を示す
+             */
+            orphaned_sources: string[];
         };
         /**
          * DocumentInfo
@@ -1540,6 +1635,11 @@ export interface components {
              * @description 回答までにかかった時間（ミリ秒・null=未記録）
              */
             latency_ms?: number | null;
+            /**
+             * Promoted Eval Question Id
+             * @description この評価から作った評価用質問のID（null=まだ評価データセットに入れていない）
+             */
+            promoted_eval_question_id?: number | null;
         };
         /**
          * FeedbackListResponse
@@ -1596,6 +1696,91 @@ export interface components {
              * @description この刻みの開始時刻
              */
             period: string;
+        };
+        /**
+         * FeedbackPromoteRequest
+         * @description 👎から評価用質問を作るときの中身。項目は直接登録するときと同じ。
+         *
+         *     ★フィードバックの内容をそのまま使わない★
+         *       画面は質問・区分をフィードバックから写して初期値にするが、届くのは人が
+         *       直した後の値。特に正解(expected_source)は「そのとき出典に挙がった文書」
+         *       ではなく「本当はどれを引くべきだったか」で、両者が違うことこそ👎の中身。
+         *       サーバが元の行から埋めてしまうと、間違った出典が正解ラベルとして固定される。
+         */
+        FeedbackPromoteRequest: {
+            /**
+             * Question
+             * @description 評価する質問
+             */
+            question: string;
+            /**
+             * Expected Source
+             * @description 正解の文書名（この文書が上位に来れば正解）
+             */
+            expected_source: string;
+            /**
+             * Expected Kind
+             * @description 正解と認めるチャンクの種類 any/text/image（既定 any=文書単位）
+             * @default any
+             */
+            expected_kind: string;
+            /**
+             * Expected Text
+             * @description 正解チャンクに必ず含まれる語句。指定すると「この語句を含むチャンクを引けたときだけ正解」になる（未指定は文書単位）
+             */
+            expected_text?: string | null;
+            /**
+             * Project
+             * @description プロジェクト（未指定は共通）
+             */
+            project?: string | null;
+            /**
+             * Topic
+             * @description トピック（未指定は共通）
+             */
+            topic?: string | null;
+            /**
+             * Note
+             * @description 何を確かめる質問かのメモ（任意）
+             */
+            note?: string | null;
+        };
+        /**
+         * FeedbackPromoteResponse
+         * @description 昇格して出来た評価用質問。直接登録したときと同じものが返る。
+         *
+         *     昇格元(feedback_id)を添えるのは、一覧が「どの行に印を付けるか」をレスポンス
+         *     だけで決められるようにするため（送った側の記憶と突き合わせなくてよい）。
+         */
+        FeedbackPromoteResponse: {
+            /** Id */
+            id: number;
+            /** Question */
+            question: string;
+            /** Expected Source */
+            expected_source: string;
+            /**
+             * Expected Kind
+             * @description 正解と認めるチャンクの種類 any/text/image
+             * @default any
+             */
+            expected_kind: string;
+            /**
+             * Expected Text
+             * @description 正解チャンクに必ず含まれる語句（null=文書単位で判定）
+             */
+            expected_text?: string | null;
+            /** Project */
+            project?: string | null;
+            /** Topic */
+            topic?: string | null;
+            /** Note */
+            note?: string | null;
+            /**
+             * Feedback Id
+             * @description 昇格元のフィードバックID
+             */
+            feedback_id: number;
         };
         /**
          * FeedbackReasonCount
@@ -2882,6 +3067,48 @@ export interface operations {
             };
         };
     };
+    delete_documents_documents_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteDocumentsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteDocumentsResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_document_summaries_documents_summary_get: {
         parameters: {
             query?: {
@@ -3638,6 +3865,68 @@ export interface operations {
             };
             /** @description 入力不正 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    promote_feedback_feedback__feedback_id__promote_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                feedback_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackPromoteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackPromoteResponse"];
+                };
+            };
+            /** @description 入力不正 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 該当なし */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description すでに昇格済み */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
