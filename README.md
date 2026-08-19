@@ -87,8 +87,8 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 
 | パネル | 対応するAPI | 必要なAPIキー |
 |---|---|---|
-| ① 区分を追加 | `POST /projects`・`POST /topics` | 不要 |
-| ① 文書を登録 | `POST /ingest` | Voyage（埋め込み） |
+| ① 新たに区分を追加 | `POST /projects`・`POST /topics` | 不要 |
+| ① 新たに文書を登録 | `POST /ingest` | Voyage（埋め込み） |
 | ① 入っている文書（削除も） | `GET /documents/summary`・`DELETE /documents` | 不要 |
 | ② 質問で資料を検索 | `GET /search` | Voyage のみ |
 | ② 保管質問をまとめて再検索 | `GET /verify` | Voyage のみ |
@@ -481,6 +481,238 @@ dev環境の作り方は [terraform/bootstrap/README.md](terraform/bootstrap/REA
 ├── backend/         # FastAPI（ingest / retrieval / chat / eval のモジュール分割）
 └── frontend/        # Next.js + Vercel AI SDK
 ```
+
+## データモデル（ER図とテーブル）
+
+テーブルは12個。ベクトル・全文検索・会話履歴・評価データを1つのPostgresに集約している
+（アーキテクチャの「DBは1つに集約」の実体）。正は
+**[backend/app/db.py](backend/app/db.py) の `init_db`** で、起動時に冪等に流れる。
+
+```mermaid
+erDiagram
+    projects ||--o{ topics : "親子"
+    projects |o--o{ documents : "所属"
+    topics   |o--o{ documents : "所属"
+    documents ||--o{ chunks : "分割"
+
+    projects |o--o{ eval_questions : "区分"
+    topics   |o--o{ eval_questions : "区分"
+    projects |o--o{ saved_questions : "区分"
+    topics   |o--o{ saved_questions : "区分"
+    projects |o--o{ feedback : "区分"
+    topics   |o--o{ feedback : "区分"
+    projects |o--o{ synonyms : "区分"
+
+    conversations ||--o{ messages : "発言"
+    conversations |o--o{ feedback : "評価対象"
+    messages      |o--o{ feedback : "評価対象"
+    eval_questions |o--o{ feedback : "昇格"
+
+    api_keys ||--o{ api_usage : "利用ログ"
+    api_keys |o--o{ conversations : "発行元"
+
+    projects {
+        bigint id PK
+        text name
+        timestamptz created_at
+    }
+    topics {
+        bigint id PK
+        bigint project_id FK
+        text name
+        timestamptz created_at
+    }
+    documents {
+        bigint id PK
+        text source "文書名"
+        bigint project_id FK "NULL=共通文書"
+        bigint topic_id FK
+        timestamptz created_at
+        text content_hash "本文ハッシュ（差分検知）"
+    }
+    chunks {
+        bigint id PK
+        bigint document_id FK
+        int chunk_index "文書内の連番"
+        text content
+        vector embedding "本文ベクトル"
+        text content_nouns "名詞列（字面検索用）"
+        text context "文書内での位置づけ"
+        text image_path "画像の保管キー（S3）"
+        vector image_embedding "画像ベクトル"
+    }
+    conversations {
+        bigint id PK
+        text title
+        timestamptz created_at
+        bigint api_key_id FK "NULL=画面から"
+    }
+    messages {
+        bigint id PK
+        bigint conversation_id FK
+        text role "user / assistant"
+        text content
+        text_array sources "根拠にした文書名"
+        timestamptz created_at
+    }
+    feedback {
+        bigint id PK
+        text question
+        text answer
+        text_array sources
+        smallint rating "+1=👍 / -1=👎"
+        text comment "自由記述"
+        timestamptz created_at
+        bigint conversation_id FK
+        bigint message_id FK
+        text retriever "使った検索手法"
+        smallint top_k
+        boolean reranked
+        bigint_array chunk_ids "渡したチャンクID（並び順=順位）"
+        int latency_ms
+        bigint project_id FK
+        bigint topic_id FK
+        text reason "👎の理由（選択肢）"
+        bigint promoted_eval_question_id FK "NULL=未昇格"
+    }
+    saved_questions {
+        bigint id PK
+        bigint project_id FK
+        bigint topic_id FK
+        text question
+        timestamptz created_at
+    }
+    eval_questions {
+        bigint id PK
+        bigint project_id FK
+        bigint topic_id FK
+        text question
+        text expected_source "正解の文書名"
+        text note
+        timestamptz created_at
+        text expected_kind "any / text / image"
+        text expected_text "正解チャンクに含まれる語句"
+    }
+    synonyms {
+        bigint id PK
+        bigint project_id FK "NULL=全プロジェクト共通"
+        text term "質問に出る語"
+        text expansion "文書側で使われている語"
+        text note
+        timestamptz created_at
+    }
+    api_keys {
+        bigint id PK
+        text name "発行先の名前"
+        text key_hash "平文は保存しない"
+        text project "参照できるプロジェクト名"
+        int rate_limit_per_min
+        timestamptz created_at
+        timestamptz revoked_at "NULL=有効"
+    }
+    api_usage {
+        bigint id PK
+        bigint api_key_id FK
+        text path
+        int status "NULL=応答前に中断"
+        timestamptz created_at
+    }
+```
+
+> 配列カラム（`sources` / `chunk_ids`）の実型は `TEXT[]` / `BIGINT[]`。
+> `api_keys.project` だけは**外部キーではなくプロジェクト名のTEXT**
+> （APIキーの発行はUIの区分マスタと切り離して運用したいため）。
+
+### 区分マスタ ― `projects` / `topics`
+
+文書も質問もフィードバックも、この2階層（プロジェクト > トピック）で区切る。
+**マスタが正**で、各テーブルは名前ではなく `id` を参照する。以前は選択肢を
+「documents と eval_questions に実在する値の DISTINCT」で作っていたが、それだと
+**文書も質問も無いプロジェクトが存在できず**、表記ゆれ（「営業部」と「営業」）にも
+気づけなかった。id 参照にしたことで、リネームは `projects.name` の UPDATE 1発で済む。
+
+各テーブルの `project_id` / `topic_id` は **NULL可（= 区分を選ばない共通の行）**。
+そのためユニーク索引は `NULLS NOT DISTINCT` を付けている（既定ではNULL同士が
+「別の値」扱いになり、共通の同じ行が何行でも入ってしまう）。
+
+### 取り込み ― `documents` / `chunks`
+
+- **`documents`** … 文書1件。`content_hash` は差分検知用で、中身が変わっていない
+  文書の再取り込み（＝埋め込みの再生成）を避けるために持つ。
+- **`chunks`** … 検索が実際に引く単位。`embedding`（本文ベクトル）と
+  `content_nouns`（名詞列・字面検索用）の2系統を同じ行に持たせ、ハイブリッド検索を
+  1テーブルで賄う。`context` は contextual retrieval で生成した「文書内での位置づけ」で、
+  **埋め込みには content と繋げて使うが、回答生成に渡すのは content だけ**なので
+  カラムを分けてある。`image_path` に値があれば画像チャンク（→[文書内の図表を引く](#文書内の図表を引く)）。
+
+`embedding` を NOT NULL にしていないのは、複数モデルの併存・遅延埋め込み・
+画像チャンク（登録時点では埋め込みを持たない）の自由度を残すため。
+
+### 会話 ― `conversations` / `messages`
+
+`conversations.api_key_id` が NULL なら画面から始めた会話、値ありならその
+APIキーの会話。**これが無いと、公開APIの利用者が他人の `conversation_id` を
+渡すだけで別テナントの履歴を読み出せてしまう。**
+
+### 評価・改善のループ ― `feedback` / `saved_questions` / `eval_questions`
+
+**`feedback`** は👍👎そのものに加えて、**どの条件で出た回答への評価か**
+（`retriever` / `top_k` / `reranked` / `chunk_ids` / `latency_ms`）を丸ごと残す。
+条件が分からない評価は「この設定が良かった」の判断材料にならないため。
+👎の理由を選択肢（`reason`）と自由記述（`comment`）に分けているのは、
+**選択肢は数えるため・自由記述は選択肢に無いことを書いてもらうため**で役割が違う
+（自由記述に混ぜると表記ゆれで数えられない）。
+
+会話やメッセージを消してもフィードバックは残す（FKは `ON DELETE SET NULL`）。
+評価の素材が会話の削除に道連れになるのが一番避けたい壊れ方だから。
+
+そして👎は `POST /feedback/{id}/promote` で評価用質問へ**昇格**できる。
+`promoted_eval_question_id` がその印で、**二重昇格を防ぐ実体もこの列1本**
+（同じ質問が評価セットに2回入ると Hit@k / MRR がその1問に引っ張られる）。
+
+#### `saved_questions` と `eval_questions` の違い
+
+一言でいうと**正解ラベルを持つか / 持たないか**。そこから「採点できるか」が決まる。
+
+| | `saved_questions`（保管質問） | `eval_questions`（評価用質問） |
+|---|---|---|
+| 正解ラベル | **無い** | **必須**（`expected_source` NOT NULL） |
+| どう溜まるか | ②の検索時に**自動保管**／`POST /saved-questions` | `POST /eval-questions`／`--seed` の fixture／👎からの**昇格** |
+| 使う機能 | `GET /verify` ― 上位k件のRRFと出典を**並べて目視** | `python -m app.eval` ― **Hit@k / MRR** を数値で出す |
+| 出るもの | ○×もスコアも出ない（傾向を掴む道具） | 改良が効いたかを判定できる数字 |
+| 正解の粒度 | ― | 文書名 + `expected_kind`(any/text/image) + `expected_text` |
+
+**分けてある理由**: `eval_questions` は `expected_source` が NOT NULL なので、
+**正解の分からない質問を入れられない**。実際に聞かれた質問は正解が用意される前に
+発生するので、ラベル無しで貯める箱が別に要る。
+
+覚え方は「**実際に聞かれた質問を全部貯める箱** = saved ／ **人が正解を用意した試験問題**
+= eval」。2つは `feedback` 経由で片道につながっている（👎 → 昇格 → eval）。
+
+### 公開API ― `api_keys` / `api_usage`
+
+`api_keys` は**平文のキーを保存しない**（`sha256` のハッシュだけを持ち、照合は
+ハッシュ同士）。`project` を NOT NULL にしているのは、NULLを許すと
+**「区分なし＝全部見える」キー**が作れてしまいテナント分離が壊れるため。
+失効は行を削除せず `revoked_at` に日時を入れる（利用ログを残すため）。
+
+`api_usage` はログであると同時に**レート制限の判定元**でもある。受付時に1行作って
+（`status` は NULL）、応答時にステータスを埋める。落ちた分も受付の事実として
+残るので、制限のすり抜けにならない。
+
+### まだ使っていないテーブル ― `synonyms`
+
+質問の語を文書側の語に言い換えるクエリ拡張の辞書。**現時点では入れ物だけがあり、
+この表を読んで検索語を広げる処理も、書き込むAPIも無い。** 実装するときは、
+列の形が下記の想定と食い違っていないか確かめること。
+
+- **`term` → `expansion` の一方向**（同義語グループではない）。解きたいのは
+  「質問に出るが文書に無い語」で、逆向き（文書語→質問語）を足しても、その語で
+  聞かれた質問は既に当たっている。双方向にすると当たっている質問にまで
+  無関係な語が増える。
+- **`project_id` は NULL可（NULL = 全プロジェクト共通）**。社内用語はテナントごとに
+  違い、同じ略語が別の意味を持ちうる。topicまで割らないのは、語彙がトピックを
+  またいで使われるため（「リモワ」は労務でも総務でもリモワ）。
 
 ## DBの論理名（日本語名）
 
