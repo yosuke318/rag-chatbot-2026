@@ -352,10 +352,14 @@ h1 {
   margin-bottom: 20px;
 }
 
+/* ★本文より一段大きく、色も本文と同じにする★
+   見出しを本文と同じ 14px・薄い色にしていた頃は、パネルの切れ目が余白でしか
+   分からず、どこからどこまでが1つの作業なのかを追うのに読み直しが要った。
+   章の頭であることが目で分かる大きさにする。 */
 .panel h2 {
-  font-size: 14px;
+  font-size: 17px;
   margin: 0 0 12px;
-  color: var(--muted);
+  color: var(--text);
 }
 
 input,
@@ -432,9 +436,9 @@ button:disabled {
 
 /* パネル直下の h2 と同じ見え方にする（階層が下がっても字面は揃える） */
 .panel-section-title {
-  font-size: 14px;
+  font-size: 17px;
   margin: 0 0 12px;
-  color: var(--muted);
+  color: var(--text);
 }
 
 /* 見出しと開閉ボタンを1行に並べるパネルの頭（文書タブの登録フォーム）。

@@ -678,7 +678,7 @@ function ScopeCreatePanel({
 
   return (
     <section className="panel">
-      <h2>区分を追加（/projects・/topics・APIキー不要）</h2>
+      <h2>1. 新たに区分を追加（/projects・/topics・APIキー不要）</h2>
       <p className="hint panel-note">
         文書が無くても区分だけ先に作れます。作った区分は各パネルのセレクタに出るので、
         「先に部署を作っておいて、資料は後から入れる」という順で使えます。
@@ -941,7 +941,7 @@ function DocumentListPanel({
   return (
     <div className="panel-section">
       <h3 className="panel-section-title">
-        2. 入っている文書（/documents/summary・APIキー不要）
+        3. 入っている文書（/documents/summary・APIキー不要）
       </h3>
       <p className="hint panel-note">
         登録済みの文書を区分で絞って一覧します。
@@ -1038,7 +1038,7 @@ function DocumentListPanel({
               {" "}
               区分の指定を外すと全文書が見えます。この区分に入れたい場合は{" "}
               <button className="linklike" onClick={onAddDocuments}>
-                上の「文書を登録」
+                上の「新たに文書を登録」
               </button>{" "}
               で同じ区分を付けて登録してください。
             </>
@@ -1046,7 +1046,7 @@ function DocumentListPanel({
             <>
               {" "}
               <button className="linklike" onClick={onAddDocuments}>
-                上の「文書を登録」
+                上の「新たに文書を登録」
               </button>{" "}
               からファイルを登録してください。
             </>
@@ -3058,7 +3058,7 @@ export default function Home() {
             登録フォームは畳んで下を引き上げられるようにする。 */}
         <div className="panel-head">
           <h3 className="panel-section-title">
-            1. 文書を登録（/ingest-file・Voyageキー必要）
+            2. 新たに文書を登録（/ingest-file・Voyageキー必要）
           </h3>
           <button
             type="button"
@@ -3097,7 +3097,7 @@ export default function Home() {
         <p className="hint">
           区分は下で<strong>登録するファイルすべて</strong>に付きます（空欄なら区分なし）。
           既存の区分は入力欄から選べます。新しい名前を打てばその区分が作られます。
-          文書を入れずに区分だけ作るときは、上の「区分を追加」を使います。
+          文書を入れずに区分だけ作るときは、上の「新たに区分を追加」を使います。
         </p>
 
         {/* ファイルのドラッグ&ドロップ登録（/ingest-file）。
