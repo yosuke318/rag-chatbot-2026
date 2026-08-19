@@ -2266,11 +2266,13 @@ function Sidebar({
 }) {
   // 配下タブを開いているか（タブidごと）。開閉は見せ方だけの話なので state は
   // ここに置く（Sidebar は常に描画されているので、タブを移動しても開閉は保たれる）。
-  // 初期値 true: 配下タブがあること自体に気づけないと、そこにたどり着けない。
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
-    search: true,
-    eval: true,
-  });
+  //
+  // ★初期値は「閉じている」★
+  //   全部開いた状態で始めると、初回に見えるのは9項目の一覧になり、
+  //   4つの機能がどう分かれているのかが読み取りにくい。まず4つを見せて、
+  //   必要なものだけ開いてもらう。配下があること自体は、タブの右端の「›」で
+  //   開く前から分かる（それが無かった頃は開いておく必要があった）。
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   // 準拠ベンチマークの表（タイトルから開く）
   const [benchOpen, setBenchOpen] = useState(false);
 
@@ -2314,63 +2316,58 @@ function Sidebar({
       <BenchmarkModal open={benchOpen} onClose={() => setBenchOpen(false)} />
       <ul className="sidebar-tabs">
         {TABS.map((t) => {
-          // 配下タブを持つのは ②③。開閉ボタンもそのタブにだけ付く。
+          // 配下タブを持つのは ②③。「›」もそのタブにだけ付く。
           const subtabs = SUBTABS[t.id];
           const hasSubtabs = subtabs !== undefined;
-          const open = openGroups[t.id] ?? true;
+          const open = openGroups[t.id] ?? false;
           const group = groups[t.id];
           return (
             <li key={t.id}>
-              {/* 開閉ボタンはタブ本体と★兄弟★にする（button は入れ子にできない）。
-                  行としては1つに見えるよう .sidebar-tab-row で横に並べる。 */}
-              <div className={hasSubtabs ? "sidebar-tab-row" : undefined}>
-                <button
-                  type="button"
-                  className={t.id === tab ? "sidebar-tab active" : "sidebar-tab"}
-                  // 何をする画面かの説明（TABS.desc）。★開く前に読める★のが要点で、
-                  // ②と③のどちらを開けばいいかをここで決められるようにする。
-                  title={t.desc}
-                  // "page" ではなく "true"。ページ遷移はしておらず同一ページ内の
-                  // 表示切替なので、aria-current の汎用値（=その集合の現在の項目）が
-                  // 実態に合う。
-                  aria-current={t.id === tab ? "true" : undefined}
-                  onClick={() => {
-                    onTab(t.id);
-                    // 配下を持つタブを選んだら配下も開く。畳んだまま選んで
-                    // 「切り替え先が見えない」状態になるのを防ぐ。
-                    if (hasSubtabs)
-                      setOpenGroups((g) => ({ ...g, [t.id]: true }));
-                  }}
-                >
+              {/* ★開閉は独立したボタンにせず、タブ本体が兼ねる★
+                  タブと「›」が別々のボタンだった頃は、同じ行に押し分けの要る
+                  当たり判定が2つあり、どちらを押せば配下が出るのかが見た目から
+                  決まらなかった（幅26pxの的を外すと機能だけが切り替わる）。
+                  「›」は押す場所ではなく、開いているかどうかの表示にする。 */}
+              <button
+                type="button"
+                className={[
+                  "sidebar-tab",
+                  t.id === tab ? "active" : "",
+                  open ? "open" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                // 何をする画面かの説明（TABS.desc）。★開く前に読める★のが要点で、
+                // ②と③のどちらを開けばいいかをここで決められるようにする。
+                title={t.desc}
+                // "page" ではなく "true"。ページ遷移はしておらず同一ページ内の
+                // 表示切替なので、aria-current の汎用値（=その集合の現在の項目）が
+                // 実態に合う。
+                aria-current={t.id === tab ? "true" : undefined}
+                aria-expanded={hasSubtabs ? open : undefined}
+                aria-controls={hasSubtabs ? `sidebar-${t.id}-subtabs` : undefined}
+                onClick={() => {
+                  onTab(t.id);
+                  if (!hasSubtabs) return;
+                  // ★畳めるのは「今いるタブ」を押したときだけ★
+                  //   他のタブへ移るための一押しで畳むと、移った先の配下が
+                  //   見えない状態になる。移動なら必ず開き、同じタブをもう一度
+                  //   押したときに閉じる（同じ場所で開閉が完結する）。
+                  const next = t.id === tab ? !open : true;
+                  setOpenGroups((g) => ({ ...g, [t.id]: next }));
+                }}
+              >
+                <span className="sidebar-tab-text">
                   <span className="sidebar-tab-label">{t.label}</span>
                   <code className="sidebar-tab-hint">{t.hint}</code>
-                </button>
+                </span>
                 {hasSubtabs && (
-                  <button
-                    type="button"
-                    className={[
-                      "sidebar-tab-toggle",
-                      open ? "open" : "",
-                      // 親タブが選択中のときは同じ塗りにして1つのタブに見せる
-                      t.id === tab ? "on-active" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    // 表示は「>」だけなので、何を開くボタンなのかを読み上げに補う
-                    aria-label={
-                      open ? `${t.label}の配下を閉じる` : `${t.label}の配下を開く`
-                    }
-                    aria-expanded={open}
-                    aria-controls={`sidebar-${t.id}-subtabs`}
-                    onClick={() =>
-                      setOpenGroups((g) => ({ ...g, [t.id]: !open }))
-                    }
-                  >
-                    {/* 三角の向きは CSS の回転で変える（開=下・閉=右） */}
-                    <span aria-hidden="true">›</span>
-                  </button>
+                  // 三角の向きは CSS の回転で変える（開=下・閉=右）
+                  <span className="sidebar-tab-caret" aria-hidden="true">
+                    ›
+                  </span>
                 )}
-              </div>
+              </button>
               {/* 配下タブは開いている間だけ出す。親タブ以外を見ているときでも
                   出しておき、そこから直接飛べるようにする（押したら親に移る）。 */}
               {subtabs && open && group && (

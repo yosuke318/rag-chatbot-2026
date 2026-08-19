@@ -168,11 +168,13 @@ body {
 }
 
 .sidebar-tab {
-  /* ボタンだがナビゲーション項目として見せる（既定の button 見た目を消す） */
+  /* ボタンだがナビゲーション項目として見せる（既定の button 見た目を消す）。
+     ラベルと開閉の「›」を左右に振り分けるので、この階層は横並び。
+     ラベルとパスの縦積みは中の .sidebar-tab-text が持つ。 */
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
   padding: 8px 10px;
   border: none;
@@ -194,58 +196,37 @@ body {
   color: var(--on-accent);
 }
 
-/* 配下タブを持つ行（④）。タブ本体と開閉ボタンを1行に見せる。
-   開閉ボタンは button の入れ子を避けるためタブと兄弟になっている（Sidebar 参照）。 */
-.sidebar-tab-row {
+/* タブのラベルとパス（縦積み）。横方向は親（.sidebar-tab）が仕切る。 */
+.sidebar-tab-text {
   display: flex;
-  align-items: stretch;
-  /* 隙間を空けない。角丸を左右で分け合って1つの錠剤に見せる（下2つの
-     border-radius）ので、間が空くと選択中に塗りが割れて見える。 */
-  gap: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0; /* 「›」のぶんを残す（長いラベルで押し出さない） */
 }
 
-.sidebar-tab-row .sidebar-tab {
-  flex: 1;
-  min-width: 0; /* 開閉ボタンのぶんを残す（width:100% のままだと押し出される） */
-  border-radius: 8px 0 0 8px;
-}
-
-.sidebar-tab-toggle {
-  /* 既定の button 見た目（アクセント塗り）を消してタブの一部に見せる */
+/* 配下タブがあることの表示。★押す場所ではない★ ので当たり判定を持たせず、
+   タブ本体のクリックに含める（pointer-events を切って、押した位置に関係なく
+   タブが反応するようにする）。 */
+.sidebar-tab-caret {
   flex: none;
-  width: 26px;
-  padding: 0;
-  border: none;
-  border-radius: 0 8px 8px 0;
-  background: transparent;
   color: var(--muted);
   font-size: 15px;
   line-height: 1;
-  cursor: pointer;
-}
-
-.sidebar-tab-toggle:hover {
-  background: var(--bot-bubble);
-  color: var(--text);
-}
-
-/* 親タブが選択中なら開閉ボタンも同じ塗りにして、行全体で1つのタブに見せる */
-.sidebar-tab-toggle.on-active,
-.sidebar-tab-toggle.on-active:hover {
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-/* 「›」を回して開閉を示す。閉=右向き（そのまま）、開=下向き。
-   別の文字に差し替えるのではなく回転させるのは、切り替わりが動きとして
-   見えるほうが「これは開閉するもの」だと伝わるため。 */
-.sidebar-tab-toggle span {
-  display: inline-block;
+  pointer-events: none;
+  /* 「›」を回して開閉を示す。閉=右向き（そのまま）、開=下向き。
+     別の文字に差し替えるのではなく回転させるのは、切り替わりが動きとして
+     見えるほうが「これは開閉するもの」だと伝わるため。 */
   transition: transform 0.15s ease;
 }
 
-.sidebar-tab-toggle.open span {
+.sidebar-tab.open .sidebar-tab-caret {
   transform: rotate(90deg);
+}
+
+/* 選択中は塗りの上に乗るので、薄いグレーのままだと沈んで見えない */
+.sidebar-tab.active .sidebar-tab-caret {
+  color: var(--on-accent);
 }
 
 .sidebar-tab-hint {
@@ -257,7 +238,7 @@ body {
   opacity: 0.85;
 }
 
-/* ④ の配下タブ。開閉ボタン（.sidebar-tab-toggle）で出し入れする。
+/* ②③ の配下タブ。親タブを押すと出し入れする。
    左の縦線と字下げで「④ の中の話」だと分かるようにする。 */
 .sidebar-subtabs {
   list-style: none;
