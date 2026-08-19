@@ -345,7 +345,7 @@ function useDocuments(
   return sources;
 }
 
-/** 文書一覧（GET /documents/summary）。「入っている文書」の表用。
+/** 文書一覧（GET /documents/summary）。「文書一覧」の表用。
  *
  * ★useDocuments とは別のAPI★ あちらは ③ のセレクタを埋めるためのもので、
  * 同じ source を1件に潰す。こちらは「今どうなっているか」を見る画面なので
@@ -550,7 +550,7 @@ function ScopeInput({
         <AutoComplete
           id={`${idPrefix}-project`}
           value={project}
-          placeholder="プロジェクト（新規も可）"
+          placeholder="プロジェクト"
           options={toOptions(projects)}
           onChange={(v: string) => onProject(v ?? "")}
           // 既定は「打った文字で始まる候補」だけ。部分一致にしておかないと、
@@ -569,7 +569,7 @@ function ScopeInput({
         <AutoComplete
           id={`${idPrefix}-topic`}
           value={topic}
-          placeholder="トピック（新規も可）"
+          placeholder="トピック"
           options={toOptions(topics)}
           onChange={(v: string) => onTopic(v ?? "")}
           filterOption={(input, option) =>
@@ -736,7 +736,7 @@ function ScopeCreatePanel({
   );
 }
 
-/** 並び替えボタン付きの表の見出しセル（「入っている文書」の表用）。
+/** 並び替えボタン付きの表の見出しセル（「文書一覧」の表用）。
  *
  * ★DocumentListPanel の中で定義しない★ 描画のたびに別のコンポーネントとして
  * 扱われ、Reactが中身を作り直す（＝押した直後にフォーカスが外れる）ため。
@@ -781,7 +781,7 @@ function DocSortHeader({
   );
 }
 
-/** 「入っている文書」の面。登録済みの文書を区分で絞って表で見る。
+/** 「文書一覧」の面。登録済みの文書を区分で絞って表で見る。
  *
  * ★何のために要るか★
  *   これまで文書名が画面に出るのは検索結果（②）と評価結果（③）の中だけで、
@@ -941,7 +941,7 @@ function DocumentListPanel({
   return (
     <div className="panel-section">
       <h3 className="panel-section-title">
-        3. 入っている文書（/documents/summary・APIキー不要）
+        3. 文書一覧（/documents/summary・APIキー不要）
       </h3>
       <p className="hint panel-note">
         登録済みの文書を区分で絞って一覧します。
@@ -2458,7 +2458,7 @@ export default function Home() {
   const [ingestFormOpen, setIngestFormOpen] = useState(true);
   // 一覧の「上の登録フォームへ」から戻ってくる先。
   const ingestFormRef = useRef<HTMLDivElement>(null);
-  // --- 文書一覧（「入っている文書」= /documents/summary）---
+  // --- 文書一覧（/documents/summary）---
   // 見るだけの画面だが、絞り込みと並び順は他パネルと同じくここに置く
   // （タブを移動して戻ったときに「すべて・新しい順」へ戻らないように）。
   // トピックの候補はパネル側で引く（選択中のプロジェクト配下だけ・他パネルと同じ）

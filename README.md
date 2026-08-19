@@ -89,7 +89,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 |---|---|---|
 | ① 新たに区分を追加 | `POST /projects`・`POST /topics` | 不要 |
 | ① 新たに文書を登録 | `POST /ingest` | Voyage（埋め込み） |
-| ① 入っている文書（削除も） | `GET /documents/summary`・`DELETE /documents` | 不要 |
+| ① 文書一覧（削除も） | `GET /documents/summary`・`DELETE /documents` | 不要 |
 | ② 質問で資料を検索 | `GET /search` | Voyage のみ |
 | ② 保管質問をまとめて再検索 | `GET /verify` | Voyage のみ |
 | ③ 評価する | `GET /eval` | Voyage（リランク時 Anthropic） |
@@ -98,7 +98,7 @@ FastAPI なので OpenAPI スキーマ（`/openapi.json`）が自動生成され
 **検索だけならAnthropicキーは要らない**。回答生成を挟まずに検索の挙動だけを追えるので、
 チューニングの試行錯誤は ② と ③ で完結する。
 
-① の配下「入っている文書」は、登録済みの文書を project / topic で絞って一覧する管理用の表。
+① の配下「文書一覧」は、登録済みの文書を project / topic で絞って一覧する管理用の表。
 **チャンク数0（索引に載っていない）・区分なし（区分で絞った検索から外れる）・同名の二重登録**
 という「黙って検索対象から消えている」状態を、ここで見つけるためのもの。
 
